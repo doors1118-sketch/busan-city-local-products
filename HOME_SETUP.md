@@ -44,8 +44,8 @@ git reset --hard origin/main
 ## 4단계: 필요 패키지 설치 + 서비스 재시작
 
 ```bash
-# daily_pipeline_sync.py에 필요한 패키지 추가 설치
-/opt/busan/venv/bin/pip install requests
+# 필요 패키지 설치
+/opt/busan/venv/bin/pip install requests streamlit
 
 # API 서버 재시작
 systemctl restart busan-api
@@ -54,10 +54,39 @@ systemctl status busan-api
 
 ---
 
-## 5단계 (선택): 일일 파이프라인 cron 등록
+## 5단계: 대시보드 배포
 
 ```bash
-# crontab 편집
+# systemd 서비스 등록
+cat > /etc/systemd/system/busan-dashboard.service << 'EOF'
+[Unit]
+Description=Busan Dashboard (Streamlit)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/busan
+ExecStart=/opt/busan/venv/bin/streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable busan-dashboard
+systemctl start busan-dashboard
+systemctl status busan-dashboard
+```
+
+→ http://49.50.133.160:8501 에서 대시보드 확인
+
+---
+
+## 6단계 (선택): 일일 파이프라인 cron 등록
+
+```bash
 crontab -e
 
 # 매일 새벽 2시에 파이프라인 실행, 완료 후 API 서버 재시작
@@ -66,12 +95,28 @@ crontab -e
 
 ---
 
+## 🎨 대시보드 디자인 수정 워크플로우
+
+```
+집 PC에서 dashboard.py 수정 → git push → (5분 후 서버 자동 pull) → 브라우저 새로고침
+```
+
+서버의 cron이 5분마다 `git pull`하면 코드가 자동 반영됩니다.
+즉시 반영하고 싶으면 SSH로:
+
+```bash
+cd /opt/busan && git pull origin main && systemctl restart busan-dashboard
+```
+
+---
+
 ## 확인 사항
 
 - [ ] `git push --force` 완료
 - [ ] 서버에 DB 4개 파일 존재 확인
-- [ ] `http://49.50.133.160:8000/docs` 접속 확인
-- [ ] API 응답 데이터 정상 확인
+- [ ] http://49.50.133.160:8000/docs API 접속 확인
+- [ ] http://49.50.133.160:8501 대시보드 접속 확인
+- [ ] 대시보드 수정 → push → 반영 확인
 
 ## 서버 정보
 
@@ -79,5 +124,6 @@ crontab -e
 |------|------|
 | IP | `49.50.133.160` |
 | API | http://49.50.133.160:8000/docs |
+| 대시보드 | http://49.50.133.160:8501 |
 | SSH | `ssh root@49.50.133.160` (키: busan-key.pem) |
 | 작업 디렉토리 | `/opt/busan/` |
