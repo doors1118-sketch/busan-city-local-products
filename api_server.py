@@ -1,0 +1,137 @@
+"""
+부산 조달 모니터링 REST API 서버
+=================================
+캐시 파일(api_cache.json)을 읽어서 즉시 응답
+
+실행: python api_server.py
+문서: http://localhost:8000/docs
+"""
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+import json, sys
+
+sys.stdout.reconfigure(encoding='utf-8')
+
+app = FastAPI(title="부산 조달 모니터링 API", version="1.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+CACHE_FILE = 'api_cache.json'
+
+def load_cache():
+    with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+@app.get("/api/summary", tags=["대시보드"])
+def get_summary():
+    """종합 수주율 (전체/분야별/그룹별/그룹별×분야별)"""
+    cache = load_cache()
+    return {k: v for k, v in cache.items() if not k.startswith("5_")}
+
+@app.get("/api/ranking", tags=["대시보드"])
+def get_ranking():
+    """비교단위 수주율 랭킹 (전체+분야별, 그룹별 상/하위 10)"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "전체": cache.get("5_기관랭킹_전체", {}),
+        "분야별": cache.get("5_기관랭킹_분야별", {}),
+    }
+
+@app.get("/api/ranking/{sector}", tags=["대시보드"])
+def get_ranking_by_sector(sector: str):
+    """특정 분야 수주율 랭킹 (공사/용역/물품/쇼핑몰)"""
+    cache = load_cache()
+    data = cache.get("5_기관랭킹_분야별", {}).get(sector)
+    if not data:
+        return {"error": f"'{sector}' 분야를 찾을 수 없습니다. (공사/용역/물품/쇼핑몰)"}
+    return {"generated_at": cache.get("generated_at"), "분야": sector, "랭킹": data}
+
+@app.get("/api/leakage", tags=["유출 분석"])
+def get_leakage():
+    """유출 분석 전체: 쇼핑몰 유출품목 + 공사/용역/물품 유출계약"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "쇼핑몰_유출품목": cache.get("6_유출품목_쇼핑몰", []),
+        "유출계약": cache.get("7_유출계약_주요", []),
+    }
+
+@app.get("/api/leakage/shopping", tags=["유출 분석"])
+def get_leakage_shopping():
+    """쇼핑몰 유출품목 Top 10 (비부산 업체 유출액 기준)"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "유출품목": cache.get("6_유출품목_쇼핑몰", []),
+    }
+
+@app.get("/api/leakage/contracts", tags=["유출 분석"])
+def get_leakage_contracts():
+    """공사/용역/물품 주요 유출계약 Top 10 (유출액 기준, 필터 적용)"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "유출계약": cache.get("7_유출계약_주요", []),
+    }
+
+@app.get("/api/protection", tags=["보호제도"])
+def get_protection():
+    """지역업체 보호제도 적용 현황 + 미적용 Top 10"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "현황": cache.get("8_보호제도_현황", {}),
+        "미적용_건": cache.get("8_보호제도_미적용", []),
+        "기관별_미적용": cache.get("8_보호제도_기관별", []),
+    }
+
+@app.get("/api/private-contract", tags=["수의계약"])
+def get_private_contract():
+    """수의계약 지역업체 수주율 (공사/물품/용역, 국가/부산시 2그룹)"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "수의계약": cache.get("9_수의계약", {}),
+    }
+
+@app.get("/api/local-companies", tags=["지역업체"])
+def get_local_companies():
+    """지역업체 현황표 (전체/분야별 업체수, 물품 대분류, 공사/용역 업종)"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "현황": cache.get("10_지역업체현황", {}),
+    }
+
+@app.get("/api/economic-impact", tags=["경제효과"])
+def get_economic_impact():
+    """지역상품 구매에 따른 지역생산부가가치 및 지역고용기여도 (한국은행 2020 지역산업연관표 부산 계수)"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "경제효과": cache.get("11_경제효과", {}),
+    }
+
+@app.get("/api/agency/search", tags=["기관 검색"])
+def search_agency(q: str = Query(..., min_length=1, description="검색할 기관명")):
+    """특정 수요기관의 총괄 수주율, 금액, 주요 유출계약 정보 검색"""
+    cache = load_cache()
+    agency_details = cache.get("12_기관별_상세", {})
+    
+    results = {}
+    q_clean = q.strip()
+    for unit, details in agency_details.items():
+        if q_clean in unit:
+            results[unit] = details
+            
+    return {
+        "generated_at": cache.get("generated_at"),
+        "검색어": q_clean,
+        "검색결과": results
+    }
+
+if __name__ == '__main__':
+    import uvicorn
+    print("[API] 부산 조달 모니터링 API 서버 시작")
+    print("   http://localhost:8000/docs")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

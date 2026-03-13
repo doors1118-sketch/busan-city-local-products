@@ -1,0 +1,52 @@
+# DB files (too large for GitHub)
+*.db
+
+# Data files (Excel, CSV, etc.)
+*.xlsx
+*.csv
+*.txt
+*.docx
+*.pdf
+*.ai
+
+# Large image/banner files
+부산이삽니다(백드롭).png
+부산이삽니다_header.png
+부산이삽니다_title.png
+busan_banner_info.xlsx
+
+# Implementation plan text files (no extension)
+Implementation Plan
+Implementation Plan6
+
+# Miscellaneous data files
+compare_unit_check*.csv
+compare_unit_final.csv
+contract_analysis_result.txt
+cross_check_result.txt
+docx_content.txt
+exception_logs_sample.csv
+openapi.html
+
+# Server key (security!)
+*.pem
+
+# Deploy files
+deploy/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp files
+tmp_*.py
+tmp_skills/
+
+# Office temp files
+~$*
