@@ -95,13 +95,58 @@ crontab -e
 
 ---
 
-## 🎨 대시보드 디자인 수정 워크플로우
+## 🎨 대시보드 디자인 수정 (로컬에서 빠르게)
+
+### 최초 1회 설정 (집 PC)
+
+```bash
+# 1. 코드 받기
+git clone https://github.com/doors1118-sketch/busan-city-local-products.git
+cd busan-city-local-products
+
+# 2. Python 가상환경 만들기
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Mac/Linux
+
+# 3. 패키지 설치
+pip install streamlit requests
+
+# 4. DB 파일 다운로드 (NCP Object Storage)
+curl -O https://kr.object.ncloudstorage.com/busan-deploy/procurement_contracts.db.zip
+curl -O https://kr.object.ncloudstorage.com/busan-deploy/busan_agencies_master.db
+curl -O https://kr.object.ncloudstorage.com/busan-deploy/busan_companies_master.db
+curl -O https://kr.object.ncloudstorage.com/busan-deploy/servc_site.db
+
+# 5. 압축 해제
+tar -xf procurement_contracts.db.zip
+del procurement_contracts.db.zip
+```
+
+### 대시보드 실행
+
+```bash
+streamlit run dashboard.py
+```
+→ http://localhost:8501 자동 오픈
+
+### 수정 → 즉시 반영
 
 ```
-집 PC에서 dashboard.py 수정 → git push → (5분 후 서버 자동 pull) → 브라우저 새로고침
+dashboard.py 수정 → 저장(Ctrl+S) → 브라우저가 자동 새로고침 (1초)
 ```
 
-서버의 cron이 5분마다 `git pull`하면 코드가 자동 반영됩니다.
+> 💡 Streamlit은 파일 변경을 감지해서 자동 리로드합니다. 수정할 때마다 바로 결과 확인!
+
+### 수정 완료 후 서버 반영
+
+```bash
+git add dashboard.py
+git commit -m "대시보드 디자인 수정"
+git push
+```
+→ 5분 후 서버(http://49.50.133.160:8501)에 자동 반영
+
 즉시 반영하고 싶으면 SSH로:
 
 ```bash
