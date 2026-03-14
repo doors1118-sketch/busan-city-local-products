@@ -2,12 +2,10 @@
 alert_check.py — 수주율 이상 감지 경보 시스템
 ==============================================
 Part A: 이전 캐시 vs 현재 캐시 비교 (사후 분석, 5개 항목)
-Part B: 입찰공고 사전 경보 — 부산시 소속기관 기준이하 지역제한 미적용 감지
+Part B-1: 공고 단계 사전 경보 — 지역제한경쟁 + 의무공동도급 미적용 감지
+Part B-2: 계약 단계 사후 경보 — 외지업체 지분 60% 초과 (의무공동도급 위반)
 
 대상: 부산광역시 및 소속기관만 (자치구, 교육청, 산하기관 등)
-     → 현장이 부산인 것이 확실한 기관만 모니터링
-
-사용: daily_pipeline_sync.py에서 캐시 재생성 후 자동 호출
 단독 실행: python alert_check.py
 """
 import json, os, sys, datetime, sqlite3
@@ -19,6 +17,7 @@ PREV_CACHE_FILE = 'api_cache_prev.json'
 ALERT_LOG_DIR = 'alert_log'
 DB_PATH = 'procurement_contracts.db'
 DB_AGENCIES = 'busan_agencies_master.db'
+DB_COMPANIES = 'busan_companies_master.db'
 
 # ═══════════════ 감지 기준값 (조정 가능) ═══════════════
 THRESHOLD_TOTAL_RATE_DROP = 3.0      # 전체 수주율 급락 기준 (%p)
@@ -35,21 +34,22 @@ THRESHOLD_LEAKAGE_BY_SECTOR = {
 }
 THRESHOLD_LEAKAGE_DEFAULT = 5e8
 
-# 부산시 소속기관 지역제한 기준액 (추정가격 기준)
+# 공사 지역제한 기준액 (부산시 소속기관)
 BUSAN_CITY_THRESHOLDS = {
-    '종합': 100e8,   # 종합공사 ≤100억
-    '전문': 10e8,    # 전문공사 ≤10억
-    '용역': 3.3e8,   # 용역 ≤3.3억
+    '종합': 100e8,   # ≤100억
+    '전문': 10e8,    # ≤10억
+    '용역': 3.3e8,   # ≤3.3억
 }
-# 전문공사 판별 키워드
 SPECIALIZED_KEYWORDS = ['전기', '통신', '소방', '기계설비', '기계공사', '정보통신']
+
+# 의무공동도급: 외지업체 지분 상한 (60% 이상이면 위반)
+MAX_NON_LOCAL_SHARE = 60.0
 
 # 모니터링 대상 기관 그룹 (cate_lrg)
 TARGET_GROUP = '부산광역시 및 소속기관'
 
 
 def load_json(path):
-    """JSON 파일 로드, 없으면 None 반환"""
     if not os.path.exists(path):
         return None
     with open(path, 'r', encoding='utf-8') as f:
@@ -57,24 +57,56 @@ def load_json(path):
 
 
 def load_busan_city_agencies():
-    """부산시 소속기관 코드 목록 로드"""
+    """부산시 소속기관 수요기관코드 set"""
     if not os.path.exists(DB_AGENCIES):
         return set()
     conn = sqlite3.connect(DB_AGENCIES)
-    codes = set()
-    for row in conn.execute(
-        "SELECT dminsttCd FROM agency_master WHERE cate_lrg = ?",
-        (TARGET_GROUP,)
-    ).fetchall():
-        codes.add(str(row[0]).strip())
+    codes = set(str(r[0]).strip() for r in conn.execute(
+        "SELECT dminsttCd FROM agency_master WHERE cate_lrg = ?", (TARGET_GROUP,)
+    ).fetchall())
     conn.close()
     return codes
 
 
+def load_busan_biznos():
+    """부산 업체 사업자번호 set"""
+    if not os.path.exists(DB_COMPANIES):
+        return set()
+    conn = sqlite3.connect(DB_COMPANIES)
+    biznos = set(str(r[0]).strip() for r in conn.execute(
+        "SELECT bizno FROM company_master"
+    ).fetchall())
+    conn.close()
+    return biznos
+
+
+def parse_corp_shares(cl):
+    """corpList 문자열에서 [(사업자번호, 지분율)] 추출 (core_calc.py와 동일 로직)"""
+    biz_list = []
+    cl = str(cl or '')
+    if not cl or cl in ('nan', 'None', ''):
+        return biz_list
+    for chunk in cl.split('[')[1:]:
+        chunk = chunk.split(']')[0]
+        parts = chunk.split('^')
+        if len(parts) >= 10:
+            bno = str(parts[9]).replace('-', '').strip()
+            try:
+                share = float(parts[6]) if parts[6].strip() else 0.0
+            except:
+                share = 0.0
+            biz_list.append([bno, share])
+    if biz_list:
+        tot = sum(s for _, s in biz_list)
+        if tot == 0:
+            biz_list = [[b, 100.0 / len(biz_list)] for b, _ in biz_list]
+        elif tot > 100.1:
+            biz_list = [[b, s / tot * 100] for b, s in biz_list]
+    return biz_list
+
+
 def check_bid_notices_protection(target_date=None):
-    """[Part B-1] 공고 단계 사전 경보
-    부산시 소속기관의 기준이하 공고 중 지역제한경쟁이 아닌 건 감지.
-    """
+    """[Part B-1] 공고 단계: 기준이하인데 지역제한경쟁 or 의무공동도급 미적용"""
     if not os.path.exists(DB_PATH):
         return []
 
@@ -88,7 +120,8 @@ def check_bid_notices_protection(target_date=None):
     conn = sqlite3.connect(DB_PATH)
     query = """
         SELECT bidNtceNo, bidNtceNm, dminsttCd, dminsttNm, presmptPrce,
-               cntrctCnclsMthdNm, prtcptLmtRgnNm, sector, mainCnsttyNm
+               cntrctCnclsMthdNm, prtcptLmtRgnNm, sector, mainCnsttyNm,
+               rgnDutyJntcontrctYn
         FROM bid_notices_price
         WHERE bidNtceDt LIKE ? AND sector IN ('공사', '용역')
     """
@@ -100,13 +133,12 @@ def check_bid_notices_protection(target_date=None):
 
     suspects = []
     for row in rows:
-        ntce_no, ntce_nm, dm_cd, dm_nm, price_str, method, rgn_lmt, sector, main_type = row
+        (ntce_no, ntce_nm, dm_cd, dm_nm, price_str, method,
+         rgn_lmt, sector, main_type, jnt_yn) = row
 
-        # 부산시 소속기관만 대상
         if str(dm_cd).strip() not in busan_agencies:
             continue
 
-        # 추정가격 파싱
         try:
             price = float(price_str) if price_str else 0
         except (ValueError, TypeError):
@@ -127,18 +159,21 @@ def check_bid_notices_protection(target_date=None):
             ctype = '용역'
             limit = BUSAN_CITY_THRESHOLDS['용역']
 
-        # 기준이하인지 확인
+        # 기준이하 확인
         if price > limit:
             continue
 
-        # 지역제한경쟁인지 확인
+        # 지역제한경쟁 적용 여부
         rgn_lmt_str = str(rgn_lmt).strip() if rgn_lmt else ''
         method_str = str(method).strip() if method else ''
         has_busan_restriction = '부산' in rgn_lmt_str or '26' in rgn_lmt_str
-        is_restricted_bid = '제한' in method_str
+        is_restricted = '제한' in method_str
 
-        # 기준이하인데 지역제한경쟁이 아님 → 미적용 의심
-        if not (has_busan_restriction and is_restricted_bid):
+        # 의무공동도급 적용 여부 (공사만)
+        jnt_applied = str(jnt_yn).strip().upper() == 'Y' if jnt_yn else False
+
+        # 기준이하인데 지역제한경쟁도 아니고 의무공동도급도 아님
+        if not (has_busan_restriction and is_restricted) and not jnt_applied:
             suspects.append({
                 '공고번호': ntce_no,
                 '공고명': ntce_nm,
@@ -149,13 +184,90 @@ def check_bid_notices_protection(target_date=None):
                 '기준액': limit / 1e8,
                 '계약방식': method_str,
                 '지역제한': rgn_lmt_str or '없음',
+                '의무공동도급': '적용' if jnt_applied else '미적용',
             })
 
     return suspects
 
 
+def check_construction_share_violation(target_date=None):
+    """[Part B-2] 계약 단계: 부산시 소속기관 공사에서 외지업체 지분 60% 초과 건"""
+    if not os.path.exists(DB_PATH):
+        return []
+
+    busan_agencies = load_busan_city_agencies()
+    busan_biznos = load_busan_biznos()
+    if not busan_agencies or not busan_biznos:
+        return []
+
+    if target_date is None:
+        target_date = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y%m%d')
+
+    conn = sqlite3.connect(DB_PATH)
+    # dminsttCd, dminsttNm_req 사용 (파싱된 수요기관 코드)
+    query = """
+        SELECT dcsnCntrctNo, untyCntrctNo, cmmnCntrctYn, corpList,
+               totCntrctAmt, cntrctCnclsDate, dminsttCd, dminsttNm_req
+        FROM cnstwk_cntrct
+        WHERE cntrctCnclsDate LIKE ?
+    """
+    rows = conn.execute(query, (f'{target_date[:4]}-{target_date[4:6]}-{target_date[6:8]}%',)).fetchall()
+    conn.close()
+
+    if not rows:
+        return []
+
+    violations = []
+    for row in rows:
+        (dcsn_no, unty_no, jnt_yn, corp_list, amt_str,
+         cntrct_date, dm_cd, dm_nm) = row
+
+        # 부산시 소속기관만
+        if str(dm_cd).strip() not in busan_agencies:
+            continue
+
+        # 공동도급인 경우만 (단독은 해당없음)
+        if str(jnt_yn).strip().upper() != 'Y':
+            continue
+
+        # 지분 파싱
+        shares = parse_corp_shares(corp_list)
+        if not shares:
+            continue
+
+        # 외지업체 지분 합산
+        non_local_share = 0.0
+        non_local_names = []
+        for bno, share in shares:
+            if bno and bno not in busan_biznos:
+                non_local_share += share
+                # 업체명 추출 (corpList에서)
+                for chunk in str(corp_list).split('[')[1:]:
+                    parts = chunk.split(']')[0].split('^')
+                    if len(parts) >= 10 and str(parts[9]).replace('-','').strip() == bno:
+                        non_local_names.append(parts[3])
+                        break
+
+        # 외지업체 지분 60% 초과
+        if non_local_share > MAX_NON_LOCAL_SHARE:
+            try:
+                amt = float(amt_str) if amt_str else 0
+            except:
+                amt = 0
+            violations.append({
+                '계약번호': dcsn_no or unty_no,
+                '수요기관': dm_nm or '',
+                '계약금액': amt / 1e8,
+                '외지업체': ', '.join(non_local_names),
+                '외지지분': round(non_local_share, 1),
+                '계약일': cntrct_date or '',
+            })
+
+    return violations
+
+
 def run_alert_check():
-    """경보 체크 메인 함수. daily_pipeline_sync.py에서 호출됨."""
+    """경보 체크 메인 함수"""
     print("\n==================================================")
     print(" 🔔 수주율 이상 감지 경보 시스템")
     print(f"    대상: {TARGET_GROUP}")
@@ -172,14 +284,13 @@ def run_alert_check():
     # ══════════════════════════════════════════════════════
 
     if not curr:
-        print("  ❌ api_cache.json 없음. 캐시 재생성을 먼저 실행하세요.")
+        print("  ❌ api_cache.json 없음.")
     elif not prev:
-        print("  ℹ️  이전 캐시 없음 — 첫 실행이므로 캐시 비교 스킵.")
+        print("  ℹ️  이전 캐시 없음 — 캐시 비교 스킵.")
     else:
-        # ────────── 1. 전체 수주율 급락 ──────────
+        # 1. 전체 수주율 급락
         curr_rate = curr.get('1_전체', {}).get('수주율', 0)
         prev_rate = prev.get('1_전체', {}).get('수주율', 0)
-
         if prev_rate > 0:
             rate_diff = curr_rate - prev_rate
             if rate_diff < -THRESHOLD_TOTAL_RATE_DROP:
@@ -189,67 +300,46 @@ def run_alert_check():
             else:
                 print(f"  ✅ 정상: 전체 수주율 {prev_rate}% → {curr_rate}% ({rate_diff:+.1f}%p)")
 
-        # ────────── 2. 분야별 수주율 급변 ──────────
-        curr_sectors = curr.get('2_분야별', {})
-        prev_sectors = prev.get('2_분야별', {})
+        # 2. 분야별 수주율 급변
         sector_alert = False
-
         for sector in ['공사', '용역', '물품', '쇼핑몰']:
-            c_rate = curr_sectors.get(sector, {}).get('수주율', 0)
-            p_rate = prev_sectors.get(sector, {}).get('수주율', 0)
+            c_rate = curr.get('2_분야별', {}).get(sector, {}).get('수주율', 0)
+            p_rate = prev.get('2_분야별', {}).get(sector, {}).get('수주율', 0)
             if p_rate > 0:
                 diff = c_rate - p_rate
                 if abs(diff) >= THRESHOLD_SECTOR_RATE_CHANGE:
-                    direction = "급락" if diff < 0 else "급등"
-                    msg = f"⚠️  [주의] {sector} 수주율 {direction}: {p_rate}% → {c_rate}% ({diff:+.1f}%p)"
+                    d = "급락" if diff < 0 else "급등"
+                    msg = f"⚠️  [주의] {sector} 수주율 {d}: {p_rate}% → {c_rate}% ({diff:+.1f}%p)"
                     alerts.append(('WARNING', msg))
                     print(f"  {msg}")
                     sector_alert = True
-
         if not sector_alert:
             print(f"  ✅ 정상: 분야별 수주율 변동 정상 범위")
 
-        # ────────── 3. 대형 유출계약 신규 (분야별 차등) ──────────
-        curr_leakage = curr.get('7_유출계약_주요', [])
-        prev_leakage = prev.get('7_유출계약_주요', [])
-
-        prev_keys = set()
-        for item in prev_leakage:
-            prev_keys.add((item.get('계약명', ''), item.get('기관', '')))
-
+        # 3. 대형 유출계약 신규 (분야별 차등)
+        prev_keys = set((i.get('계약명',''), i.get('기관','')) for i in prev.get('7_유출계약_주요', []))
         new_large = []
-        for item in curr_leakage:
-            key = (item.get('계약명', ''), item.get('기관', ''))
+        for item in curr.get('7_유출계약_주요', []):
+            key = (item.get('계약명',''), item.get('기관',''))
             amt = item.get('유출액', 0)
-            sector = item.get('분야', '')
-            threshold = THRESHOLD_LEAKAGE_BY_SECTOR.get(sector, THRESHOLD_LEAKAGE_DEFAULT)
+            threshold = THRESHOLD_LEAKAGE_BY_SECTOR.get(item.get('분야',''), THRESHOLD_LEAKAGE_DEFAULT)
             if key not in prev_keys and amt >= threshold:
                 new_large.append(item)
-
         if new_large:
             for item in new_large:
-                amt_eok = item.get('유출액', 0) / 1e8
-                sector = item.get('분야', '?')
-                msg = f"🚨 [경보] 대형 유출계약 [{sector}]: \"{item.get('계약명', '')}\" {amt_eok:.0f}억 ({item.get('기관', '')})"
+                msg = f"🚨 [경보] 대형 유출 [{item.get('분야','?')}]: \"{item.get('계약명','')}\" {item.get('유출액',0)/1e8:.0f}억 ({item.get('기관','')})"
                 alerts.append(('CRITICAL', msg))
                 print(f"  {msg}")
         else:
             print(f"  ✅ 정상: 대형 유출계약 신규 없음")
 
-        # ────────── 4. 보호제도 미적용 증가 ──────────
-        curr_prot = curr.get('8_보호제도_현황', {})
-        prev_prot = prev.get('8_보호제도_현황', {})
-
-        curr_non = curr_prot.get('미적용', 0) if isinstance(curr_prot, dict) else 0
-        prev_non = prev_prot.get('미적용', 0) if isinstance(prev_prot, dict) else 0
-
-        if isinstance(curr_prot, dict) and not isinstance(curr_non, (int, float)):
-            curr_non = sum(v.get('미적용', 0) for v in curr_prot.values()
-                           if isinstance(v, dict) and '미적용' in v)
-        if isinstance(prev_prot, dict) and not isinstance(prev_non, (int, float)):
-            prev_non = sum(v.get('미적용', 0) for v in prev_prot.values()
-                           if isinstance(v, dict) and '미적용' in v)
-
+        # 4. 보호제도 미적용 증가
+        curr_non = curr.get('8_보호제도_현황', {}).get('미적용', 0)
+        prev_non = prev.get('8_보호제도_현황', {}).get('미적용', 0)
+        if isinstance(curr_non, dict):
+            curr_non = sum(v.get('미적용', 0) for v in curr.get('8_보호제도_현황', {}).values() if isinstance(v, dict) and '미적용' in v)
+        if isinstance(prev_non, dict):
+            prev_non = sum(v.get('미적용', 0) for v in prev.get('8_보호제도_현황', {}).values() if isinstance(v, dict) and '미적용' in v)
         if prev_non > 0:
             prot_diff = curr_non - prev_non
             if prot_diff >= THRESHOLD_PROTECTION_INCREASE:
@@ -259,43 +349,61 @@ def run_alert_check():
             else:
                 print(f"  ✅ 정상: 보호제도 미적용 {prev_non:,}건 → {curr_non:,}건 ({prot_diff:+d}건)")
 
-        # ────────── 5. 데이터 규모 이상 ──────────
+        # 5. 데이터 규모 이상
         curr_amt = curr.get('1_전체', {}).get('발주액', 0)
         prev_amt = prev.get('1_전체', {}).get('발주액', 0)
-
         if prev_amt > 0:
             amt_ratio = abs(curr_amt - prev_amt) / prev_amt
             if amt_ratio >= THRESHOLD_TOTAL_AMT_CHANGE:
-                direction = "증가" if curr_amt > prev_amt else "감소"
-                msg = f"🚨 [경보] 전체 발주액 {direction}: {prev_amt/1e8:,.0f}억 → {curr_amt/1e8:,.0f}억 ({amt_ratio*100:.1f}%)"
+                d = "증가" if curr_amt > prev_amt else "감소"
+                msg = f"🚨 [경보] 전체 발주액 {d}: {prev_amt/1e8:,.0f}억 → {curr_amt/1e8:,.0f}억 ({amt_ratio*100:.1f}%)"
                 alerts.append(('CRITICAL', msg))
                 print(f"  {msg}")
             else:
                 print(f"  ✅ 정상: 전체 발주액 변동 {amt_ratio*100:.1f}%")
 
     # ══════════════════════════════════════════════════════
-    # Part B: 입찰공고 사전 경보 (부산시 소속기관 한정)
+    # Part B-1: 공고 단계 사전 경보
     # ══════════════════════════════════════════════════════
     print(f"\n  {'─'*46}")
-    print(f"  📋 공고 단계 사전 경보 (부산시 소속기관)")
-    print(f"     기준이하 공고 중 지역제한경쟁 미적용 감지")
+    print(f"  📋 [공고 단계] 지역제한/의무공동도급 미적용 감지")
     print(f"  {'─'*46}")
 
     suspects = check_bid_notices_protection()
-
     if suspects:
-        print(f"  ⚠️  지역제한 미적용 의심: {len(suspects)}건")
+        print(f"  ⚠️  보호제도 미적용 의심: {len(suspects)}건")
         suspects.sort(key=lambda x: x['추정가격'], reverse=True)
-        for i, s in enumerate(suspects[:5]):
+        for s in suspects[:5]:
             msg = (f"⚠️  [{s['분야']}/{s['구분']}] \"{s['공고명'][:30]}\" "
-                   f"{s['추정가격']:.1f}억 (기준 ≤{s['기준액']:.0f}억) "
-                   f"— {s['수요기관']} [{s['계약방식']}]")
+                   f"{s['추정가격']:.1f}억 (≤{s['기준액']:.0f}억) "
+                   f"— {s['수요기관']} [{s['계약방식']}, 의무도급:{s['의무공동도급']}]")
             alerts.append(('WARNING', msg))
             print(f"  {msg}")
         if len(suspects) > 5:
             print(f"     ... 외 {len(suspects) - 5}건")
     else:
-        print(f"  ✅ 정상: 지역제한 미적용 의심 공고 없음")
+        print(f"  ✅ 정상: 보호제도 미적용 의심 공고 없음")
+
+    # ══════════════════════════════════════════════════════
+    # Part B-2: 계약 단계 — 외지업체 지분 60% 초과 (의무공동도급 위반)
+    # ══════════════════════════════════════════════════════
+    print(f"\n  {'─'*46}")
+    print(f"  💰 [계약 단계] 공사 외지업체 지분 60% 초과 감지")
+    print(f"  {'─'*46}")
+
+    violations = check_construction_share_violation()
+    if violations:
+        print(f"  🚨 외지업체 지분 60% 초과: {len(violations)}건")
+        violations.sort(key=lambda x: x['계약금액'], reverse=True)
+        for v in violations[:5]:
+            msg = (f"🚨 [공사] \"{v['외지업체']}\" 지분 {v['외지지분']}% "
+                   f"({v['계약금액']:.1f}억) — {v['수요기관']} [{v['계약번호']}]")
+            alerts.append(('CRITICAL', msg))
+            print(f"  {msg}")
+        if len(violations) > 5:
+            print(f"     ... 외 {len(violations) - 5}건")
+    else:
+        print(f"  ✅ 정상: 외지업체 지분 60% 초과 건 없음")
 
     # ────────── 결과 요약 ──────────
     print(f"\n{'─'*50}")
@@ -324,11 +432,18 @@ def run_alert_check():
             for level, msg in alerts:
                 f.write(f"[{level}] {msg}\n")
             if suspects:
-                f.write(f"\n--- 공고 사전 경보 상세 ({len(suspects)}건) ---\n")
+                f.write(f"\n--- 공고 사전 경보 ({len(suspects)}건) ---\n")
                 for s in suspects:
                     f.write(f"  [{s['분야']}/{s['구분']}] {s['공고번호']} "
                             f"\"{s['공고명']}\" {s['추정가격']:.1f}억 "
-                            f"({s['수요기관']}, {s['계약방식']}, 지역제한: {s['지역제한']})\n")
+                            f"({s['수요기관']}, {s['계약방식']}, "
+                            f"지역제한:{s['지역제한']}, 의무도급:{s['의무공동도급']})\n")
+            if violations:
+                f.write(f"\n--- 외지업체 지분 초과 ({len(violations)}건) ---\n")
+                for v in violations:
+                    f.write(f"  [{v['계약번호']}] {v['수요기관']} "
+                            f"{v['계약금액']:.1f}억 → {v['외지업체']} {v['외지지분']}% "
+                            f"(계약일: {v['계약일']})\n")
             f.write(f"\n{'='*60}\n")
             f.write(f"총 경보: {critical}건, 주의: {warning}건\n")
         print(f"  📄 로그 저장: {log_file}")
