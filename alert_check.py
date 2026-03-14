@@ -9,6 +9,10 @@ Part B-2: 계약 단계 사후 경보 — 외지업체 지분 60% 초과 (의무
 단독 실행: python alert_check.py
 """
 import json, os, sys, datetime, sqlite3
+import urllib.request, urllib.parse
+import hashlib, hmac, base64, time
+
+CONFIG_FILE = 'alert_config.json'
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -54,6 +58,131 @@ def load_json(path):
         return None
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+
+def load_config():
+    """알림 설정 로드"""
+    if not os.path.exists(CONFIG_FILE):
+        return {}
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def send_telegram(message, config):
+    """텔레그램 봇으로 메시지 발송"""
+    tg = config.get('telegram', {})
+    if not tg.get('enabled'):
+        return
+    token = tg.get('bot_token', '')
+    chat_id = tg.get('chat_id', '')
+    if not token or not chat_id or '여기에' in token:
+        return
+
+    try:
+        url = f'https://api.telegram.org/bot{token}/sendMessage'
+        data = urllib.parse.urlencode({
+            'chat_id': chat_id,
+            'text': message,
+            'parse_mode': 'HTML',
+        }).encode('utf-8')
+        req = urllib.request.Request(url, data=data, method='POST')
+        with urllib.request.urlopen(req, timeout=10) as res:
+            result = json.loads(res.read().decode('utf-8'))
+            if result.get('ok'):
+                print(f"  📱 텔레그램 발송 완료")
+            else:
+                print(f"  ⚠️ 텔레그램 발송 실패: {result}")
+    except Exception as e:
+        print(f"  ⚠️ 텔레그램 발송 오류: {e}")
+
+
+def send_ncp_email(subject, body, config):
+    """NCP Cloud Outbound Mailer로 이메일 발송"""
+    email_cfg = config.get('ncp_email', {})
+    if not email_cfg.get('enabled'):
+        return
+    access_key = email_cfg.get('access_key', '')
+    secret_key = email_cfg.get('secret_key', '')
+    if not access_key or not secret_key or '여기에' in access_key:
+        return
+
+    api_url = email_cfg.get('api_url', 'https://mail.apigw.ntruss.com/api/v1/mails')
+    sender = email_cfg.get('sender', 'noreply@busan-procurement.kr')
+    recipients = email_cfg.get('recipients', [])
+    if not recipients:
+        return
+
+    try:
+        # NCP API 인증 시그니처 생성
+        timestamp = str(int(time.time() * 1000))
+        method = 'POST'
+        uri = '/api/v1/mails'
+        message = f"{method} {uri}\n{timestamp}\n{access_key}"
+        signature = base64.b64encode(
+            hmac.new(secret_key.encode('utf-8'),
+                     message.encode('utf-8'),
+                     hashlib.sha256).digest()
+        ).decode('utf-8')
+
+        # 요청 데이터
+        mail_data = json.dumps({
+            'senderAddress': sender,
+            'senderName': '부산 조달 경보 시스템',
+            'title': subject,
+            'body': body,
+            'recipients': [{'address': r, 'type': 'R'} for r in recipients],
+        }).encode('utf-8')
+
+        req = urllib.request.Request(api_url, data=mail_data, method='POST')
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('x-ncp-apigw-timestamp', timestamp)
+        req.add_header('x-ncp-iam-access-key', access_key)
+        req.add_header('x-ncp-apigw-signature-v2', signature)
+
+        with urllib.request.urlopen(req, timeout=10) as res:
+            print(f"  📧 이메일 발송 완료 → {', '.join(recipients)}")
+    except Exception as e:
+        print(f"  ⚠️ 이메일 발송 오류: {e}")
+
+
+def send_notifications(alerts, suspects, violations, config):
+    """경보 발생 시 텔레그램 + 이메일 발송"""
+    if not alerts:
+        return
+
+    critical = sum(1 for level, _ in alerts if level == 'CRITICAL')
+    warning = sum(1 for level, _ in alerts if level == 'WARNING')
+    today = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+
+    # 텔레그램 메시지 (간결하게)
+    tg_lines = [f'🔔 <b>부산 조달 경보</b> ({today})']
+    tg_lines.append(f'경보 {critical}건 + 주의 {warning}건\n')
+    for level, msg in alerts[:10]:  # 최대 10건
+        tg_lines.append(msg)
+    if len(alerts) > 10:
+        tg_lines.append(f'... 외 {len(alerts)-10}건')
+    send_telegram('\n'.join(tg_lines), config)
+
+    # 이메일 (상세하게)
+    subject = f'[부산 조달 경보] 경보 {critical}건 + 주의 {warning}건 ({today})'
+    body_lines = [f'<h2>🔔 부산 조달 모니터링 경보</h2>']
+    body_lines.append(f'<p>생성시각: {today}</p>')
+    body_lines.append(f'<p>감시대상: {TARGET_GROUP}</p>')
+    body_lines.append('<hr>')
+    for level, msg in alerts:
+        color = '#dc3545' if level == 'CRITICAL' else '#ffc107'
+        body_lines.append(f'<p style="color:{color}">{msg}</p>')
+    if suspects:
+        body_lines.append(f'<h3>공고 사전 경보 ({len(suspects)}건)</h3><ul>')
+        for s in suspects[:10]:
+            body_lines.append(f'<li>[{s["분야"]}] {s["공고명"]} {s["추정가격"]:.1f}억 — {s["수요기관"]}</li>')
+        body_lines.append('</ul>')
+    if violations:
+        body_lines.append(f'<h3>외지업체 지분 초과 ({len(violations)}건)</h3><ul>')
+        for v in violations[:10]:
+            body_lines.append(f'<li>{v["외지업체"]} {v["외지지분"]}% ({v["계약금액"]:.1f}억) — {v["수요기관"]}</li>')
+        body_lines.append('</ul>')
+    send_ncp_email(subject, '\n'.join(body_lines), config)
 
 
 def load_busan_city_agencies():
@@ -447,6 +576,10 @@ def run_alert_check():
             f.write(f"\n{'='*60}\n")
             f.write(f"총 경보: {critical}건, 주의: {warning}건\n")
         print(f"  📄 로그 저장: {log_file}")
+
+    # ────────── 알림 발송 (텔레그램 + 이메일) ──────────
+    config = load_config()
+    send_notifications(alerts, suspects, violations, config)
 
     print("==================================================\n")
     return alerts

@@ -31,6 +31,10 @@ openapi.html
 # Server key (security!)
 *.pem
 
+# Alert config (contains API keys/tokens)
+alert_config.json
+alert_log/
+
 # Deploy files
 deploy/
 
