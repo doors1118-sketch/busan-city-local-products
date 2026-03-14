@@ -27,7 +27,7 @@ print("=" * 70)
 print("\n[1] 핵심 파일 존재")
 for f in ['core_calc.py', 'build_api_cache.py', 'rate_calc_db.py',
           'api_server.py', 'daily_pipeline_sync.py', 'api_cache.json',
-          'PROJECT_STATUS.md']:
+          'PROJECT_STATUS.md', 'alert_check.py']:
     check(f, os.path.exists(f))
 
 # ======== 2. core_calc.py 모듈 검증 ========
@@ -117,6 +117,19 @@ with open('api_server.py', 'r', encoding='utf-8') as f:
 check("/api/summary", '/api/summary' in api)
 check("/api/ranking", '/api/ranking' in api)
 check("/api/ranking/{sector}", '/api/ranking/{sector}' in api or 'ranking/{sector}' in api)
+
+# ======== 6b. 경보 모듈 ========
+print("\n[6b] 경보 모듈 (alert_check.py)")
+try:
+    from alert_check import run_alert_check
+    check("run_alert_check 함수 import", callable(run_alert_check))
+except Exception as e:
+    check("run_alert_check 함수 import", False, str(e))
+
+with open('daily_pipeline_sync.py', 'r', encoding='utf-8') as f:
+    pipe_src = f.read()
+check("파이프라인: alert_check import", 'alert_check' in pipe_src)
+check("파이프라인: 캐시 백업(api_cache_prev)", 'api_cache_prev' in pipe_src)
 
 # ======== 7. PROJECT_STATUS.md 규칙 ========
 print("\n[7] PROJECT_STATUS.md 문서")
