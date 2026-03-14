@@ -96,51 +96,31 @@ def send_telegram(message, config):
         print(f"  ⚠️ 텔레그램 발송 오류: {e}")
 
 
-def send_ncp_email(subject, body, config):
-    """NCP Cloud Outbound Mailer로 이메일 발송"""
-    email_cfg = config.get('ncp_email', {})
+def send_gmail(subject, body, config):
+    """Gmail SMTP로 이메일 발송"""
+    import smtplib
+    from email.mime.text import MIMEText
+
+    email_cfg = config.get('gmail', {})
     if not email_cfg.get('enabled'):
         return
-    access_key = email_cfg.get('access_key', '')
-    secret_key = email_cfg.get('secret_key', '')
-    if not access_key or not secret_key or '여기에' in access_key:
-        return
-
-    api_url = email_cfg.get('api_url', 'https://mail.apigw.ntruss.com/api/v1/mails')
-    sender = email_cfg.get('sender', 'noreply@busan-procurement.kr')
+    sender = email_cfg.get('address', '')
+    app_password = email_cfg.get('app_password', '')
     recipients = email_cfg.get('recipients', [])
-    if not recipients:
+    if not sender or not app_password or '여기에' in app_password or not recipients:
         return
 
     try:
-        # NCP API 인증 시그니처 생성
-        timestamp = str(int(time.time() * 1000))
-        method = 'POST'
-        uri = '/api/v1/mails'
-        message = f"{method} {uri}\n{timestamp}\n{access_key}"
-        signature = base64.b64encode(
-            hmac.new(secret_key.encode('utf-8'),
-                     message.encode('utf-8'),
-                     hashlib.sha256).digest()
-        ).decode('utf-8')
+        msg = MIMEText(body, 'html', 'utf-8')
+        msg['Subject'] = subject
+        msg['From'] = f'부산 조달 경보 <{sender}>'
+        msg['To'] = ', '.join(recipients)
 
-        # 요청 데이터
-        mail_data = json.dumps({
-            'senderAddress': sender,
-            'senderName': '부산 조달 경보 시스템',
-            'title': subject,
-            'body': body,
-            'recipients': [{'address': r, 'type': 'R'} for r in recipients],
-        }).encode('utf-8')
-
-        req = urllib.request.Request(api_url, data=mail_data, method='POST')
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('x-ncp-apigw-timestamp', timestamp)
-        req.add_header('x-ncp-iam-access-key', access_key)
-        req.add_header('x-ncp-apigw-signature-v2', signature)
-
-        with urllib.request.urlopen(req, timeout=10) as res:
-            print(f"  📧 이메일 발송 완료 → {', '.join(recipients)}")
+        with smtplib.SMTP('smtp.gmail.com', 587) as smtp:
+            smtp.starttls()
+            smtp.login(sender, app_password)
+            smtp.send_message(msg)
+        print(f"  📧 이메일 발송 완료 → {', '.join(recipients)}")
     except Exception as e:
         print(f"  ⚠️ 이메일 발송 오류: {e}")
 
@@ -182,7 +162,7 @@ def send_notifications(alerts, suspects, violations, config):
         for v in violations[:10]:
             body_lines.append(f'<li>{v["외지업체"]} {v["외지지분"]}% ({v["계약금액"]:.1f}억) — {v["수요기관"]}</li>')
         body_lines.append('</ul>')
-    send_ncp_email(subject, '\n'.join(body_lines), config)
+    send_gmail(subject, '\n'.join(body_lines), config)
 
 
 def load_busan_city_agencies():
