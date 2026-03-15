@@ -509,27 +509,27 @@ if page == "📊 종합현황":
                 if 부가가치 or 고용기여:
                     week_label = f"이번주 ({weekly_period})" if weekly_period else "이번주"
                     st.markdown(f'''<div style="display:flex; gap:16px; margin-top:-8px; margin-bottom:8px;">
-<div style="flex:1; background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:10px 14px;">
+<div style="flex:1; background:linear-gradient(135deg, #fef9ef 0%, #fdf0d5 100%); border:1px solid #f0d9a0; border-radius:6px; padding:14px 18px;">
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
 <div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">지역생산 부가가치</div>
-<div style="font-size:1.1rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(부가가치)}</div>
+<div style="font-size:0.78rem; color:#8a6d3b; font-weight:600;">지역총생산 부가가치 증가</div>
+<div style="font-size:1.35rem; font-weight:800; color:#5a4520; font-family:Nunito Sans,sans-serif;">{format_억(부가가치)}</div>
 </div>
 <div style="text-align:right;">
-<div style="font-size:0.58rem; color:{COLORS['text_light']};">{week_label}</div>
-<div style="font-size:0.8rem; font-weight:700; color:{COLORS['primary']}; font-family:Nunito Sans,sans-serif;">{format_억(이번주_부가)}</div>
+<div style="font-size:0.65rem; color:#8a6d3b;">{week_label}</div>
+<div style="font-size:1rem; font-weight:700; color:#c08b30; font-family:Nunito Sans,sans-serif;">{format_억(이번주_부가)}</div>
 </div>
 </div>
 </div>
-<div style="flex:1; background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:10px 14px;">
+<div style="flex:1; background:linear-gradient(135deg, #eef8f6 0%, #d4efea 100%); border:1px solid #a3d5cb; border-radius:6px; padding:14px 18px;">
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
 <div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">지역고용 기여도</div>
-<div style="font-size:1.1rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{고용기여:,.0f}명</div>
+<div style="font-size:0.78rem; color:#2d7a6c; font-weight:600;">지역고용 기여도</div>
+<div style="font-size:1.35rem; font-weight:800; color:#1a5248; font-family:Nunito Sans,sans-serif;">{고용기여:,.0f}명</div>
 </div>
 <div style="text-align:right;">
-<div style="font-size:0.58rem; color:{COLORS['text_light']};">{week_label}</div>
-<div style="font-size:0.8rem; font-weight:700; color:{COLORS['primary']}; font-family:Nunito Sans,sans-serif;">{이번주_고용:,.0f}명</div>
+<div style="font-size:0.65rem; color:#2d7a6c;">{week_label}</div>
+<div style="font-size:1rem; font-weight:700; color:#1a8a6e; font-family:Nunito Sans,sans-serif;">{이번주_고용:,.0f}명</div>
 </div>
 </div>
 </div>
@@ -1356,7 +1356,7 @@ elif page == "🛡️ 지역업체 보호제도":
 </div>''', unsafe_allow_html=True)
             with c_right:
                 st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
-                th_c = f'font-size:0.68rem; font-weight:600; color:{COLORS["text_light"]}; padding:10px 0; letter-spacing:0.02em;'
+                th_c = f'font-size:0.82rem; font-weight:600; color:{COLORS["text_light"]}; padding:12px 0; letter-spacing:0.02em;'
                 t_header = f'''<div style="display:flex; align-items:center; padding:0 16px; border-bottom:1px solid {COLORS['card_border']}; background:#fafbfe;">
 <div style="flex:1.2; {th_c}">분야</div>
 <div style="flex:1.2; {th_c} text-align:right;">적용가능 계약</div>
@@ -1376,24 +1376,80 @@ elif page == "🛡️ 지역업체 보호제도":
                     sc = sec_colors.get(typ, "#6576ff")
                     sb = sec_bg.get(typ, "#e8eaff")
                     rc = COLORS['success'] if r >= 80 else (COLORS['warning'] if r >= 50 else COLORS['danger'])
-                    t_rows += f'''<div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid {COLORS['card_border']}; background:{rbg};">
-<div style="flex:1.2;"><span style="display:inline-block; padding:3px 10px; border-radius:3px; background:{sb}; color:{sc}; font-size:0.75rem; font-weight:700;">{typ}</span></div>
-<div style="flex:1; text-align:right; font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{under:,}</div>
-<div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS['primary']}; font-family:Nunito Sans,sans-serif;">{applied:,}</div>
-<div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{unapplied:,}</div>
-<div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{rc};">{r}%</div>
+                    t_rows += f'''<div style="display:flex; align-items:center; padding:14px 16px; border-bottom:1px solid {COLORS['card_border']}; background:{rbg};">
+<div style="flex:1.2;"><span style="display:inline-block; padding:4px 12px; border-radius:3px; background:{sb}; color:{sc}; font-size:0.85rem; font-weight:700;">{typ}</span></div>
+<div style="flex:1; text-align:right; font-size:1rem; font-weight:600; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{under:,}</div>
+<div style="flex:1; text-align:right; font-size:1rem; font-weight:700; color:{COLORS['primary']}; font-family:Nunito Sans,sans-serif;">{applied:,}</div>
+<div style="flex:1; text-align:right; font-size:1rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{unapplied:,}</div>
+<div style="flex:1; text-align:right; font-size:1rem; font-weight:700; color:{rc};">{r}%</div>
 </div>'''
                 st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:0 0 6px 6px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,0.06);">
 {t_header}{t_rows}
 </div>''', unsafe_allow_html=True)
+                return title
 
         국가 = 현황.get("정부 및 국가공공기관", {})
         gov_criteria = f'<div style="font-size:0.72rem; font-weight:600; color:{COLORS["text_dark"]}; margin-bottom:4px;">국가계약법 지역제한 기준</div><div style="font-size:0.7rem; color:{COLORS["text_light"]}; line-height:1.7;">· 종합공사: 추정가격 <b>88억</b> 이하<br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>2.2억</b> 이하</div>'
-        make_donut_card("정부 및 국가공공기관", '<img src="https://www.mois.go.kr/frt2022/main/img/common/logo.png" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #364a63 0%, #526484 100%)", 국가, gov_criteria)
+        gov_card_title = make_donut_card("정부 및 국가공공기관", '<img src="https://www.mois.go.kr/frt2022/main/img/common/logo.png" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #364a63 0%, #526484 100%)", 국가, gov_criteria)
+
+        # ── 정부 미적용 계약 상세 조회 ──
+        주요미적용_all = data_prot.get("미적용_건", [])
+        if 주요미적용_all and 국가:
+            gov_미적용 = []
+            for c in 주요미적용_all:
+                vals = list(c.values())
+                grp_val = str(vals[4]) if len(vals) > 4 else ""
+                if "정부" in grp_val or "국가" in grp_val:
+                    gov_미적용.append(vals)
+            gov_미적용.sort(key=lambda v: v[3] if len(v) > 3 else 0, reverse=True)
+            if gov_미적용:
+                with st.expander(f"🔍 정부 및 국가공공기관 미적용 계약 상세 ({len(gov_미적용)}건)", expanded=False):
+                    for vi, vals in enumerate(gov_미적용[:30]):
+                        ct_name = str(vals[2]) if len(vals) > 2 else ""
+                        ct_amt = vals[3] if len(vals) > 3 else 0
+                        ct_agency = str(vals[5]) if len(vals) > 5 else ""
+                        ct_sector = str(vals[0]) if len(vals) > 0 else ""
+                        ct_method = str(vals[1]) if len(vals) > 1 else ""
+                        rbg = "#fafbfe" if vi % 2 == 1 else COLORS["card_bg"]
+                        st.markdown(f'''<div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid {COLORS['card_border']}; background:{rbg};">
+<div style="flex:0.3; font-size:0.82rem; font-weight:600; color:{COLORS['text_light']};">{vi+1}</div>
+<div style="flex:3; font-size:0.88rem; font-weight:600; color:{COLORS['text_dark']};">{ct_name}</div>
+<div style="flex:1; font-size:0.82rem; color:{COLORS['text_light']};">{ct_agency}</div>
+<div style="flex:0.6;"><span style="padding:2px 8px; border-radius:3px; background:#e9ecef; color:#364a63; font-size:0.75rem; font-weight:600;">{ct_sector}</span></div>
+<div style="flex:1; text-align:right; font-size:0.95rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(ct_amt)}</div>
+</div>''', unsafe_allow_html=True)
+
         st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
         부산 = 현황.get("부산시 및 소관기관_지역제한", {})
         busan_criteria = f'<div style="font-size:0.72rem; font-weight:600; color:{COLORS["text_dark"]}; margin-bottom:4px;">지방계약법 지역제한 기준</div><div style="font-size:0.7rem; color:{COLORS["text_light"]}; line-height:1.7;">· 종합공사: 추정가격 <b>100억</b> 이하<br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>3.3억</b> 이하</div>'
-        make_donut_card("부산시 및 소관기관", '<img src="https://www.busan.go.kr/humanframe/global/assets/img/common/busan_logo.svg" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #6576ff 0%, #8B5CF6 100%)", 부산, busan_criteria)
+        busan_card_title = make_donut_card("부산시 및 소관기관", '<img src="https://www.busan.go.kr/humanframe/global/assets/img/common/busan_logo.svg" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #6576ff 0%, #8B5CF6 100%)", 부산, busan_criteria)
+
+        # ── 부산시 미적용 계약 상세 조회 ──
+        if 주요미적용_all and 부산:
+            busan_미적용 = []
+            for c in 주요미적용_all:
+                vals = list(c.values())
+                grp_val = str(vals[4]) if len(vals) > 4 else ""
+                if "부산" in grp_val:
+                    busan_미적용.append(vals)
+            busan_미적용.sort(key=lambda v: v[3] if len(v) > 3 else 0, reverse=True)
+            if busan_미적용:
+                with st.expander(f"🔍 부산시 및 소관기관 미적용 계약 상세 ({len(busan_미적용)}건)", expanded=False):
+                    for vi, vals in enumerate(busan_미적용[:30]):
+                        ct_name = str(vals[2]) if len(vals) > 2 else ""
+                        ct_amt = vals[3] if len(vals) > 3 else 0
+                        ct_agency = str(vals[5]) if len(vals) > 5 else ""
+                        ct_sector = str(vals[0]) if len(vals) > 0 else ""
+                        ct_method = str(vals[1]) if len(vals) > 1 else ""
+                        rbg = "#fafbfe" if vi % 2 == 1 else COLORS["card_bg"]
+                        st.markdown(f'''<div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid {COLORS['card_border']}; background:{rbg};">
+<div style="flex:0.3; font-size:0.82rem; font-weight:600; color:{COLORS['text_light']};">{vi+1}</div>
+<div style="flex:3; font-size:0.88rem; font-weight:600; color:{COLORS['text_dark']};">{ct_name}</div>
+<div style="flex:1; font-size:0.82rem; color:{COLORS['text_light']};">{ct_agency}</div>
+<div style="flex:0.6;"><span style="padding:2px 8px; border-radius:3px; background:#e8eaff; color:#6576ff; font-size:0.75rem; font-weight:600;">{ct_sector}</span></div>
+<div style="flex:1; text-align:right; font-size:0.95rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(ct_amt)}</div>
+</div>''', unsafe_allow_html=True)
+
         st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
 
         st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px 6px 0 0; padding:16px 20px; display:flex; justify-content:space-between; align-items:center;">
