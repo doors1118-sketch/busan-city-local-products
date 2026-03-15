@@ -12,7 +12,7 @@ from core_calc import (
     parse_corp_shares, extract_dminstt_codes, dedup_by_dcsn,
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
-    load_bid_dict, load_award_sets,
+    load_bid_dict, load_award_sets, BUSAN_BIZNO_PREFIXES,
 )
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -58,6 +58,15 @@ def build_cache():
         WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
         GROUP BY rprsntDtlPrdnm
     """, conn_cp).set_index('rprsntDtlPrdnm')['cnt'].to_dict()
+    # 대표세부품명별 부산 업체명 리스트 (유출품목 업체 검색용, 상위 20개)
+    supplier_names_df = pd.read_sql("""
+        SELECT rprsntDtlPrdnm, corpNm FROM company_master
+        WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+        AND corpNm IS NOT NULL AND corpNm != ''
+    """, conn_cp)
+    supplier_names_map = {}
+    for prd, grp in supplier_names_df.groupby('rprsntDtlPrdnm'):
+        supplier_names_map[prd] = grp['corpNm'].tolist()[:20]
     conn_cp.close()
     
     # 쇼핑몰 품목분류→세부품명 매핑 (상위분류로 검색 시 세부분류 업체까지 합산)
@@ -77,11 +86,23 @@ def build_cache():
         cnt = supplier_map.get(item_nm, 0)
         if cnt > 0:
             return cnt
-        # 상위분류 → 세부분류 매핑으로 합산
         children = cat_children.get(item_nm, set())
         if children:
             return sum(supplier_map.get(child, 0) for child in children)
         return 0
+    
+    def get_supplier_names(item_nm):
+        """품목명으로 부산 공급업체명 리스트 조회"""
+        names = supplier_names_map.get(item_nm, [])
+        if names:
+            return names
+        children = cat_children.get(item_nm, set())
+        if children:
+            all_names = []
+            for child in children:
+                all_names.extend(supplier_names_map.get(child, []))
+            return all_names[:20]
+        return []
     
     conn = sqlite3.connect(DB_PROCUREMENT)
     
@@ -243,11 +264,34 @@ def build_cache():
             "유출건수": item_count[item_nm],
             "주요수요기관": top_ag,
             "부산공급업체": supplier_cnt,
+            "부산업체명": get_supplier_names(item_nm),
         })
     print(f"    완료 ({len(df):,}건, 유출품목 {len(leakage_shopping)}개)")
     
     # --- 공사/용역/물품 유출계약 Top 10 (core_calc 필터 적용 후) ---
     print("  [유출계약] 집계 중...")
+    
+    # bizno→지역 매핑 구축 (낙찰자 주소에서 추출)
+    bizno_region = {}
+    for award_tbl in ['busan_award_cnstwk', 'busan_award_servc', 'busan_award_thng']:
+        try:
+            cur = conn.cursor()
+            cur.execute(f"SELECT bidwinnrBizno, bidwinnrAdrs FROM {award_tbl} WHERE bidwinnrAdrs IS NOT NULL AND bidwinnrAdrs != ''")
+            for bno_row in cur.fetchall():
+                bno = str(bno_row[0]).replace('-','').strip()
+                addr = str(bno_row[1]).strip()
+                if bno and addr:
+                    # 주소에서 시/도 추출 (예: 부산광역시→부산, 서울특별시→서울)
+                    city = addr.split()[0] if addr else ''
+                    if '광역시' in city: city = city.replace('광역시','')
+                    elif '특별시' in city: city = city.replace('특별시','')
+                    elif '특별자치' in city: city = city.split('특별자치')[0]
+                    elif len(city) > 2 and city.endswith(('도','시')): city = city[:-1]
+                    if city and bno not in bizno_region:
+                        bizno_region[bno] = city
+        except: pass
+    print(f"    bizno→지역 매핑: {len(bizno_region):,}건")
+    
     leak_contracts = []
     
     # 공사: 이미 필터된 df_filtered 재사용
@@ -268,12 +312,12 @@ def build_cache():
             parts = chunk.split(']')[0].split('^')
             if len(parts) >= 10:
                 bno = str(parts[9]).replace('-','').strip()
-                if bno not in biznos and len(parts) >= 2:
-                    corp_nm = parts[1]; break
+                if bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES) and len(parts) >= 4:
+                    corp_nm = parts[3].strip(); break
         leak_contracts.append({
             "분야": "공사", "수요기관": unit or '', "계약명": str(row.get('cnstwkNm',''))[:60],
             "계약액": round(amt), "유출액": round(nloc),
-            "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:25],
+            "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
             "그룹": grp,
         })
     
@@ -307,12 +351,12 @@ def build_cache():
                 parts = chunk.split(']')[0].split('^')
                 if len(parts) >= 10:
                     bno = str(parts[9]).replace('-','').strip()
-                    if bno not in biznos and len(parts) >= 2:
-                        corp_nm = parts[1]; break
+                    if bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES) and len(parts) >= 4:
+                        corp_nm = parts[3].strip(); break
             leak_contracts.append({
                 "분야": sector, "수요기관": unit or '', "계약명": str(row.get('cntrctNm',''))[:60],
                 "계약액": round(amt), "유출액": round(nloc),
-                "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:25],
+                "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
                 "그룹": grp,
             })
     conn2.close()
@@ -321,8 +365,10 @@ def build_cache():
     leakage_contracts = leak_contracts[:50]
     print(f"    유출계약(공사/용역/물품) 후보 {len(leak_contracts):,}건 중 Top 50 선정")
     
-    # ========== 보호제도 미적용 분석 (국가/부산시 분리) ==========
-    print("  [보호제도] 분석 중...")
+    # ========== 보호제도 미적용 분석 (계약 기반) ==========
+    # 계약DB에서 출발 → 일반/제한경쟁 → 지분율로 미적용 판단
+    print("  [보호제도] 계약 기반 분석 중...")
+
     SPECIALTY_TYPES = ['전기공사', '정보통신공사', '소방시설공사', '기계설비공사',
                        '전기', '통신', '소방', '기계설비', '기계공사', '정보통신']
     PROT_THRESHOLDS = {
@@ -335,87 +381,151 @@ def build_cache():
     prot_by_agency = defaultdict(lambda: {'total': 0, 'applied': 0, 'unapplied': 0, 'unapplied_amt': 0, 'grp': ''})
     prot_violations = []
 
-    price_rows = pd.read_sql("""SELECT bidNtceNo, bidNtceNm, presmptPrce, sector, dminsttCd,
-        dminsttNm, cntrctCnclsMthdNm, cnstrtsiteRgnNm, mainCnsttyNm,
-        prtcptLmtRgnNm, rgnDutyJntcontrctYn
-        FROM bid_notices_price
-        WHERE presmptPrce IS NOT NULL AND presmptPrce != '' AND presmptPrce != '0'
-        AND sector IN ('공사', '용역')
-        AND cntrctCnclsMthdNm IN ('일반경쟁', '제한경쟁')""", conn)
+    # 공고 추정가격 lookup (계약→공고 역매칭용)
+    price_map = {}
+    for _r in conn.execute("SELECT REPLACE(bidNtceNo,'-',''), presmptPrce FROM bid_notices_price WHERE presmptPrce IS NOT NULL AND presmptPrce != ''").fetchall():
+        if _r[0] and _r[1]:
+            try: price_map[_r[0]] = float(_r[1])
+            except: pass
 
-    for _, pr in price_rows.iterrows():
-        price = float(pr['presmptPrce'])
-        if price <= 0: continue
-        grp = inst_grp.get(pr['dminsttCd'])
-        if not grp or grp not in PROT_THRESHOLDS: continue
-        sector = pr['sector']
-        unit = get_unit(pr['dminsttCd'])
-        if not unit: continue
-        method = str(pr['cntrctCnclsMthdNm'] or '')
-        if sector == '공사':
-            site = str(pr.get('cnstrtsiteRgnNm') or '').strip()
-            if not site or '부산' not in site: continue
-            main_type = str(pr.get('mainCnsttyNm') or '').strip()
-            if main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
-            elif any(k in str(pr['bidNtceNm'] or '') for k in SPECIALTY_TYPES): sub = '전문공사'
-            else: sub = '종합공사'
-        elif sector == '용역':
-            # 용역: 키워드 필터로 타지역 배제 (국가기관만 - 부산시는 통과)
-            lrg = inst_dict.get(pr['dminsttCd'], {}).get('cate_lrg', '')
-            fake_row = {'cntrctNm': str(pr['bidNtceNm'] or ''), 'cntrctInsttOfclTelNo': ''}
-            if is_non_busan_contract(fake_row, lrg): continue
-            sub = '용역'
-        else: continue
+    # 공고 현장지역 lookup (공사 현장 필터용)
+    site_map = {}
+    for _r in conn.execute("SELECT REPLACE(bidNtceNo,'-',''), cnstrtsiteRgnNm FROM bid_notices_price WHERE cnstrtsiteRgnNm IS NOT NULL").fetchall():
+        if _r[0]: site_map[_r[0]] = str(_r[1] or '')
 
-        ntce_clean = str(pr['bidNtceNo']).replace('-','').strip()
-        rgn_code = str(pr.get('prtcptLmtRgnNm') or '').strip()
-        is_busan_rgn = rgn_code.startswith('26') if rgn_code else False
-        is_rgn = (method == '제한경쟁') and (ntce_clean in award_all or is_busan_rgn)
-        jnt_yn = str(pr.get('rgnDutyJntcontrctYn') or '').strip().upper()
-        threshold = PROT_THRESHOLDS[grp].get(sub)
+    prot_contract_queries = {
+        'cnstwk_cntrct': ('공사', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
+            dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
+            cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm
+            FROM [cnstwk_cntrct]
+            WHERE cntrctCnclsMthdNm IN ('일반경쟁', '제한경쟁')"""),
+        'servc_cntrct': ('용역', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
+            dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
+            cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm
+            FROM [servc_cntrct]
+            WHERE cntrctCnclsMthdNm IN ('일반경쟁', '제한경쟁')"""),
+    }
 
-        if grp == '정부 및 국가공공기관':
-            if not threshold or price > threshold: continue
-            gov_stats[sub]['기준이하'] += 1
-            prot_by_agency[unit]['total'] += 1
-            prot_by_agency[unit]['grp'] = grp
-            if is_rgn:
-                gov_stats[sub]['지역제한'] += 1
-                prot_by_agency[unit]['applied'] += 1
-            elif jnt_yn == 'Y':
-                gov_stats[sub]['의무공동'] += 1
-                prot_by_agency[unit]['applied'] += 1
+    for tbl, (sector, query) in prot_contract_queries.items():
+        rows = pd.read_sql(query, conn)
+        # 장기계속 후속차수 제외 (최초계약만)
+        rows = dedup_by_dcsn(rows)
+        dcsn = rows['dcsnCntrctNo'].fillna('').astype(str).str.strip()
+        rows = rows[~((dcsn.str.len() >= 10) & (~dcsn.str.endswith('00')))]
+
+        for _, row in rows.iterrows():
+            ntce_clean = str(row.get('ntceNo', '')).replace('-','').strip()
+            method = str(row.get('cntrctCnclsMthdNm', ''))
+            amt = float(row.get('thtmCntrctAmt', 0) or 0)
+            if amt == 0: amt = float(row.get('totCntrctAmt', 0) or 0)
+            if amt <= 0: continue
+            name = str(row.get('cntrctNm', '') or '')
+
+            # 기관 매칭
+            cd = str(row.get('dminsttCd', '')).strip()
+            matched_cd = cd if cd in inst_dict else None
+            if not matched_cd:
+                for dcd in extract_dminstt_codes(row.get('dminsttList', '')):
+                    if dcd in inst_dict:
+                        matched_cd = dcd; break
+            if not matched_cd: continue
+
+            grp = inst_grp.get(matched_cd)
+            unit = get_unit(matched_cd)
+            if not grp or grp not in PROT_THRESHOLDS or not unit: continue
+
+            # 공사: 현장 타지역 배제
+            if sector == '공사':
+                site = site_map.get(ntce_clean, '')
+                if site and '부산' not in site: continue
+                # 공사 세분류
+                main_type = str(row.get('mainCnsttyNm', '') or '').strip()
+                if main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
+                elif any(k in name for k in SPECIALTY_TYPES): sub = '전문공사'
+                else: sub = '종합공사'
             else:
-                gov_stats[sub]['미적용'] += 1
-                gov_stats[sub]['미적용액'] += price
-                prot_by_agency[unit]['unapplied'] += 1
-                prot_by_agency[unit]['unapplied_amt'] += price
-                prot_violations.append({"분야": sub, "계약방식": method,
-                    "공고명": str(pr['bidNtceNm'] or '')[:55], "추정가격": round(price),
-                    "기관그룹": grp, "수요기관": str(pr['dminsttNm'] or '')[:25], "비교단위": unit})
+                # 용역: 타지역 키워드 필터
+                lrg = inst_dict.get(matched_cd, {}).get('cate_lrg', '')
+                if is_non_busan_contract(row, lrg): continue
+                sub = '용역'
 
-        elif grp == '부산광역시 및 소속기관':
-            # 1단계: 기준이하 지역제한
-            if threshold and price <= threshold:
-                bsn_stats[sub]['기준이하'] += 1
+            # 추정가격 (공고매칭 → 없으면 계약금액)
+            est_price = price_map.get(ntce_clean, amt)
+            threshold = PROT_THRESHOLDS[grp].get(sub)
+            if not threshold: continue
+
+            # 낙찰업체 지분 확인
+            blist = parse_corp_shares(row.get('corpList', ''))
+            if not blist: continue
+            local_share = sum(s for b, s in blist if b in biznos or (len(b)>=3 and b[:3] in BUSAN_BIZNO_PREFIXES))
+
+            # ===== 판정 로직 =====
+            if grp == '정부 및 국가공공기관':
+                if est_price > threshold: continue  # 기준 초과 → 대상 아님
+                gov_stats[sub]['기준이하'] += 1
                 prot_by_agency[unit]['total'] += 1
                 prot_by_agency[unit]['grp'] = grp
-                if is_rgn:
-                    bsn_stats[sub]['지역제한'] += 1
+                if method == '제한경쟁':
+                    gov_stats[sub]['지역제한'] += 1
+                    prot_by_agency[unit]['applied'] += 1
+                elif local_share >= 30:
+                    gov_stats[sub]['의무공동'] += 1  # 30%+ 지역 → 보호 작동
                     prot_by_agency[unit]['applied'] += 1
                 else:
-                    bsn_stats[sub]['미적용'] += 1
-                    bsn_stats[sub]['미적용액'] += price
+                    gov_stats[sub]['미적용'] += 1
+                    gov_stats[sub]['미적용액'] += est_price
                     prot_by_agency[unit]['unapplied'] += 1
-                    prot_by_agency[unit]['unapplied_amt'] += price
+                    prot_by_agency[unit]['unapplied_amt'] += est_price
                     prot_violations.append({"분야": sub, "계약방식": method,
-                        "공고명": str(pr['bidNtceNm'] or '')[:55], "추정가격": round(price),
-                        "기관그룹": grp, "수요기관": str(pr['dminsttNm'] or '')[:25], "비교단위": unit})
-            # 2단계: 전체 건(금액 무관) 중 지역제한·수의 제외 → 의무공동
-            if not is_rgn:
-                sec_key = '공사' if sub in ('종합공사', '전문공사') else '용역'
-                bsn_jnt[sec_key]['모수'] += 1
-                if jnt_yn == 'Y': bsn_jnt[sec_key]['의무공동'] += 1
+                        "공고명": name[:55], "추정가격": round(est_price),
+                        "기관그룹": grp, "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
+                        "비교단위": unit})
+
+            elif grp == '부산광역시 및 소속기관':
+                if sector == '공사' and est_price > threshold:
+                    # 100억 이상 공사: 의무공동도급 (40%+ 지역지분)
+                    bsn_stats[sub]['기준이하'] += 1
+                    prot_by_agency[unit]['total'] += 1
+                    prot_by_agency[unit]['grp'] = grp
+                    if local_share >= 40:
+                        bsn_stats[sub]['지역제한'] += 1
+                        prot_by_agency[unit]['applied'] += 1
+                    else:
+                        bsn_stats[sub]['미적용'] += 1
+                        bsn_stats[sub]['미적용액'] += est_price
+                        prot_by_agency[unit]['unapplied'] += 1
+                        prot_by_agency[unit]['unapplied_amt'] += est_price
+                        prot_violations.append({"분야": sub, "계약방식": method,
+                            "공고명": name[:55], "추정가격": round(est_price),
+                            "기관그룹": grp, "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
+                            "비교단위": unit})
+                elif est_price <= threshold:
+                    # 기준이하: 지역제한경쟁 대상
+                    bsn_stats[sub]['기준이하'] += 1
+                    prot_by_agency[unit]['total'] += 1
+                    prot_by_agency[unit]['grp'] = grp
+                    if method == '제한경쟁':
+                        bsn_stats[sub]['지역제한'] += 1
+                        prot_by_agency[unit]['applied'] += 1
+                    elif local_share >= 100:
+                        bsn_stats[sub]['지역제한'] += 1  # 100% 부산 수주 → OK
+                        prot_by_agency[unit]['applied'] += 1
+                    else:
+                        bsn_stats[sub]['미적용'] += 1
+                        bsn_stats[sub]['미적용액'] += est_price
+                        prot_by_agency[unit]['unapplied'] += 1
+                        prot_by_agency[unit]['unapplied_amt'] += est_price
+                        prot_violations.append({"분야": sub, "계약방식": method,
+                            "공고명": name[:55], "추정가격": round(est_price),
+                            "기관그룹": grp, "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
+                            "비교단위": unit})
+                # 의무공동도급 집계
+                if method != '제한경쟁':
+                    sec_key = '공사' if sub in ('종합공사', '전문공사') else '용역'
+                    bsn_jnt[sec_key]['모수'] += 1
+                    jnt_yn = str(row.get('rgnDutyJntcontrctYn', '') or '').strip().upper()
+                    if jnt_yn == 'Y' or (sector == '공사' and local_share >= 30 and local_share < 100):
+                        bsn_jnt[sec_key]['의무공동'] += 1
 
     # --- B) 수의계약 (장기계속 후속차수 제외: 최초계약만 포함) ---
     # dcsnCntrctNo 끝2자리 '00' = 최초계약, 그 외 = 후속차수(이미 업체 결정된 건)
@@ -437,6 +547,7 @@ def build_cache():
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
     }
     suui_stats = defaultdict(lambda: {'total': 0, 'busan': 0, 'non_busan': 0, 'non_busan_amt': 0})
+    suui_leakages = []
     for tbl, (sector, sql) in suui_queries.items():
         suui_df = pd.read_sql(sql, conn)
         suui_df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
@@ -474,6 +585,10 @@ def build_cache():
                 suui_stats[key]['non_busan_amt'] += amt
                 prot_by_agency[unit]['unapplied'] += 1
                 prot_by_agency[unit]['unapplied_amt'] += amt
+                suui_leakages.append({
+                    "분야": sector, "계약명": str(row.get('cntrctNm', '') or '')[:60],
+                    "금액": round(amt), "그룹": grp, "수요기관": unit,
+                })
 
     prot_violations.sort(key=lambda x: x['추정가격'], reverse=True)
 
@@ -582,18 +697,31 @@ def build_cache():
         "6_유출품목_쇼핑몰": leakage_shopping,
         "7_유출계약_주요": leakage_contracts,
         "8_보호제도_현황": protection_summary,
-        "8_보호제도_미적용": prot_violations[:10],
+        "8_보호제도_미적용": prot_violations,
         "8_보호제도_기관별": prot_agency_ranking[:20],
         "9_수의계약": {
             key: {**dict(suui_stats[key]),
                   "busan_amt": round(suui_stats[key].get('busan_amt', 0)),
                   "수주율_건수": round(suui_stats[key]['busan']/suui_stats[key]['total']*100, 1) if suui_stats[key]['total'] > 0 else 0}
             for key in suui_stats},
+        "9_수의계약_유출": sorted(suui_leakages, key=lambda x: x['금액'], reverse=True)[:20],
+        "9_수의계약_유출_기관별": (lambda: [
+            {"기관": k, "유출액": v["amt"], "건수": v["cnt"], "그룹": v["grp"]}
+            for k, v in sorted(
+                {item['수요기관']: {
+                    "amt": sum(x['금액'] for x in suui_leakages if x['수요기관'] == item['수요기관']),
+                    "cnt": sum(1 for x in suui_leakages if x['수요기관'] == item['수요기관']),
+                    "grp": item['그룹'],
+                } for item in suui_leakages}.items(),
+                key=lambda x: x[1]["amt"], reverse=True
+            )[:15]
+        ])(),
     }
 
     # 기관별 상세 검색용 데이터 (12_기관별_상세)
     agency_details = defaultdict(lambda: {
         "총발주액": 0, "총수주액": 0, "총수주율": 0, "그룹": "",
+        "분야별": {},
         "유출계약": []
     })
     
@@ -603,6 +731,12 @@ def build_cache():
             agency_details[unit]["총수주액"] += d["local"]
             grp = unit_to_grp.get(unit, "")
             if grp: agency_details[unit]["그룹"] = grp
+            # 분야별 데이터 추가
+            agency_details[unit]["분야별"][s] = {
+                "발주액": round(d["total"]),
+                "수주액": round(d["local"]),
+                "수주율": pct(d["total"], d["local"]),
+            }
             
     for unit, details in agency_details.items():
         details["총수주율"] = pct(details["총발주액"], details["총수주액"])
@@ -764,6 +898,96 @@ def build_cache():
     for s in sectors:
         si = sector_impact[s]
         print(f"      {s}({SECTOR_COEFFS[s]['매핑산업']}): {si['지역업체수주액']/1e8:,.0f}억 → 부가가치 {si['지역생산부가가치']/1e8:,.0f}억 / 고용 {si['지역고용기여도_명']:,.0f}명")
+    
+    # ========== 주간 데이터 집계 (월~일 기준) ==========
+    print("  [주간 데이터] 집계 중...")
+    from datetime import date, timedelta
+    conn = sqlite3.connect(DB_PROCUREMENT)  # 재연결 (line 539에서 close됨)
+    
+    today = date.today()
+    this_monday = today - timedelta(days=today.weekday())
+    last_monday = this_monday - timedelta(days=7)
+    this_sunday = this_monday + timedelta(days=6)
+    last_sunday = last_monday + timedelta(days=6)
+    
+    def calc_weekly(start_dt, end_dt):
+        start_s = start_dt.strftime('%Y-%m-%d')
+        end_s = end_dt.strftime('%Y-%m-%d')
+        wk = defaultdict(lambda: {'total': 0, 'local': 0})
+        for tbl, nm, award_key in [('cnstwk_cntrct','공사','공사'),
+                                    ('servc_cntrct','용역','용역'),
+                                    ('thng_cntrct','물품','물품')]:
+            extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
+            try:
+                wdf = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
+                    totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
+                    {'cnstwkNm' if tbl=='cnstwk_cntrct' else 'cntrctNm'} as cntrctNm,
+                    cntrctInsttOfclTelNo{extra_col}
+                    FROM [{tbl}]
+                    WHERE cntrctCnclsDate >= '{start_s}' AND cntrctCnclsDate <= '{end_s}'""", conn)
+                wdf.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
+                wdf = dedup_by_dcsn(wdf)
+                for _, row in wdf.iterrows():
+                    result = process_contract_row(row, inst_dict, biznos,
+                                                   use_location_filter=True,
+                                                   bid_dict=bid_dict,
+                                                   award_set=award_sets.get(award_key, set()))
+                    if not result: continue
+                    cd, amt, loc = result
+                    lrg = inst_grp.get(cd)
+                    if not lrg: continue
+                    wk[lrg]['total'] += amt; wk[lrg]['local'] += loc
+                    wk['전체']['total'] += amt; wk['전체']['local'] += loc
+            except:
+                pass
+        try:
+            sdf = pd.read_sql(f"""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
+                prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
+                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm
+                FROM shopping_cntrct
+                WHERE dlvrReqRcptDate >= '{start_s}' AND dlvrReqRcptDate <= '{end_s}'""", conn)
+            sdf['dlvrReqChgOrd'] = pd.to_numeric(sdf['dlvrReqChgOrd'], errors='coerce').fillna(0)
+            sdf.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
+            sdf.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
+            for _, row in sdf.iterrows():
+                result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
+                if not result: continue
+                cd, amt, loc = result
+                lrg = inst_grp.get(cd)
+                if not lrg: continue
+                wk[lrg]['total'] += amt; wk[lrg]['local'] += loc
+                wk['전체']['total'] += amt; wk['전체']['local'] += loc
+        except:
+            pass
+        return dict(wk)
+    
+    this_week_data = calc_weekly(this_monday, this_sunday)
+    last_week_data = calc_weekly(last_monday, last_sunday)
+    
+    weekly_cache = {
+        "이번주_기간": f"{this_monday.strftime('%m/%d')}~{this_sunday.strftime('%m/%d')}",
+        "지난주_기간": f"{last_monday.strftime('%m/%d')}~{last_sunday.strftime('%m/%d')}",
+    }
+    for grp_key in set(list(this_week_data.keys()) + list(last_week_data.keys())):
+        tw = this_week_data.get(grp_key, {'total': 0, 'local': 0})
+        lw = last_week_data.get(grp_key, {'total': 0, 'local': 0})
+        tw_rate = round(tw['local'] / tw['total'] * 100, 1) if tw['total'] > 0 else 0
+        lw_rate = round(lw['local'] / lw['total'] * 100, 1) if lw['total'] > 0 else 0
+        weekly_cache[grp_key] = {
+            "이번주_계약액": round(tw['total']),
+            "이번주_수주액": round(tw['local']),
+            "이번주_수주율": tw_rate,
+            "지난주_계약액": round(lw['total']),
+            "지난주_수주액": round(lw['local']),
+            "지난주_수주율": lw_rate,
+            "수주율_증감": round(tw_rate - lw_rate, 1),
+        }
+    
+    cache["13_주간데이터"] = weekly_cache
+    tw_all = weekly_cache.get("전체", {})
+    print(f"    이번주({weekly_cache['이번주_기간']}): 계약액 {tw_all.get('이번주_계약액',0)/1e8:,.0f}억, 수주율 {tw_all.get('이번주_수주율',0)}%")
+    print(f"    지난주({weekly_cache['지난주_기간']}): 계약액 {tw_all.get('지난주_계약액',0)/1e8:,.0f}억, 수주율 {tw_all.get('지난주_수주율',0)}%")
+    print(f"    수주율 증감: {tw_all.get('수주율_증감',0):+.1f}%p")
     
     with open(CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)

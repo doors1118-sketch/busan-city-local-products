@@ -92,6 +92,8 @@ def get_private_contract():
     return {
         "generated_at": cache.get("generated_at"),
         "수의계약": cache.get("9_수의계약", {}),
+        "유출_수의계약": cache.get("9_수의계약_유출", []),
+        "유출_기관별": cache.get("9_수의계약_유출_기관별", []),
     }
 
 @app.get("/api/local-companies", tags=["지역업체"])

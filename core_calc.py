@@ -47,6 +47,10 @@ NON_BUSAN_KEYWORDS = [
     '구로', '금천', '광진', '성동', '중랑',
 ]
 
+# 부산 관할 세무서 사업자번호 앞 3자리 (보조 판별용)
+# 601~629: 부산지방국세청 관할 세무서 코드
+BUSAN_BIZNO_PREFIXES = {str(i) for i in range(601, 630)}
+
 # 부산 지명과 겹치는 키워드 예외
 BUSAN_EXCEPTIONS = {
     '대구': ['해운대구'],
@@ -198,16 +202,31 @@ def filter_servc_by_site(df, inst_dict=None):
     
     일반용역은 납품장소가 비정형('과업내역에 따름' 등)일 수 있으므로,
     실제 지역명이 포함된 경우에만 필터 적용.
+    추가: 현장지역 필드가 비어있을 때 계약명에서 비부산 지역 키워드 보조 감지.
     """
     if 'cnstrtsiteRgnNm' not in df.columns:
         return df, 0, 0
     
     site = df['cnstrtsiteRgnNm'].fillna('')
     
-    # 실제 지역명이 있고 + 부산이 아닌 건만 배제
+    # 1차: 실제 지역명이 있고 + 부산이 아닌 건 배제
     has_real_region = site.apply(lambda s: any(m in s for m in REGION_MARKERS) if s else False)
     is_busan = site.str.contains('부산', na=False)
     mask_outside = has_real_region & ~is_busan
+    
+    # 2차: 현장지역 필드가 비어있을 때 계약명에서 비부산 지역 키워드 보조 감지
+    NON_BUSAN_NAME_MARKERS = ['울산', '경남', '경북', '대구', '서울', '인천', '대전', '광주', '세종',
+                               '경기', '강원', '충북', '충남', '전북', '전남', '제주',
+                               '창원', '김해', '양산', '거제', '통영', '진주', '마산',
+                               '포항', '구미', '경주', '안동', '천안', '청주', '전주', '광양', '순천',
+                               '울주군', '장안', '서생', '온산']
+    if 'cntrctNm' in df.columns:
+        cnm = df['cntrctNm'].fillna('')
+        site_empty = (site == '')
+        name_has_nonbusan = cnm.apply(lambda n: any(m in str(n) for m in NON_BUSAN_NAME_MARKERS) if n else False)
+        name_has_busan = cnm.str.contains('부산', na=False)
+        mask_name_outside = site_empty & name_has_nonbusan & ~name_has_busan
+        mask_outside = mask_outside | mask_name_outside
     
     # 기관 그룹별 차등 적용: 부산시 소속기관은 현장 필터 스킵
     if inst_dict is not None and 'dminsttCd' in df.columns:
@@ -399,10 +418,10 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         if not bypassed:
             return None
 
-    # 지역업체 수주액
+    # 지역업체 수주액 (마스터 DB + 사업자번호 앞3자리 보조 판별)
     loc_amt = 0
     for bno, share in biz_nos:
-        if bno in biznos:
+        if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
             loc_amt += amt * (share / 100.0)
 
     return (matched_cd, amt, loc_amt)
