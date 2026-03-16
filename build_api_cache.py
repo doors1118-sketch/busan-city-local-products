@@ -478,9 +478,12 @@ def build_cache():
                 if site and '부산' not in site: continue
                 # 전화번호/계약명 키워드로 타지역 계약 추가 배제
                 lrg = inst_dict.get(matched_cd, {}).get('cate_lrg', '')
-                if is_non_busan_contract(row, lrg):
+                non_busan = is_non_busan_contract(row, lrg)
+                if non_busan:
                     bypassed = False
-                    if bid_dict and ntce_clean in bid_dict:
+                    if non_busan == 'tel' and ntce_clean and ntce_clean in award_all:
+                        bypassed = True
+                    if not bypassed and bid_dict and ntce_clean in bid_dict:
                         if check_busan_restriction(bid_dict[ntce_clean].get('rgnLmtInfo')):
                             bypassed = True
                     if not bypassed:

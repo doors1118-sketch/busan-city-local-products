@@ -153,7 +153,8 @@ def dedup_by_dcsn(df):
 # 3. 필터 함수
 # ============================================================
 def is_non_busan_contract(row, lrg):
-    """전화번호+키워드로 타지역 계약 판별 (부산시 소속기관은 항상 통과)"""
+    """전화번호+키워드로 타지역 계약 판별.
+    Returns: 'keyword' (키워드 매칭), 'tel' (전화번호만), False (부산)"""
     if lrg == '부산광역시 및 소속기관':
         return False
     # 전화번호
@@ -169,7 +170,11 @@ def is_non_busan_contract(row, lrg):
                 continue
             has_kw = True
             break
-    return is_non_busan_tel or has_kw
+    if has_kw:
+        return 'keyword'
+    if is_non_busan_tel:
+        return 'tel'
+    return False
 
 
 def check_busan_restriction(rgn_json_str):
@@ -421,11 +426,15 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
     lrg = agency['cate_lrg']
 
     # 타지역 계약 필터
-    if use_location_filter and not is_shopping and is_non_busan_contract(row, lrg):
+    non_busan = is_non_busan_contract(row, lrg)
+    if use_location_filter and not is_shopping and non_busan:
         bypassed = False
         ntce_no = str(row.get('ntceNo', '')).replace('-', '').strip()
-        # 부산 지역제한이 명시된 공고만 bypass (낙찰정보 bypass 제거됨)
-        if bid_dict and ntce_no in bid_dict:
+        # 전화번호만으로 잡힌 건은 award bypass 허용 (키워드 매칭은 확실한 타지역이라 bypass 불가)
+        if non_busan == 'tel' and award_set and ntce_no in award_set:
+            bypassed = True
+        # 부산 지역제한이 명시된 공고는 항상 bypass
+        if not bypassed and bid_dict and ntce_no in bid_dict:
             if check_busan_restriction(bid_dict[ntce_no].get('rgnLmtInfo')):
                 bypassed = True
         if not bypassed:
