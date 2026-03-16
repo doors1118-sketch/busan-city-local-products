@@ -700,7 +700,7 @@ if page == "📊 종합현황":
                         path = "M" + "L".join(coords)
                         return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;"><path d="{path}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
                     
-                    th = f'font-size:0.75rem; font-weight:600; color:{COLORS["text_light"]}; text-transform:uppercase; letter-spacing:0.04em;'
+                    th = f'font-size:0.75rem; font-weight:600; color:{COLORS["text_light"]}; text-transform:uppercase; letter-spacing:0.04em; white-space:nowrap;'
                     header = f'<div style="display:flex; align-items:center; padding:14px 0; border-bottom:1px solid {COLORS["card_border"]};"><div style="flex:2; {th}">분야</div><div style="flex:1.5; {th}">총계약액</div><div style="flex:1.5; {th}">지역업체 수주액</div><div style="flex:1; {th}">비중</div><div style="flex:1.2; {th} text-align:center;">전주대비</div><div style="flex:1.5; {th} text-align:right;">주간추이</div></div>'
                     
                     rows = ""
@@ -809,7 +809,7 @@ if page == "📊 종합현황":
                         path = "M" + "L".join(coords)
                         return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block;"><path d="{path}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
                     
-                    th_g = f'font-size:0.75rem; font-weight:600; color:{COLORS["text_light"]}; text-transform:uppercase; letter-spacing:0.04em;'
+                    th_g = f'font-size:0.75rem; font-weight:600; color:{COLORS["text_light"]}; text-transform:uppercase; letter-spacing:0.04em; white-space:nowrap;'
                     header_g = f'<div style="display:flex; align-items:center; padding:14px 0; border-bottom:1px solid {COLORS["card_border"]};"><div style="flex:2; {th_g}">분야</div><div style="flex:1.5; {th_g}">총계약액</div><div style="flex:1.5; {th_g}">지역업체 수주액</div><div style="flex:1; {th_g}">비중</div><div style="flex:1.2; {th_g} text-align:center;">전주대비</div><div style="flex:1.5; {th_g} text-align:right;">주간추이</div></div>'
                     
                     rows_g = ""
