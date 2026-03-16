@@ -480,9 +480,7 @@ def build_cache():
                 lrg = inst_dict.get(matched_cd, {}).get('cate_lrg', '')
                 if is_non_busan_contract(row, lrg):
                     bypassed = False
-                    if ntce_clean and ntce_clean in award_all:
-                        bypassed = True
-                    if not bypassed and bid_dict and ntce_clean in bid_dict:
+                    if bid_dict and ntce_clean in bid_dict:
                         if check_busan_restriction(bid_dict[ntce_clean].get('rgnLmtInfo')):
                             bypassed = True
                     if not bypassed:

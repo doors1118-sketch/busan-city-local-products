@@ -42,7 +42,9 @@ NON_BUSAN_KEYWORDS = [
     # 특정 비부산 프로젝트 지명
     '웅상', '삼자현',
     # 전국 단위 사업
-    '국도',
+    '국도', '국가지원지방도',
+    # 권역명
+    '영남권', '호남권', '수도권', '충청권',
     # 서울 구 이름 (부산 구와 겹치지 않는 것)
     '관악', '동작', '강남', '송파', '강서', '강동', '마포', '영등포',
     '종로', '용산', '성북', '도봉', '노원', '은평', '서대문', '양천',
@@ -422,9 +424,8 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
     if use_location_filter and not is_shopping and is_non_busan_contract(row, lrg):
         bypassed = False
         ntce_no = str(row.get('ntceNo', '')).replace('-', '').strip()
-        if award_set and ntce_no in award_set:
-            bypassed = True
-        if not bypassed and bid_dict and ntce_no in bid_dict:
+        # 부산 지역제한이 명시된 공고만 bypass (낙찰정보 bypass 제거됨)
+        if bid_dict and ntce_no in bid_dict:
             if check_busan_restriction(bid_dict[ntce_no].get('rgnLmtInfo')):
                 bypassed = True
         if not bypassed:
