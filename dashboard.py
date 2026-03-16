@@ -512,7 +512,7 @@ if page == "📊 종합현황":
 <div style="flex:1; background:linear-gradient(135deg, #fef9ef 0%, #fdf0d5 100%); border:1px solid #f0d9a0; border-radius:6px; padding:14px 18px;">
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
 <div>
-<div style="font-size:0.78rem; color:#8a6d3b; font-weight:600;">지역총생산 부가가치 증가</div>
+<div style="font-size:0.78rem; color:#8a6d3b; font-weight:600; white-space:nowrap;">지역총생산 부가가치증가</div>
 <div style="font-size:1.35rem; font-weight:800; color:#5a4520; font-family:Nunito Sans,sans-serif;">{format_억(부가가치)}</div>
 </div>
 <div style="text-align:right;">

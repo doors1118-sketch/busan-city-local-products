@@ -174,12 +174,16 @@ procurement_contracts.db (전국 83만건)
 | API URL | http://49.50.133.160:8000/docs |
 | GitHub | [doors1118-sketch/busan-city-local-products](https://github.com/doors1118-sketch/busan-city-local-products) (Public) |
 
-#### 자동 배포 (cron)
+#### 수동 배포 (2026-03-16 변경)
 ```bash
-# 5분마다 GitHub에서 pull → API 서버 재시작
-*/5 * * * * cd /opt/busan && git pull origin main --ff-only && systemctl restart busan-api
+# [비활성화됨] 기존 자동 배포 cron (5분마다 pull) → 수동으로 전환
+# */5 * * * * cd /opt/busan && git pull origin main --ff-only && systemctl restart busan-api
+
+# 수동 배포 (서버에서 직접 실행)
+cd /opt/busan && git pull origin main --ff-only && systemctl restart busan-api
 ```
-- **사무실 워크플로우**: VS Code → GitHub 웹 업로드 → 5분 후 서버 자동 반영
+- **변경 사유**: 집에서 작업 중간 결과물이 GitHub에 올라가면 서버에 자동 반영되는 문제 방지
+- **사무실 워크플로우**: VS Code → GitHub push → **서버에서 수동 pull** (NCP 웹 콘솔 또는 SSH)
 - SSH는 사무실 네트워크에서 차단 (보안팀 승인 대기)
 - NCP 웹 콘솔로 긴급 작업 가능 (20분 제한)
 
