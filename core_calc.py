@@ -41,6 +41,8 @@ NON_BUSAN_KEYWORDS = [
     '새만금',
     # 특정 비부산 프로젝트 지명
     '웅상', '삼자현',
+    # 전국 단위 사업
+    '국도',
     # 서울 구 이름 (부산 구와 겹치지 않는 것)
     '관악', '동작', '강남', '송파', '강서', '강동', '마포', '영등포',
     '종로', '용산', '성북', '도봉', '노원', '은평', '서대문', '양천',
@@ -59,6 +61,7 @@ BUSAN_EXCEPTIONS = {
     '양산': ['양산단층'],           # 부산 관련 지질
     '고성': ['고성동'],             # 부산 고성동 (없지만 안전장치)
     '남해': ['남해안', '남해고속'],   # 부산 남해안 관련 공사
+    '국도': ['부산'],               # 부산 구간 국도 사업 허용
 }
 
 
@@ -135,6 +138,14 @@ def dedup_by_dcsn(df):
                     keep_mask[idx] = False
     
     df = df[keep_mask].drop(columns=['_dcsn_base', '_dcsn_ord'])
+    
+    # 추가: dcsnCntrctNo 완전 일치 중복 제거 (동일 확정번호의 다른 계약번호)
+    dcsn2 = df['dcsnCntrctNo'].fillna('').astype(str).str.strip()
+    has_dcsn2 = dcsn2.str.len() >= 10
+    dup_mask = has_dcsn2 & df.duplicated(subset=['dcsnCntrctNo'], keep='first')
+    if dup_mask.sum() > 0:
+        df = df[~dup_mask]
+    
     return df
 # ============================================================
 # 3. 필터 함수
@@ -219,7 +230,8 @@ def filter_servc_by_site(df, inst_dict=None):
                                '경기', '강원', '충북', '충남', '전북', '전남', '제주',
                                '창원', '김해', '양산', '거제', '통영', '진주', '마산',
                                '포항', '구미', '경주', '안동', '천안', '청주', '전주', '광양', '순천',
-                               '울주군', '장안', '서생', '온산']
+                               '울주군', '장안', '서생', '온산',
+                               '국도']
     if 'cntrctNm' in df.columns:
         cnm = df['cntrctNm'].fillna('')
         site_empty = (site == '')
