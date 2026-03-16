@@ -52,7 +52,45 @@ def build_cache():
     conn_cp = sqlite3.connect(DB_COMPANIES)
     biznos = set(pd.read_sql("SELECT bizno FROM company_master", conn_cp)['bizno']
                 .dropna().astype(str).str.replace('-','',regex=False).str.strip())
-    # 대표세부품명별 부산 업체 수 (유출품목 매칭용)
+    
+    # ========== 지점 사업자번호 확장 (대표자+업체명 매칭) ==========
+    # 계약서에 지점 번호로 등록된 부산업체를 biznos에 추가
+    import re
+    _master_by_ceo = defaultdict(list)
+    for _r in conn_cp.execute("SELECT bizno, corpNm, ceoNm FROM company_master WHERE ceoNm IS NOT NULL AND ceoNm != ''").fetchall():
+        _bno = str(_r[0]).replace('-','').strip()
+        _ceo = str(_r[2]).strip()
+        _corp = str(_r[1] or '').strip()
+        _norm = re.sub(r'주식회사|\(주\)|유한회사|\(유\)|사단법인|재단법인|\s', '', _corp)
+        _master_by_ceo[_ceo].append((_bno, _corp, _norm))
+    
+    _branch_biznos = set()
+    _conn_prot = sqlite3.connect(DB_PROCUREMENT)
+    for _tbl in ['cnstwk_cntrct', 'servc_cntrct', 'thng_cntrct']:
+        for (_corpList,) in _conn_prot.execute(f"SELECT corpList FROM [{_tbl}]").fetchall():
+            if not _corpList: continue
+            for _chunk in str(_corpList).split('[')[1:]:
+                _parts = _chunk.split(']')[0].split('^')
+                if len(_parts) >= 10:
+                    _bno = str(_parts[9]).replace('-','').strip()
+                    if _bno and len(_bno) >= 10 and _bno not in biznos and _bno not in _branch_biznos:
+                        _ceo = str(_parts[4]).strip() if len(_parts) > 4 else ''
+                        _name = str(_parts[3]).strip() if len(_parts) > 3 else ''
+                        if not _ceo or not _name: continue
+                        _candidates = _master_by_ceo.get(_ceo, [])
+                        if not _candidates: continue
+                        _norm_c = re.sub(r'주식회사|\(주\)|유한회사|\(유\)|사단법인|재단법인|\s', '', _name)
+                        if len(_norm_c) < 2: continue
+                        for _m_bno, _m_name, _m_norm in _candidates:
+                            if len(_m_norm) < 2: continue
+                            if _norm_c == _m_norm or (len(_m_norm) >= 3 and _m_norm in _norm_c) or (len(_norm_c) >= 3 and _norm_c in _m_norm):
+                                _branch_biznos.add(_bno)
+                                break
+    _conn_prot.close()
+    biznos.update(_branch_biznos)
+    print(f"  부산업체: {len(biznos) - len(_branch_biznos):,}개 (마스터) + {len(_branch_biznos)}개 (지점 매칭) = {len(biznos):,}개")
+    
+
     supplier_map = pd.read_sql("""
         SELECT rprsntDtlPrdnm, COUNT(*) as cnt FROM company_master
         WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
