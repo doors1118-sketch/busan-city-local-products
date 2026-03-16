@@ -434,10 +434,21 @@ def build_cache():
             unit = get_unit(matched_cd)
             if not grp or grp not in PROT_THRESHOLDS or not unit: continue
 
-            # 공사: 현장 타지역 배제
+            # 공사: 현장 타지역 배제 + 전화번호/키워드 필터 (수주율 계산과 동일)
             if sector == '공사':
                 site = site_map.get(ntce_clean, '')
                 if site and '부산' not in site: continue
+                # 전화번호/계약명 키워드로 타지역 계약 추가 배제
+                lrg = inst_dict.get(matched_cd, {}).get('cate_lrg', '')
+                if is_non_busan_contract(row, lrg):
+                    bypassed = False
+                    if ntce_clean and ntce_clean in award_all:
+                        bypassed = True
+                    if not bypassed and bid_dict and ntce_clean in bid_dict:
+                        if check_busan_restriction(bid_dict[ntce_clean].get('rgnLmtInfo')):
+                            bypassed = True
+                    if not bypassed:
+                        continue
                 # 공사 세분류
                 main_type = str(row.get('mainCnsttyNm', '') or '').strip()
                 if main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
