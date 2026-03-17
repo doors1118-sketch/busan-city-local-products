@@ -859,15 +859,10 @@ elif page == "🏆 기관별 순위":
                 top_list = grp_data.get("상위", [])
                 header_html = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #6576ff 0%, #8a9bff 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔝 상위 10개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 높은 순</div></div>'
                 col_header = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
-                sparkle_css = ''  # 미사용
+                sparkle_css = '<style>@keyframes glow1{0%,100%{box-shadow:0 0 5px rgba(255,215,0,0.4),inset 0 0 5px rgba(255,215,0,0.05)}50%{box-shadow:0 0 20px rgba(255,215,0,0.8),inset 0 0 10px rgba(255,215,0,0.15)}}@keyframes glow2{0%,100%{box-shadow:0 0 5px rgba(192,192,192,0.3)}50%{box-shadow:0 0 18px rgba(192,192,192,0.7),inset 0 0 8px rgba(192,192,192,0.12)}}@keyframes glow3{0%,100%{box-shadow:0 0 5px rgba(205,127,50,0.3)}50%{box-shadow:0 0 15px rgba(205,127,50,0.6),inset 0 0 8px rgba(205,127,50,0.1)}}.rg1{animation:glow1 2s ease-in-out infinite;border-left:4px solid #FFD700}.rg2{animation:glow2 2.5s ease-in-out infinite;border-left:4px solid #C0C0C0}.rg3{animation:glow3 3s ease-in-out infinite;border-left:4px solid #CD7F32}</style>'
                 rows_html = ""
                 medal_icons = {1: "👑", 2: "🥈", 3: "🥉"}
-                medal_glow = {
-                    1: "linear-gradient(135deg, rgba(255,215,0,0.18) 0%, rgba(255,235,100,0.10) 100%)",
-                    2: "linear-gradient(135deg, rgba(192,192,192,0.15) 0%, rgba(220,220,240,0.08) 100%)",
-                    3: "linear-gradient(135deg, rgba(205,127,50,0.15) 0%, rgba(230,170,90,0.08) 100%)"
-                }
-                top_border = {1: "4px solid #FFD700", 2: "4px solid #C0C0C0", 3: "4px solid #CD7F32"}
+                medal_glow = {1: "rgba(255,215,0,0.12)", 2: "rgba(192,192,192,0.10)", 3: "rgba(205,127,50,0.10)"}
                 for i, item in enumerate(top_list[:10]):
                     name = item.get("비교단위", "")
                     rate = item.get("수주율", 0)
@@ -878,24 +873,17 @@ elif page == "🏆 기관별 순위":
                     badge_bg = "#6576ff" if rank_num <= 3 else "#e3e7fe"
                     badge_fg = "#fff" if rank_num <= 3 else "#6576ff"
                     row_bg = medal_glow.get(rank_num, "transparent")
-                    border_l = top_border.get(rank_num, "none")
-                    medal = f'<span style="font-size:1.1rem; margin-left:6px;">{medal_icons[rank_num]}</span>' if rank_num in medal_icons else ""
-                    # 상위 1~3위: 더 크고 굵은 스타일
-                    name_size = "0.95rem" if rank_num <= 3 else "0.88rem"
-                    name_weight = "800" if rank_num <= 3 else "600"
-                    rate_size = "1.0rem" if rank_num <= 3 else "0.88rem"
-                    badge_size = "32px" if rank_num <= 3 else "28px"
-                    badge_font = "0.8rem" if rank_num <= 3 else "0.72rem"
-                    pad = "16px 20px" if rank_num <= 3 else "14px 20px"
-                    rows_html += f'''<div style="display:flex; align-items:center; padding:{pad}; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg}; border-left:{border_l};">
-<div style="flex:0.5;"><span style="display:inline-flex; align-items:center; justify-content:center; width:{badge_size}; height:{badge_size}; border-radius:50%; background:{badge_bg}; color:{badge_fg}; font-size:{badge_font}; font-weight:700;">{rank_num}</span></div>
-<div style="flex:3; display:flex; align-items:center;"><span style="font-size:{name_size}; font-weight:{name_weight}; color:{COLORS["text_dark"]};">{name}</span>{medal}</div>
+                    medal = f'<span style="font-size:1rem; margin-left:4px;">{medal_icons[rank_num]}</span>' if rank_num in medal_icons else ""
+                    glow_cls = f' class="rg{rank_num}"' if rank_num <= 3 else ''
+                    rows_html += f'''<div{glow_cls} style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};">
+<div style="flex:0.5;"><span style="display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:{badge_bg}; color:{badge_fg}; font-size:0.72rem; font-weight:700;">{rank_num}</span></div>
+<div style="flex:3; display:flex; align-items:center;"><span style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span>{medal}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(발주)}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(수주)}</div>
-<div style="flex:1.2; text-align:right; font-size:{rate_size}; font-weight:700; color:{rc};">{rate}%</div>
+<div style="flex:1.2; text-align:right; font-size:0.88rem; font-weight:700; color:{rc};">{rate}%</div>
 </div>'''
                 
-                st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden;">{header_html}{col_header}{rows_html}</div>', unsafe_allow_html=True)
+                st.markdown(f'{sparkle_css}<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden;">{header_html}{col_header}{rows_html}</div>', unsafe_allow_html=True)
                 top_names = [item.get("비교단위", "") for item in top_list[:10] if item.get("비교단위")]
                 if top_names:
                     sel_top = st.selectbox("🔍 기관 상세 조회", ["선택하세요"] + top_names, key=f"rank_top_{grp_name}")
