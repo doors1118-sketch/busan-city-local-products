@@ -106,9 +106,11 @@ def main():
     busan_inst_dict = df_ag.set_index('dminsttCd').to_dict('index')
     
     conn_cp = sqlite3.connect(DB_COMPANIES)
-    df_cp = pd.read_sql("SELECT bizno FROM company_master", conn_cp)
+    conn_pr = sqlite3.connect(DB_PROCUREMENT)
+    from core_calc import load_expanded_biznos
+    busan_comp_biznos = load_expanded_biznos(conn_cp, conn_pr)
+    conn_pr.close()
     conn_cp.close()
-    busan_comp_biznos = set(df_cp['bizno'].dropna().astype(str).str.replace('-', '', regex=False).str.strip())
     
     print("\n2. 통합 계약 DB 조회 및 연산 중...")
     conn_pr = sqlite3.connect(DB_PROCUREMENT)

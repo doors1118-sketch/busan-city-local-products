@@ -55,6 +55,13 @@ NON_BUSAN_KEYWORDS = [
 # 601~629: 부산지방국세청 관할 세무서 코드
 BUSAN_BIZNO_PREFIXES = {str(i) for i in range(601, 630)}
 
+# 대표자+업체명 매칭에서 제외할 비부산 지점 사업자번호 (오탐 방지)
+NON_LOCAL_BRANCH_BIZNOS = {
+    '3448700750',  # 로하스인터내셔널주식회사 (비부산)
+    '2158735039',  # 주식회사 스마트이엔씨 (비부산)
+    '3258101042',  # 주식회사로하스에코시스템 (비부산)
+}
+
 # 부산 지명과 겹치는 키워드 예외
 BUSAN_EXCEPTIONS = {
     '대구': ['해운대구'],
@@ -440,18 +447,10 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         if not bypassed:
             return None
 
-    # 지역업체 수주액 (마스터 DB + 사업자번호 앞3자리 보조 판별 + 예외 업체명)
+    # 지역업체 수주액 (마스터 DB + 사업자번호 앞3자리 보조 판별)
     loc_amt = 0
     for bno, share in biz_nos:
-        # DB 매칭, 부산 앞자리 매칭
-        is_local_bno = (bno in biznos) or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES)
-        
-        # 이름으로 에외 처리 (블루윙)
-        if not is_local_bno and row.get('corpList'):
-            if '블루윙' in str(row.get('corpList', '')):
-                is_local_bno = True
-                
-        if is_local_bno:
+        if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
             loc_amt += amt * (share / 100.0)
 
     return (matched_cd, amt, loc_amt)
@@ -477,3 +476,49 @@ def load_award_sets(conn):
         except:
             sets[key] = set()
     return sets
+
+def load_expanded_biznos(conn_cp, conn_pr=None):
+    """지점 사업자번호 매칭 확장 (대표자+업체명)
+    - conn_cp: busan_companies_master.db 연결
+    - conn_pr: (선택) procurement_contracts.db 연결. 주어지면 계약 DB 스캔을 통해 지점 번호 추가 발견함.
+    """
+    biznos = set(pd.read_sql("SELECT bizno FROM company_master", conn_cp)['bizno']
+                 .dropna().astype(str).str.replace('-', '', regex=False).str.strip())
+    
+    if not conn_pr:
+        return biznos
+        
+    import re
+    from collections import defaultdict
+    _master_by_ceo = defaultdict(list)
+    for _r in conn_cp.execute("SELECT bizno, corpNm, ceoNm FROM company_master WHERE ceoNm IS NOT NULL AND ceoNm != ''").fetchall():
+        _bno = str(_r[0]).replace('-','').strip()
+        _ceo = str(_r[2]).strip()
+        _corp = str(_r[1] or '').strip()
+        _norm = re.sub(r'주식회사|\(주\)|유한회사|\(유\)|사단법인|재단법인|\s', '', _corp)
+        _master_by_ceo[_ceo].append((_bno, _corp, _norm))
+        
+    _branch_biznos = set()
+    for _tbl in ['cnstwk_cntrct', 'servc_cntrct', 'thng_cntrct']:
+        for (_corpList,) in conn_pr.execute(f"SELECT corpList FROM [{_tbl}]").fetchall():
+            if not _corpList: continue
+            for _chunk in str(_corpList).split('[')[1:]:
+                _parts = _chunk.split(']')[0].split('^')
+                if len(_parts) >= 10:
+                    _bno = str(_parts[9]).replace('-','').strip()
+                    if _bno and len(_bno) >= 10 and _bno not in biznos and _bno not in _branch_biznos:
+                        _ceo = str(_parts[4]).strip() if len(_parts) > 4 else ''
+                        _name = str(_parts[3]).strip() if len(_parts) > 3 else ''
+                        if not _ceo or not _name: continue
+                        _candidates = _master_by_ceo.get(_ceo, [])
+                        if not _candidates: continue
+                        _norm_c = re.sub(r'주식회사|\(주\)|유한회사|\(유\)|사단법인|재단법인|\s', '', _name)
+                        if len(_norm_c) < 3: continue
+                        if _bno in NON_LOCAL_BRANCH_BIZNOS: continue
+                        for _m_bno, _m_name, _m_norm in _candidates:
+                            if len(_m_norm) < 3: continue
+                            if _norm_c == _m_norm or (len(_m_norm) >= 3 and _m_norm in _norm_c) or (len(_norm_c) >= 3 and _norm_c in _m_norm):
+                                _branch_biznos.add(_bno)
+                                break
+    biznos.update(_branch_biznos)
+    return biznos
