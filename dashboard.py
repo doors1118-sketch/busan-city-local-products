@@ -531,6 +531,14 @@ if page == "📊 종합현황":
 </div>
 </div>
 </div>
+</div>
+<div style="margin-top:8px; padding:8px 12px; background:#f8f9fc; border-radius:5px; border-left:3px solid #6576ff;">
+<div style="font-size:0.65rem; font-weight:700; color:#364a63; margin-bottom:3px;">📊 산출근거 (추정치)</div>
+<div style="font-size:0.58rem; color:#8094ae; line-height:1.7;">
+• 부가가치 = 지역업체 수주액 × 부가가치유발계수(0.467)<br>
+• 고용기여 = 지역업체 수주액(10억) × 취업유발계수(6.6명)<br>
+<span style="color:#999; font-size:0.55rem;">※ 한국은행 2020년 지역산업연관표(2025년 발행) 부산 전산업 평균 계수 활용 추정치</span>
+</div>
 </div>''', unsafe_allow_html=True)
         
             with col_side:
@@ -567,7 +575,7 @@ if page == "📊 종합현황":
                     for j, h in enumerate(bar_sets[idx]):
                         op = "0.3" if j < 6 else "1"
                         bars += f'<div style="width:6px; height:{h}%; background:{dc}; opacity:{op}; border-radius:1px;"></div>'
-                    st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:16px 18px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                    st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:22px 18px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
 <div style="flex:1;">
 <div style="font-size:0.8rem; font-weight:700; color:{COLORS['text_dark']}; margin-bottom:8px;">{name}</div>
@@ -603,15 +611,7 @@ if page == "📊 종합현황":
                 with r2c2:
                     _mini_card(3)
                 
-                # 산출근거 (추정치)
-                st.markdown(f'''<div style="margin-top:10px; padding:10px 14px; background:#f8f9fc; border-radius:5px; border-left:3px solid {COLORS["primary"]};">
-<div style="font-size:0.68rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:4px;">📊 산출근거 (추정치)</div>
-<div style="font-size:0.62rem; color:{COLORS["text_light"]}; line-height:1.7;">
-• 부가가치 = 지역업체 수주액 × 부가가치유발계수(0.467, 한국은행 부산 전산업 평균 '20)<br>
-• 고용기여 = 지역업체 수주액(10억) × 취업유발계수(6.6명, 한국은행 부산 전산업 평균 '20)<br>
-<span style="color:#999; font-size:0.58rem;">※ 본 지표는 한국은행 2020년 지역산업연관표(2025년 발행)의 부산 지역 계수를 활용한 추정치입니다.</span>
-</div>
-</div>''', unsafe_allow_html=True)
+
 
         st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
         
