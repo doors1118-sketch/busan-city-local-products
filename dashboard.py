@@ -560,6 +560,7 @@ if page == "📊 종합현황":
                     name, amt, detail = 분야_데이터[idx]
                     수주 = detail.get("수주액", 0)
                     율 = detail.get("수주율", 0)
+                    비중 = round(amt / 발주액 * 100, 1) if 발주액 > 0 else 0
                     tc = trend_colors[idx]
                     dc = dot_colors[idx]
                     bars = ""
@@ -569,7 +570,7 @@ if page == "📊 종합현황":
                     st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:16px 18px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
 <div style="flex:1;">
-<div style="font-size:0.8rem; font-weight:700; color:{COLORS['text_dark']}; margin-bottom:8px;">{name}</div>
+<div style="font-size:0.8rem; font-weight:700; color:{COLORS['text_dark']}; margin-bottom:8px;">{name} <span style="color:{dc}; font-weight:800;">{비중}%</span></div>
 <div style="font-size:1.3rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif; line-height:1;">{format_억(amt)}</div>
 <div style="margin-top:10px;">
 <div style="font-size:0.65rem; font-weight:600; color:{COLORS['text_light']}; letter-spacing:0.03em;">지역업체 수주액</div>
