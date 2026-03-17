@@ -80,10 +80,10 @@ def build_cache():
                         _candidates = _master_by_ceo.get(_ceo, [])
                         if not _candidates: continue
                         _norm_c = re.sub(r'주식회사|\(주\)|유한회사|\(유\)|사단법인|재단법인|\s', '', _name)
-                        if len(_norm_c) < 2: continue
+                        if len(_norm_c) < 4: continue
                         for _m_bno, _m_name, _m_norm in _candidates:
-                            if len(_m_norm) < 2: continue
-                            if _norm_c == _m_norm or (len(_m_norm) >= 3 and _m_norm in _norm_c) or (len(_norm_c) >= 3 and _norm_c in _m_norm):
+                            if len(_m_norm) < 4: continue
+                            if _norm_c == _m_norm or (len(_m_norm) >= 4 and _m_norm in _norm_c) or (len(_norm_c) >= 4 and _norm_c in _m_norm):
                                 _branch_biznos.add(_bno)
                                 break
     _conn_prot.close()
