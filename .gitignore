@@ -35,6 +35,10 @@ openapi.html
 alert_config.json
 alert_log/
 
+# API cache (server-generated, must not be overwritten by git)
+api_cache.json
+api_cache_prev.json
+
 # Deploy files
 deploy/
 
