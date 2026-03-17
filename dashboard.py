@@ -602,6 +602,16 @@ if page == "📊 종합현황":
                     _mini_card(2)
                 with r2c2:
                     _mini_card(3)
+                
+                # 산출근거 (추정치)
+                st.markdown(f'''<div style="margin-top:10px; padding:10px 14px; background:#f8f9fc; border-radius:5px; border-left:3px solid {COLORS["primary"]};">
+<div style="font-size:0.68rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:4px;">📊 산출근거 (추정치)</div>
+<div style="font-size:0.62rem; color:{COLORS["text_light"]}; line-height:1.7;">
+• 부가가치 = 지역업체 수주액 × 부가가치유발계수(0.467, 한국은행 부산 전산업 평균 '20)<br>
+• 고용기여 = 지역업체 수주액(10억) × 취업유발계수(6.6명, 한국은행 부산 전산업 평균 '20)<br>
+<span style="color:#999; font-size:0.58rem;">※ 본 지표는 한국은행 2020년 지역산업연관표(2025년 발행)의 부산 지역 계수를 활용한 추정치입니다.</span>
+</div>
+</div>''', unsafe_allow_html=True)
 
         st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
         
