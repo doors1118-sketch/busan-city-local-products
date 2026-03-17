@@ -532,7 +532,7 @@ if page == "📊 종합현황":
 </div>
 </div>
 </div>
-<div style="margin-top:8px; padding:8px 12px; background:#f8f9fc; border-radius:5px; border-left:3px solid #6576ff;">
+<div style="margin-top:6px; padding:8px 12px; background:transparent;">
 <div style="font-size:0.65rem; font-weight:700; color:#364a63; margin-bottom:3px;">📊 산출근거 (추정치)</div>
 <div style="font-size:0.58rem; color:#8094ae; line-height:1.7;">
 • 부가가치 = 지역업체 수주액 × 부가가치유발계수(0.467)<br>
