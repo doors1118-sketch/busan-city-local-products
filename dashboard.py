@@ -436,7 +436,7 @@ if page == "📊 종합현황":
         amt_물품 = 분야_items[2][1].get("발주액", 0) if len(분야_items) > 2 else 0
         amt_쇼핑 = 분야_items[3][1].get("발주액", 0) if len(분야_items) > 3 else 0
         
-        sub_info = f"공사({format_억(amt_공사)}) · 용역({format_억(amt_용역)}) · 물품({format_억(amt_물품)}) · 쇼핑몰({format_억(amt_쇼핑)})"
+        sub_info = f"공사 {round(amt_공사/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_공사)}) · 용역 {round(amt_용역/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_용역)}) · 물품 {round(amt_물품/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_물품)}) · 쇼핑몰 {round(amt_쇼핑/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_쇼핑)})"
         
         # ── 수요기관 수 (DB에서 — 분류별) ──
         try:
@@ -570,7 +570,7 @@ if page == "📊 종합현황":
                     st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:16px 18px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
 <div style="flex:1;">
-<div style="font-size:0.8rem; font-weight:700; color:{COLORS['text_dark']}; margin-bottom:8px;">{name} <span style="color:{dc}; font-weight:800;">{비중}%</span></div>
+<div style="font-size:0.8rem; font-weight:700; color:{COLORS['text_dark']}; margin-bottom:8px;">{name}</div>
 <div style="font-size:1.3rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif; line-height:1;">{format_억(amt)}</div>
 <div style="margin-top:10px;">
 <div style="font-size:0.65rem; font-weight:600; color:{COLORS['text_light']}; letter-spacing:0.03em;">지역업체 수주액</div>
