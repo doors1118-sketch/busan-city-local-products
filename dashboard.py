@@ -859,7 +859,7 @@ elif page == "🏆 기관별 순위":
                 top_list = grp_data.get("상위", [])
                 header_html = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #6576ff 0%, #8a9bff 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔝 상위 10개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 높은 순</div></div>'
                 col_header = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
-                sparkle_css = '<style>@keyframes glow1{0%,100%{box-shadow:0 0 5px rgba(255,215,0,0.4),inset 0 0 5px rgba(255,215,0,0.05)}50%{box-shadow:0 0 20px rgba(255,215,0,0.8),inset 0 0 10px rgba(255,215,0,0.15)}}@keyframes glow2{0%,100%{box-shadow:0 0 5px rgba(192,192,192,0.3)}50%{box-shadow:0 0 18px rgba(192,192,192,0.7),inset 0 0 8px rgba(192,192,192,0.12)}}@keyframes glow3{0%,100%{box-shadow:0 0 5px rgba(205,127,50,0.3)}50%{box-shadow:0 0 15px rgba(205,127,50,0.6),inset 0 0 8px rgba(205,127,50,0.1)}}.rg1{animation:glow1 2s ease-in-out infinite;border-left:4px solid #FFD700}.rg2{animation:glow2 2.5s ease-in-out infinite;border-left:4px solid #C0C0C0}.rg3{animation:glow3 3s ease-in-out infinite;border-left:4px solid #CD7F32}</style>'
+                sparkle_css = '<style>@keyframes tg1{0%,100%{text-shadow:0 0 2px rgba(255,215,0,0.4)}50%{text-shadow:0 0 8px rgba(255,215,0,0.9),0 0 20px rgba(255,200,0,0.5),0 0 35px rgba(255,180,0,0.2)}}@keyframes tg2{0%,100%{text-shadow:0 0 2px rgba(170,170,200,0.4)}50%{text-shadow:0 0 8px rgba(180,180,220,0.8),0 0 18px rgba(170,170,210,0.4)}}@keyframes tg3{0%,100%{text-shadow:0 0 2px rgba(205,127,50,0.4)}50%{text-shadow:0 0 8px rgba(205,140,60,0.8),0 0 16px rgba(200,130,50,0.4)}}.tg1{animation:tg1 1.8s ease-in-out infinite}.tg2{animation:tg2 2.2s ease-in-out infinite}.tg3{animation:tg3 2.6s ease-in-out infinite}</style>'
                 rows_html = ""
                 medal_icons = {1: "👑", 2: "🥈", 3: "🥉"}
                 medal_glow = {1: "rgba(255,215,0,0.12)", 2: "rgba(192,192,192,0.10)", 3: "rgba(205,127,50,0.10)"}
@@ -874,10 +874,10 @@ elif page == "🏆 기관별 순위":
                     badge_fg = "#fff" if rank_num <= 3 else "#6576ff"
                     row_bg = medal_glow.get(rank_num, "transparent")
                     medal = f'<span style="font-size:1rem; margin-left:4px;">{medal_icons[rank_num]}</span>' if rank_num in medal_icons else ""
-                    glow_cls = f' class="rg{rank_num}"' if rank_num <= 3 else ''
-                    rows_html += f'''<div{glow_cls} style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};">
+                    name_cls = f' class="tg{rank_num}"' if rank_num <= 3 else ''
+                    rows_html += f'''<div style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};">
 <div style="flex:0.5;"><span style="display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:{badge_bg}; color:{badge_fg}; font-size:0.72rem; font-weight:700;">{rank_num}</span></div>
-<div style="flex:3; display:flex; align-items:center;"><span style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span>{medal}</div>
+<div style="flex:3; display:flex; align-items:center;"><span{name_cls} style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span>{medal}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(발주)}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(수주)}</div>
 <div style="flex:1.2; text-align:right; font-size:0.88rem; font-weight:700; color:{rc};">{rate}%</div>
