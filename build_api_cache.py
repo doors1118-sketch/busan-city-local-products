@@ -49,6 +49,7 @@ def build_cache():
     inst_grp = dict(zip(master['dminsttCd'], master['cate_lrg']))
     inst_mid = dict(zip(master['dminsttCd'], master['cate_mid']))
     
+    conn_cp = sqlite3.connect(DB_COMPANIES)
     from core_calc import load_expanded_biznos
     _conn_prot = sqlite3.connect(DB_PROCUREMENT)
     biznos = load_expanded_biznos(conn_cp, _conn_prot)
