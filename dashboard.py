@@ -612,7 +612,7 @@ if page == "📊 종합현황":
                     _mini_card(3)
                 
                 st.markdown(f'''<div style="margin-top:10px; text-align:center; padding:8px 10px; background:linear-gradient(135deg, #f0f2ff 0%, #e8eafc 100%); border-radius:5px; border:1px solid #d5d9f0;">
-<span style="font-size:0.58rem; color:#6576ff; font-weight:600;">📋 국가계약법 및 지방계약법 적용을 받는 국가·지자체·공공기관·대학 등 부산지역 조달청 등록 수요기관의 전체 계약 데이터를 활용하여 수주액·수주율 산출</span>
+<span style="font-size:0.58rem; color:#6576ff; font-weight:600;">📋 국가계약법 및 지방계약법 적용을 받는 국가·지자체·교육청·출자출연기관·공공기관·대학 등 부산지역 조달청 등록 수요기관의 전체 계약 데이터를 활용하여 수주액·수주율 산출</span>
 </div>''', unsafe_allow_html=True)
                 
 
