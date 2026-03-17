@@ -783,8 +783,14 @@ def main():
             all_data[cat] = items
             print(f"   -> [{cat}] {target_date} 기준 최신 계약 (전국): {len(items):,}건 수집")
             
-    # [Step 3] 다운로드된 각 카테고리별 데이터를 SQLite DB에 '추가(Append)'
-    print(f"\n[로컬 DB 저장] 수집된 {target_date} 데이터 누적 저장(APPEND) 중...")
+    # [Step 3] 다운로드된 각 카테고리별 데이터를 SQLite DB에 '추가(Append)' — 부산 수요기관만
+    print(f"\n[로컬 DB 저장] 수집된 {target_date} 데이터 부산 필터 후 저장 중...")
+    
+    # 부산 수요기관 코드 로드 (부산 기관 계약만 저장)
+    _conn_ag = sqlite3.connect(AGENCY_DB_PATH)
+    busan_codes = set(str(r[0]).strip() for r in _conn_ag.execute("SELECT dminsttCd FROM agency_master").fetchall())
+    _conn_ag.close()
+    
     try:
         conn = sqlite3.connect(DB_PATH)
         for cat, items in all_data.items():
@@ -794,9 +800,15 @@ def main():
                     if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
                         df[col] = df[col].astype(str)
                 
+                # 부산 수요기관 필터: dminsttCd가 부산 기관 코드에 있는 건만 저장
+                n_before = len(df)
+                if 'dminsttCd' in df.columns:
+                    df['_cd_clean'] = df['dminsttCd'].astype(str).str.strip()
+                    df = df[df['_cd_clean'].isin(busan_codes)].drop(columns=['_cd_clean'])
+                
                 table_name = TABLE_MAP[cat]
                 df.to_sql(table_name, conn, if_exists='append', index=False)
-                print(f"   - {cat} ({len(df):,}건) -> '{table_name}' 테이블 누적 저장 완전 성공.")
+                print(f"   - {cat} (전국 {n_before:,}건 → 부산 {len(df):,}건) -> '{table_name}' 저장 완료.")
         
         # [Step 3.5] 수요기관코드 파싱 (dminsttList → dminsttCd, dminsttNm_req)
         import re
