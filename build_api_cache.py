@@ -1039,8 +1039,17 @@ def build_cache():
     print(f"    지난주({weekly_cache['지난주_기간']}): 계약액 {tw_all.get('지난주_계약액',0)/1e8:,.0f}억, 수주율 {tw_all.get('지난주_수주율',0)}%")
     print(f"    수주율 증감: {tw_all.get('수주율_증감',0):+.1f}%p")
     
-    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    import tempfile, os
+    # Atomic write: 임시파일에 쓴 후 rename → API 서버가 불완전 캐시를 읽는 것 방지
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json', dir=os.path.dirname(CACHE_FILE) or '.')
+    try:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, CACHE_FILE)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
     
     elapsed = time.time() - start
     print(f"\n[캐시 생성 완료] {CACHE_FILE} ({elapsed:.1f}초)")

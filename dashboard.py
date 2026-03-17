@@ -482,20 +482,18 @@ if page == "📊 종합현황":
                 )
                 st.plotly_chart(fig_wave, use_container_width=True, config={"displayModeBar": False})
                 
-                # 이번주 부가가치 / 고용 기여도
-                all_data_vals = list(data.values())
-                econ_data = all_data_vals[16] if len(all_data_vals) > 16 and isinstance(all_data_vals[16], dict) else {}
-                econ_all_vals = list(econ_data.values())
-                econ_total = econ_all_vals[1] if len(econ_all_vals) > 1 and isinstance(econ_all_vals[1], dict) else {}
-                econ_meta = econ_all_vals[0] if econ_all_vals and isinstance(econ_all_vals[0], dict) else {}
+                # 이번주 부가가치 / 고용 기여도 (키 이름으로 안전 접근)
+                econ_data = data.get("11_경제효과", {})
+                econ_total = econ_data.get("전체", {})
+                econ_meta = econ_data.get("계수", {})
                 부가가치 = econ_total.get("지역생산부가가치", 0)
                 고용기여 = econ_total.get("지역고용기여도_명", 0)
                 수주액_total = econ_total.get("지역업체수주액", 0)
                 
-                # 이번주 수주액에서 이번주 부가가치/고용 계산
-                weekly_data = all_data_vals[17] if len(all_data_vals) > 17 and isinstance(all_data_vals[17], dict) else {}
+                # 이번주 수주액에서 이번주 부가가치/고용 계산 (키 이름으로 안전 접근)
+                weekly_data = data.get("13_주간데이터", {})
                 weekly_period = weekly_data.get("이번주_기간", "")
-                부산_avg = econ_meta.get("부산_평균", {})
+                부산_avg = econ_meta.get("부산_전산업평균", {})
                 유발계수 = 부산_avg.get("부가가치유발계수", 0.467) if isinstance(부산_avg, dict) else 0.467
                 취업유발 = 부산_avg.get("취업유발계수", 6.6) if isinstance(부산_avg, dict) else 6.6
                 

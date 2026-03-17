@@ -846,8 +846,15 @@ def main():
             print(f"   -> 캐시 재생성 완료 ✅")
         else:
             print(f"   [오류] build_api_cache.py 실패: {result.stderr[-200:]}")
+            # 이전 캐시로 자동 롤백
+            if os.path.exists('api_cache_prev.json'):
+                shutil.copy2('api_cache_prev.json', 'api_cache.json')
+                print(f"   [롤백] api_cache_prev.json → api_cache.json 복원 완료")
     except Exception as e:
         print(f"   [오류] 캐시 재생성 실패: {e}")
+        if os.path.exists('api_cache_prev.json'):
+            shutil.copy2('api_cache_prev.json', 'api_cache.json')
+            print(f"   [롤백] api_cache_prev.json → api_cache.json 복원 완료")
 
     # [Step 5] 경보 체크 (이전 캐시 vs 현재 캐시 비교)
     print("\n--------------------------------------------------")
