@@ -859,27 +859,7 @@ elif page == "🏆 기관별 순위":
                 top_list = grp_data.get("상위", [])
                 header_html = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #6576ff 0%, #8a9bff 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔝 상위 10개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 높은 순</div></div>'
                 col_header = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
-                # 상위 1~3위 반짝임 CSS 애니메이션
-                sparkle_css = '''
-<style>
-@keyframes sparkle-gold {
-  0%, 100% { box-shadow: 0 0 4px rgba(255,215,0,0.3), inset 0 0 4px rgba(255,215,0,0.05); }
-  50% { box-shadow: 0 0 16px rgba(255,215,0,0.6), inset 0 0 8px rgba(255,215,0,0.15); }
-}
-@keyframes sparkle-silver {
-  0%, 100% { box-shadow: 0 0 4px rgba(192,192,192,0.3), inset 0 0 4px rgba(192,192,192,0.05); }
-  50% { box-shadow: 0 0 14px rgba(192,192,192,0.5), inset 0 0 6px rgba(192,192,192,0.12); }
-}
-@keyframes sparkle-bronze {
-  0%, 100% { box-shadow: 0 0 4px rgba(205,127,50,0.3), inset 0 0 4px rgba(205,127,50,0.05); }
-  50% { box-shadow: 0 0 12px rgba(205,127,50,0.45), inset 0 0 6px rgba(205,127,50,0.1); }
-}
-.rank-sparkle-1 { animation: sparkle-gold 2s ease-in-out infinite; border-left: 3px solid #FFD700 !important; }
-.rank-sparkle-2 { animation: sparkle-silver 2.5s ease-in-out infinite; border-left: 3px solid #C0C0C0 !important; }
-.rank-sparkle-3 { animation: sparkle-bronze 3s ease-in-out infinite; border-left: 3px solid #CD7F32 !important; }
-</style>
-'''
-                st.markdown(sparkle_css, unsafe_allow_html=True)
+                sparkle_css = '<style>@keyframes sparkle-gold{0%,100%{box-shadow:0 0 4px rgba(255,215,0,0.3)}50%{box-shadow:0 0 18px rgba(255,215,0,0.7),0 0 30px rgba(255,215,0,0.3)}}@keyframes sparkle-silver{0%,100%{box-shadow:0 0 4px rgba(192,192,192,0.3)}50%{box-shadow:0 0 16px rgba(192,192,192,0.6),0 0 25px rgba(192,192,192,0.25)}}@keyframes sparkle-bronze{0%,100%{box-shadow:0 0 4px rgba(205,127,50,0.3)}50%{box-shadow:0 0 14px rgba(205,127,50,0.5),0 0 22px rgba(205,127,50,0.2)}}.rank-sparkle-1{animation:sparkle-gold 2s ease-in-out infinite;border-left:3px solid #FFD700!important}.rank-sparkle-2{animation:sparkle-silver 2.5s ease-in-out infinite;border-left:3px solid #C0C0C0!important}.rank-sparkle-3{animation:sparkle-bronze 3s ease-in-out infinite;border-left:3px solid #CD7F32!important}</style>'
                 rows_html = ""
                 medal_icons = {1: "👑", 2: "🥈", 3: "🥉"}
                 medal_glow = {1: "rgba(255,215,0,0.12)", 2: "rgba(192,192,192,0.10)", 3: "rgba(205,127,50,0.10)"}
@@ -903,7 +883,7 @@ elif page == "🏆 기관별 순위":
 <div style="flex:1.2; text-align:right; font-size:0.88rem; font-weight:700; color:{rc};">{rate}%</div>
 </div>'''
                 
-                st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden;">{header_html}{col_header}{rows_html}</div>', unsafe_allow_html=True)
+                st.markdown(f'{sparkle_css}<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden;">{header_html}{col_header}{rows_html}</div>', unsafe_allow_html=True)
                 top_names = [item.get("비교단위", "") for item in top_list[:10] if item.get("비교단위")]
                 if top_names:
                     sel_top = st.selectbox("🔍 기관 상세 조회", ["선택하세요"] + top_names, key=f"rank_top_{grp_name}")
