@@ -733,64 +733,49 @@ def download_for_category(api_type, date_str):
                 
     return api_type, all_items
 
-def main():
-    # 기준일: 가장 마지막으로 완성된 날짜인 어제(D-1)
-    target_date = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y%m%d')
-    
-    print(f"==================================================")
-    print(f" 🔄 부산광역시 조달 데이터 자동화 엔진: Daily Sync 작동")
-    print(f"    - 대상 일자 (D-1): {target_date}")
-    print(f"==================================================\n")
-    
-    start_time = time.time()
-    
-    # [Step 1] 수요기관 마스터 동기화 (inqryDiv=2 로 변경일자 기준 신설/폐지 기관 감지)
+def sync_one_day(target_date):
+    """하루치 데이터 수집 (Step 1~3.6). 성공 시 True 반환."""
+    print(f"\n{'='*50}")
+    print(f" 📅 {target_date} 데이터 수집 시작")
+    print(f"{'='*50}\n")
+
+    # [Step 1] 수요기관 마스터 동기화
     update_agency_master_daily(target_date)
     print("\n--------------------------------------------------")
-
-    # [Step 1.5] 조달업체(지역업체) 마스터 동기화 (전국 변동분 → 부산+본사 필터 → Upsert)
+    # [Step 1.5] 조달업체 마스터 동기화
     update_company_master_daily(target_date)
     print("\n--------------------------------------------------")
-
-    # [Step 1.6] 조달업체 업종정보 동기화 (전국 업종 변동분 → 부산 업체 필터 → company_industry 테이블)
+    # [Step 1.6] 조달업체 업종정보 동기화
     update_company_industry_daily(target_date)
     print("\n--------------------------------------------------")
-
-    # [Step 1.7] 공사 입찰공고 동기화 (현장위치가 부산인 공고를 필터링 적재)
+    # [Step 1.7] 공사 입찰공고 동기화
     update_bid_notices_daily(target_date)
     print("\n--------------------------------------------------")
-
-    # [Step 1.8] 용역 조달요청 현장 동기화 (기술+일반 용역 현장지역 수집 → servc_site.db)
+    # [Step 1.8] 용역 현장 동기화
     update_servc_site_daily(target_date)
     print("\n--------------------------------------------------")
-
-    # [Step 1.9] 낙찰정보 브릿지 동기화 (부산 지역제한 낙찰 3개 분야)
+    # [Step 1.9] 낙찰정보 브릿지 동기화
     update_busan_awards_daily(target_date)
     print("\n--------------------------------------------------")
-
-    # [Step 2.0] 입찰공고 추정가격 동기화 (공사/용역/물품 3개 분야 전국 공고)
+    # [Step 2.0] 입찰공고 추정가격 동기화
     update_bid_notices_price_daily(target_date)
     print("\n--------------------------------------------------")
-    
-    # [Step 2] 그날 생성된 전국 4개 조달계약 원본 데이터 다운로드 모듈 병렬 스핀
-    print(f"[전국 계약 동기화] {target_date} 공사/용역/물품/쇼핑몰 계약 정보 수집 중...")
+
+    # [Step 2] 전국 4개 조달계약 다운로드
+    print(f"[전국 계약 동기화] {target_date} 계약 정보 수집 중...")
     all_data = {k: [] for k in APIS.keys()}
-    
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(download_for_category, cat, target_date) for cat in APIS.keys()]
         for future in as_completed(futures):
             cat, items = future.result()
             all_data[cat] = items
-            print(f"   -> [{cat}] {target_date} 기준 최신 계약 (전국): {len(items):,}건 수집")
-            
-    # [Step 3] 다운로드된 각 카테고리별 데이터를 SQLite DB에 '추가(Append)' — 부산 수요기관만
-    print(f"\n[로컬 DB 저장] 수집된 {target_date} 데이터 부산 필터 후 저장 중...")
-    
-    # 부산 수요기관 코드 로드 (부산 기관 계약만 저장)
+            print(f"   -> [{cat}] {target_date}: {len(items):,}건 수집")
+
+    # [Step 3] 부산 수요기관 계약만 DB 저장
+    print(f"\n[로컬 DB 저장] {target_date} 부산 필터 후 저장 중...")
     _conn_ag = sqlite3.connect(AGENCY_DB_PATH)
     busan_codes = set(str(r[0]).strip() for r in _conn_ag.execute("SELECT dminsttCd FROM agency_master").fetchall())
     _conn_ag.close()
-    
     try:
         conn = sqlite3.connect(DB_PATH)
         for cat, items in all_data.items():
@@ -799,20 +784,15 @@ def main():
                 for col in df.columns:
                     if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
                         df[col] = df[col].astype(str)
-                
-                # 부산 수요기관 필터: dminsttCd가 부산 기관 코드에 있는 건만 저장
                 n_before = len(df)
                 if 'dminsttCd' in df.columns:
                     df['_cd_clean'] = df['dminsttCd'].astype(str).str.strip()
                     df = df[df['_cd_clean'].isin(busan_codes)].drop(columns=['_cd_clean'])
-                
                 table_name = TABLE_MAP[cat]
                 df.to_sql(table_name, conn, if_exists='append', index=False)
-                print(f"   - {cat} (전국 {n_before:,}건 → 부산 {len(df):,}건) -> '{table_name}' 저장 완료.")
-        
-        # [Step 3.5] 수요기관코드 파싱 (dminsttList → dminsttCd, dminsttNm_req)
+                print(f"   - {cat} (전국 {n_before:,} → 부산 {len(df):,}) -> '{table_name}'")
+        # [Step 3.5] 수요기관코드 파싱
         import re
-        print(f"\n[수요기관 파싱] 공사/용역/물품 dminsttList → dminsttCd 파싱 중...")
         for tbl in ['cnstwk_cntrct', 'servc_cntrct', 'thng_cntrct']:
             cur = conn.cursor()
             cur.execute(f"SELECT rowid, dminsttList FROM [{tbl}] WHERE dminsttCd IS NULL AND dminsttList IS NOT NULL AND dminsttList != ''")
@@ -826,15 +806,89 @@ def main():
                                      (m.group(1), m.group(2), rowid))
                         updated += 1
                 conn.commit()
-                print(f"   - {tbl}: {updated}건 수요기관코드 파싱 완료")
-
-        # [Step 3.6] 용역 현장 매칭 (servc_site.db → servc_cntrct.cnstrtsiteRgnNm)
+                if updated: print(f"   - {tbl}: {updated}건 파싱")
+        # [Step 3.6] 용역 현장 매칭
         update_servc_site_matching()
-        
         conn.close()
     except Exception as e:
-        print(f"   [오류] 로컬 DB 적재 중 문제가 발생했습니다: {e}")
+        print(f"   [오류] DB 적재: {e}")
+        return False
+    return True
+
+def get_last_sync_date():
+    """sync_log 테이블에서 마지막 성공 날짜 반환"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS sync_log (sync_date TEXT PRIMARY KEY, completed_at TEXT)")
+        row = conn.execute("SELECT MAX(sync_date) FROM sync_log").fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+    except:
+        pass
+    return None
+
+def record_sync_success(target_date):
+    """수집 성공 기록"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("CREATE TABLE IF NOT EXISTS sync_log (sync_date TEXT PRIMARY KEY, completed_at TEXT)")
+    conn.execute("INSERT OR REPLACE INTO sync_log VALUES (?, ?)",
+                 (target_date, datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    conn.commit()
+    conn.close()
+
+def main():
+    yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y%m%d')
     
+    # 수동 실행: python daily_pipeline_sync.py 20260315
+    if len(sys.argv) > 1:
+        target_dates = [sys.argv[1]]
+        print(f"[수동 실행] 대상 일자: {sys.argv[1]}")
+    else:
+        # 자동 catch-up: 마지막 성공일+1 ~ 어제까지 빠진 날짜 모두 수집
+        last_sync = get_last_sync_date()
+        if last_sync:
+            last_dt = datetime.datetime.strptime(last_sync, '%Y%m%d')
+            yesterday_dt = datetime.datetime.strptime(yesterday, '%Y%m%d')
+            target_dates = []
+            dt = last_dt + datetime.timedelta(days=1)
+            while dt <= yesterday_dt:
+                target_dates.append(dt.strftime('%Y%m%d'))
+                dt += datetime.timedelta(days=1)
+            if not target_dates:
+                print(f"[동기화 완료] 마지막 성공: {last_sync}, 새로 수집할 날짜 없음")
+                return
+            if len(target_dates) > 1:
+                print(f"[자동 보충] 마지막 성공: {last_sync} → {len(target_dates)}일치 보충 수집")
+        else:
+            target_dates = [yesterday]
+    
+    start_time = time.time()
+    date_range = target_dates[0] if len(target_dates) == 1 else f"{target_dates[0]} ~ {target_dates[-1]} ({len(target_dates)}일)"
+    print(f"==================================================")
+    print(f" 🔄 부산광역시 조달 데이터 자동화 엔진: Daily Sync")
+    print(f"    - 수집 대상: {date_range}")
+    print(f"==================================================\n")
+    
+    # 날짜별 데이터 수집
+    success_dates = []
+    for target_date in target_dates:
+        try:
+            # sync_one_day 내부 코드를 여기서 인라인 실행
+            ok = sync_one_day(target_date)
+            if ok:
+                record_sync_success(target_date)
+                success_dates.append(target_date)
+                print(f"   ✅ {target_date} 수집 성공 (sync_log 기록)")
+            else:
+                print(f"   ❌ {target_date} 수집 실패")
+        except Exception as e:
+            print(f"   ❌ {target_date} 수집 중 오류: {e}")
+    
+    if not success_dates:
+        print("\n[경고] 수집 성공한 날짜가 없습니다. 캐시 재생성을 건너뜁니다.")
+        return
+    target_date = success_dates[-1]  # 이후 Step 4/5에서 사용
     # [Step 4] API 캐시 재생성 (build_api_cache.py → api_cache.json)
     print("\n--------------------------------------------------")
     
@@ -878,7 +932,7 @@ def main():
 
     end_time = time.time()
     print("\n==================================================")
-    print(f"🎉 성공적으로 조달 대시보드 일간 동기화(Daily Sync)를 마쳤습니다!")
+    print(f"🎉 Daily Sync 완료! ({len(success_dates)}일 수집: {', '.join(success_dates)})")
     print(f"총 소요시간: {end_time - start_time:.1f}초")
     print("==================================================")
 
