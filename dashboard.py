@@ -544,7 +544,7 @@ if page == "📊 종합현황":
             with col_side:
                 # 상단: 수요기관 분류 (인디고 배경 + 하얀 텍스트)
                 if n_부산 or n_정부:
-                    st.markdown(f"""<div style="background: linear-gradient(135deg, #232e7a 0%, #3b4ab8 100%); border-radius:6px; padding:14px 14px; box-shadow:0 2px 10px rgba(35,46,122,0.25); margin-bottom:6px;"><div style="display:flex; justify-content:space-between; align-items:center;"><div><div style="font-size:0.62rem; font-weight:600; color:rgba(255,255,255,0.65);">부산광역시 및 소관기관</div><div style="font-size:1rem; font-weight:800; color:#fff; font-family:Nunito Sans,sans-serif; margin-top:2px;">{n_부산:,}개</div></div><div><div style="font-size:0.62rem; font-weight:600; color:rgba(255,255,255,0.65);">정부 및 국가공공기관</div><div style="font-size:1rem; font-weight:800; color:#fff; font-family:Nunito Sans,sans-serif; margin-top:2px;">{n_정부:,}개</div></div></div></div>""", unsafe_allow_html=True)
+                    st.markdown(f"""<div style="background: linear-gradient(135deg, #232e7a 0%, #3b4ab8 100%); border-radius:6px; padding:14px 14px; box-shadow:0 2px 10px rgba(35,46,122,0.25); margin-bottom:6px;"><div style="display:flex; justify-content:space-between; align-items:center;"><div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.65);">부산광역시 및 소관기관</div><div style="font-size:1.15rem; font-weight:800; color:#fff; font-family:Nunito Sans,sans-serif; margin-top:2px;">{n_부산:,}개</div></div><div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.65);">정부 및 국가공공기관</div><div style="font-size:1.15rem; font-weight:800; color:#fff; font-family:Nunito Sans,sans-serif; margin-top:2px;">{n_정부:,}개</div></div></div></div>""", unsafe_allow_html=True)
                 
                 # 우측: 2x2 그리드 — DashLite Average Order 스타일
                 sc = COLORS["success"]
@@ -610,6 +610,10 @@ if page == "📊 종합현황":
                     _mini_card(2)
                 with r2c2:
                     _mini_card(3)
+                
+                st.markdown(f'''<div style="margin-top:10px; text-align:center; padding:8px 10px; background:linear-gradient(135deg, #f0f2ff 0%, #e8eafc 100%); border-radius:5px; border:1px solid #d5d9f0;">
+<span style="font-size:0.62rem; color:#6576ff; font-weight:600;">📋 부산지역 수요기관의 조달청 계약 DB를 활용하여 수주액 및 수주율 산출</span>
+</div>''', unsafe_allow_html=True)
                 
 
 
