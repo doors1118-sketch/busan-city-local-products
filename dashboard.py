@@ -862,11 +862,8 @@ elif page == "🏆 기관별 순위":
                 col_header = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
                 rows_html = ""
                 medal_icons = {1: "👑", 2: "🥈", 3: "🥉"}
-                top_styles = {
-                    1: {"bg": "linear-gradient(135deg, #FFF8E1 0%, #FFECB3 50%, #FFE082 100%)", "border": "5px solid #FFD700", "name_color": "#B8860B", "name_size": "1.0rem", "name_weight": "800", "badge_bg": "linear-gradient(135deg, #FFD700, #FFA000)", "badge_size": "34px", "badge_font": "0.85rem", "pad": "18px 20px", "star": "⭐"},
-                    2: {"bg": "linear-gradient(135deg, #F5F5F5 0%, #E8EAF6 50%, #E0E0E0 100%)", "border": "4px solid #B0BEC5", "name_color": "#546E7A", "name_size": "0.95rem", "name_weight": "700", "badge_bg": "linear-gradient(135deg, #B0BEC5, #78909C)", "badge_size": "32px", "badge_font": "0.8rem", "pad": "16px 20px", "star": "⭐"},
-                    3: {"bg": "linear-gradient(135deg, #FFF3E0 0%, #FFE0B2 50%, #FFCC80 100%)", "border": "4px solid #CD7F32", "name_color": "#8D6E63", "name_size": "0.93rem", "name_weight": "700", "badge_bg": "linear-gradient(135deg, #CD7F32, #A1887F)", "badge_size": "30px", "badge_font": "0.78rem", "pad": "15px 20px", "star": ""},
-                }
+                top_bg = {1: "linear-gradient(135deg, #FFF8E1 0%, #FFECB3 50%, #FFE082 100%)", 2: "linear-gradient(135deg, #F5F5F5 0%, #E8EAF6 50%, #E0E0E0 100%)", 3: "linear-gradient(135deg, #FFF3E0 0%, #FFE0B2 50%, #FFCC80 100%)"}
+                top_border = {1: "4px solid #FFD700", 2: "4px solid #B0BEC5", 3: "4px solid #CD7F32"}
                 for i, item in enumerate(top_list[:10]):
                     name = item.get("비교단위", "")
                     rate = item.get("수주율", 0)
@@ -874,23 +871,14 @@ elif page == "🏆 기관별 순위":
                     수주 = item.get("수주액", 0)
                     rc = rate_color(rate)
                     rank_num = i + 1
-                    if rank_num <= 3:
-                        s = top_styles[rank_num]
-                        medal = f'<span style="font-size:1.1rem; margin-left:6px;">{medal_icons[rank_num]}</span>'
-                        star = f'<span style="font-size:0.7rem; margin-left:4px;">{s["star"]}</span>' if s["star"] else ""
-                        rows_html += f'''<div style="display:flex; align-items:center; padding:{s["pad"]}; border-bottom:1px solid {COLORS["card_border"]}; background:{s["bg"]}; border-left:{s["border"]};">
-<div style="flex:0.5;"><span style="display:inline-flex; align-items:center; justify-content:center; width:{s["badge_size"]}; height:{s["badge_size"]}; border-radius:50%; background:{s["badge_bg"]}; color:#fff; font-size:{s["badge_font"]}; font-weight:800; box-shadow:0 2px 6px rgba(0,0,0,0.2);">{rank_num}</span></div>
-<div style="flex:3; display:flex; align-items:center;"><span style="font-size:{s["name_size"]}; font-weight:{s["name_weight"]}; color:{s["name_color"]};">{name}</span>{medal}{star}</div>
-<div style="flex:1.5; text-align:right; font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(발주)}</div>
-<div style="flex:1.5; text-align:right; font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(수주)}</div>
-<div style="flex:1.2; text-align:right; font-size:0.95rem; font-weight:800; color:{rc};">{rate}%</div>
-</div>'''
-                    else:
-                        badge_bg = "#e3e7fe"
-                        badge_fg = "#6576ff"
-                        rows_html += f'''<div style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]};">
+                    badge_bg = "#6576ff" if rank_num <= 3 else "#e3e7fe"
+                    badge_fg = "#fff" if rank_num <= 3 else "#6576ff"
+                    bg = top_bg.get(rank_num, "transparent")
+                    bl = top_border.get(rank_num, "none")
+                    medal = f'<span style="font-size:1rem; margin-left:4px;">{medal_icons[rank_num]}</span>' if rank_num in medal_icons else ""
+                    rows_html += f'''<div style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{bg}; border-left:{bl};">
 <div style="flex:0.5;"><span style="display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:{badge_bg}; color:{badge_fg}; font-size:0.72rem; font-weight:700;">{rank_num}</span></div>
-<div style="flex:3;"><span style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span></div>
+<div style="flex:3; display:flex; align-items:center;"><span style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span>{medal}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(발주)}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(수주)}</div>
 <div style="flex:1.2; text-align:right; font-size:0.88rem; font-weight:700; color:{rc};">{rate}%</div>
