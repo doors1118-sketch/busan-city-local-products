@@ -856,15 +856,28 @@ elif page == "🏆 기관별 순위":
             sector_data = fetch_api(f"/api/ranking/{sector_opt}")
             rank_data = sector_data.get("랭킹", {}) if sector_data else {}
 
+        # ── 수요기관 수 (DB에서 — 분류별) ──
+        try:
+            import sqlite3, os
+            db_path = os.path.join(os.path.dirname(__file__), "busan_agencies_master.db")
+            _conn = sqlite3.connect(db_path)
+            n_부산 = _conn.execute("SELECT COUNT(*) FROM agency_master WHERE cate_lrg LIKE '%부산%'").fetchone()[0]
+            n_정부 = _conn.execute("SELECT COUNT(*) FROM agency_master WHERE cate_lrg LIKE '%정부%'").fetchone()[0]
+            _conn.close()
+        except Exception:
+            n_부산 = 1934
+            n_정부 = 480
+            
         # 상/하위 순위 — DashLite Invest 스타일
         for grp_name in ["부산광역시 및 소속기관", "정부 및 국가공공기관"]:
             grp_data = rank_data.get(grp_name, {})
             icon = '<img src="https://www.busan.go.kr/humanframe/global/assets/img/common/busan_logo.svg" style="height:26px; width:26px; object-fit:cover; object-position:left; vertical-align:middle; margin-right:8px;">' if "부산" in grp_name else '<img src="https://www.mois.go.kr/frt2022/main/img/common/logo.png" style="height:26px; width:26px; object-fit:cover; object-position:left; vertical-align:middle; margin-right:8px;">'
             grp_label = "부산시 및 소관기관" if "부산" in grp_name else "정부 및 국가공공기관"
             법적용 = "지방계약법 적용" if "부산" in grp_name else "국가계약법 적용"
+            기관수 = n_부산 if "부산" in grp_name else n_정부
             
             # 그룹 헤더 (상단에 한 번만)
-            st.markdown(f'<div style="padding:20px 0 8px;"><span style="font-size:1.15rem; font-weight:700; color:{COLORS["text_dark"]};">{icon} {grp_label}</span> <span style="font-size:0.78rem; color:{COLORS["text_light"]};">({법적용})</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="padding:20px 0 8px;"><span style="font-size:1.15rem; font-weight:700; color:{COLORS["text_dark"]};">{icon} {grp_label}</span> <span style="font-size:0.78rem; color:{COLORS["text_light"]};">({법적용} {기관수:,}개 기관)</span></div>', unsafe_allow_html=True)
             
             th_s = f'font-size:0.72rem; font-weight:600; color:{COLORS["text_light"]}; text-transform:uppercase; letter-spacing:0.03em;'
             
