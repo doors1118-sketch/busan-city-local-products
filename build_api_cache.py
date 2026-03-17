@@ -1039,7 +1039,18 @@ def build_cache():
     print(f"    지난주({weekly_cache['지난주_기간']}): 계약액 {tw_all.get('지난주_계약액',0)/1e8:,.0f}억, 수주율 {tw_all.get('지난주_수주율',0)}%")
     print(f"    수주율 증감: {tw_all.get('수주율_증감',0):+.1f}%p")
     
-    import tempfile, os
+    import tempfile, os, math
+    # NaN/Inf 치환: Pandas 계산 결과에 NaN이 섞이면 FastAPI가 500 에러 발생
+    def sanitize_nan(obj):
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return 0
+        elif isinstance(obj, dict):
+            return {k: sanitize_nan(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [sanitize_nan(v) for v in obj]
+        return obj
+    cache = sanitize_nan(cache)
+    
     # Atomic write: 임시파일에 쓴 후 rename → API 서버가 불완전 캐시를 읽는 것 방지
     tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json', dir=os.path.dirname(CACHE_FILE) or '.')
     try:

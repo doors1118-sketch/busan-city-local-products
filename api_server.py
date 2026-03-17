@@ -7,19 +7,35 @@
 문서: http://localhost:8000/docs
 """
 from fastapi import FastAPI, Query
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import json, sys
+import json, sys, math
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-app = FastAPI(title="부산 조달 모니터링 API", version="1.0")
+# NaN-safe JSON encoder: NaN/Inf → null (FastAPI 500 방지)
+class NaNSafeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return None
+        return super().default(obj)
+
+class NaNSafeResponse(JSONResponse):
+    def render(self, content):
+        return json.dumps(content, ensure_ascii=False, cls=NaNSafeEncoder).encode('utf-8')
+
+app = FastAPI(title="부산 조달 모니터링 API", version="1.0", default_response_class=NaNSafeResponse)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 CACHE_FILE = 'api_cache.json'
 
 def load_cache():
-    with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[ERROR] 캐시 로드 실패: {e}")
+        return {"error": f"캐시 파일 로드 실패: {str(e)}"}
 
 @app.get("/api/summary", tags=["대시보드"])
 def get_summary():
