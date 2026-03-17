@@ -440,10 +440,18 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         if not bypassed:
             return None
 
-    # 지역업체 수주액 (마스터 DB + 사업자번호 앞3자리 보조 판별)
+    # 지역업체 수주액 (마스터 DB + 사업자번호 앞3자리 보조 판별 + 예외 업체명)
     loc_amt = 0
     for bno, share in biz_nos:
-        if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
+        # DB 매칭, 부산 앞자리 매칭
+        is_local_bno = (bno in biznos) or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES)
+        
+        # 이름으로 에외 처리 (블루윙)
+        if not is_local_bno and row.get('corpList'):
+            if '블루윙' in str(row.get('corpList', '')):
+                is_local_bno = True
+                
+        if is_local_bno:
             loc_amt += amt * (share / 100.0)
 
     return (matched_cd, amt, loc_amt)
