@@ -859,6 +859,27 @@ elif page == "🏆 기관별 순위":
                 top_list = grp_data.get("상위", [])
                 header_html = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #6576ff 0%, #8a9bff 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔝 상위 10개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 높은 순</div></div>'
                 col_header = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
+                # 상위 1~3위 반짝임 CSS 애니메이션
+                sparkle_css = '''
+<style>
+@keyframes sparkle-gold {
+  0%, 100% { box-shadow: 0 0 4px rgba(255,215,0,0.3), inset 0 0 4px rgba(255,215,0,0.05); }
+  50% { box-shadow: 0 0 16px rgba(255,215,0,0.6), inset 0 0 8px rgba(255,215,0,0.15); }
+}
+@keyframes sparkle-silver {
+  0%, 100% { box-shadow: 0 0 4px rgba(192,192,192,0.3), inset 0 0 4px rgba(192,192,192,0.05); }
+  50% { box-shadow: 0 0 14px rgba(192,192,192,0.5), inset 0 0 6px rgba(192,192,192,0.12); }
+}
+@keyframes sparkle-bronze {
+  0%, 100% { box-shadow: 0 0 4px rgba(205,127,50,0.3), inset 0 0 4px rgba(205,127,50,0.05); }
+  50% { box-shadow: 0 0 12px rgba(205,127,50,0.45), inset 0 0 6px rgba(205,127,50,0.1); }
+}
+.rank-sparkle-1 { animation: sparkle-gold 2s ease-in-out infinite; border-left: 3px solid #FFD700 !important; }
+.rank-sparkle-2 { animation: sparkle-silver 2.5s ease-in-out infinite; border-left: 3px solid #C0C0C0 !important; }
+.rank-sparkle-3 { animation: sparkle-bronze 3s ease-in-out infinite; border-left: 3px solid #CD7F32 !important; }
+</style>
+'''
+                st.markdown(sparkle_css, unsafe_allow_html=True)
                 rows_html = ""
                 medal_icons = {1: "👑", 2: "🥈", 3: "🥉"}
                 medal_glow = {1: "rgba(255,215,0,0.12)", 2: "rgba(192,192,192,0.10)", 3: "rgba(205,127,50,0.10)"}
@@ -873,7 +894,8 @@ elif page == "🏆 기관별 순위":
                     badge_fg = "#fff" if rank_num <= 3 else "#6576ff"
                     row_bg = medal_glow.get(rank_num, "transparent")
                     medal = f'<span style="font-size:1rem; margin-left:4px;">{medal_icons[rank_num]}</span>' if rank_num in medal_icons else ""
-                    rows_html += f'''<div style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};">
+                    sparkle_class = f'rank-sparkle-{rank_num}' if rank_num <= 3 else ''
+                    rows_html += f'''<div class="{sparkle_class}" style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};">
 <div style="flex:0.5;"><span style="display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:{badge_bg}; color:{badge_fg}; font-size:0.72rem; font-weight:700;">{rank_num}</span></div>
 <div style="flex:3; display:flex; align-items:center;"><span style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span>{medal}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(발주)}</div>
