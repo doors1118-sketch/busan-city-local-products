@@ -7,7 +7,7 @@
 문서: http://localhost:8000/docs
 """
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import json, sys, math
 
@@ -36,6 +36,11 @@ def load_cache():
     except Exception as e:
         print(f"[ERROR] 캐시 로드 실패: {e}")
         return {"error": f"캐시 파일 로드 실패: {str(e)}"}
+
+@app.get("/", include_in_schema=False)
+def root():
+    """루트 접속 시 API 문서로 이동"""
+    return RedirectResponse(url="/docs")
 
 @app.get("/api/summary", tags=["대시보드"])
 def get_summary():
