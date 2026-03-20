@@ -436,7 +436,7 @@ if page == "📊 종합현황":
         amt_물품 = 분야_items[2][1].get("발주액", 0) if len(분야_items) > 2 else 0
         amt_쇼핑 = 분야_items[3][1].get("발주액", 0) if len(분야_items) > 3 else 0
         
-        sub_info = f"공사 {round(amt_공사/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_공사)}) · 용역 {round(amt_용역/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_용역)}) · 물품 {round(amt_물품/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_물품)}) · 쇼핑몰 {round(amt_쇼핑/발주액*100,1) if 발주액>0 else 0}%({format_억(amt_쇼핑)})"
+        sub_info = f"공사 {round(amt_공사/발주액*100,1) if 발주액>0 else 0}% · 용역 {round(amt_용역/발주액*100,1) if 발주액>0 else 0}% · 물품 {round(amt_물품/발주액*100,1) if 발주액>0 else 0}% · 쇼핑몰 {round(amt_쇼핑/발주액*100,1) if 발주액>0 else 0}%"
         
         # ── 수요기관 수 (DB에서 — 분류별) ──
         try:
