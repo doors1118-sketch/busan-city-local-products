@@ -462,7 +462,7 @@ if page == "📊 종합현황":
         
             with col_hero:
                 sc = COLORS["success"]
-                st.markdown(f"""<div style="background: linear-gradient(135deg, #232e7a 0%, #3b4ab8 100%); border-radius: 8px; padding: 20px 28px 20px; box-shadow: 0 4px 20px rgba(35,46,122,0.35);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><span style="font-size:0.9rem; font-weight:700; color:rgba(255,255,255,0.85);">총 계약액</span><span style="font-size:0.78rem; color:rgba(255,255,255,0.55); font-weight:600;">{agency_label}</span></div><div style="font-size:2.4rem; font-weight:800; color:#fff; line-height:1; font-family:Nunito Sans,sans-serif; letter-spacing:-0.02em;">{format_조(발주액)}</div><div style="font-size:0.78rem; color:rgba(255,255,255,0.45); margin-top:6px;">{sub_info}</div><div style="font-size:0.9rem; font-weight:700; color:rgba(255,255,255,0.85); margin-top:16px;">지역업체 수주액 (수주율)</div><div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;"><div style="font-size:1.5rem; font-weight:700; color:rgba(255,255,255,0.92); font-family:Nunito Sans,sans-serif; line-height:1; letter-spacing:-0.02em;">{format_조(수주액)} <span style="color:{sc};">({수주율}%)</span></div><div style="text-align:right;"><span style="font-size:0.85rem; font-weight:700; color:{sc};">↑ 4.63%</span><br><span style="font-size:0.7rem; color:rgba(255,255,255,0.4);">vs. 지난주</span></div></div></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div style="background: linear-gradient(135deg, #232e7a 0%, #3b4ab8 100%); border-radius: 8px; padding: 20px 28px 20px; box-shadow: 0 4px 20px rgba(35,46,122,0.35);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><span style="font-size:0.9rem; font-weight:700; color:rgba(255,255,255,0.85);">총 계약액</span><span style="font-size:0.78rem; color:rgba(255,255,255,0.55); font-weight:600;">{agency_label}</span></div><div style="font-size:2.4rem; font-weight:800; color:#fff; line-height:1; font-family:Nunito Sans,sans-serif; letter-spacing:-0.02em;">{format_조(발주액)}</div><div style="font-size:0.68rem; color:rgba(255,255,255,0.45); margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{sub_info}</div><div style="font-size:0.9rem; font-weight:700; color:rgba(255,255,255,0.85); margin-top:16px;">지역업체 수주액 (수주율)</div><div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;"><div style="font-size:1.5rem; font-weight:700; color:rgba(255,255,255,0.92); font-family:Nunito Sans,sans-serif; line-height:1; letter-spacing:-0.02em;">{format_조(수주액)} <span style="color:{sc};">({수주율}%)</span></div><div style="text-align:right;"><span style="font-size:0.85rem; font-weight:700; color:{sc};">↑ 4.63%</span><br><span style="font-size:0.7rem; color:rgba(255,255,255,0.4);">vs. 지난주</span></div></div></div>""", unsafe_allow_html=True)
                 
                 # 웨이브 스파크라인 (Plotly 미니 area chart)
                 import random
@@ -974,7 +974,9 @@ elif page == "🏆 기관별 순위":
 
             with col_bot:
                 bot_list = grp_data.get("하위", [])
-                header_html_b = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔻 하위 10개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 낮은 순</div></div>'
+                total_agencies = grp_data.get("해당기관수", 0)
+                total_label = f' (전체 {total_agencies}개 기관)' if total_agencies else ''
+                header_html_b = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔻 하위 10개 기관{total_label}</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 낮은 순</div></div>'
                 col_header_b = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
                 rows_html_b = ""
                 for i, item in enumerate(bot_list[:10]):
@@ -984,11 +986,13 @@ elif page == "🏆 기관별 순위":
                     수주 = item.get("수주액", 0)
                     rc = rate_color(rate)
                     rank_num = i + 1
+                    actual_rank = total_agencies - i if total_agencies else ""
+                    rank_badge = f'<span style="font-size:0.6rem; font-weight:600; color:#e85347; background:#fce4e4; padding:1px 5px; border-radius:8px; margin-left:2px;">{total_agencies}개 중 {actual_rank}위</span>' if total_agencies else ""
                     badge_bg = "#e85347" if rank_num <= 3 else "#fce4e4"
                     badge_fg = "#fff" if rank_num <= 3 else "#e85347"
                     rows_html_b += f'''<div style="display:flex; align-items:center; padding:14px 20px; border-bottom:1px solid {COLORS["card_border"]};">
 <div style="flex:0.5;"><span style="display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:{badge_bg}; color:{badge_fg}; font-size:0.72rem; font-weight:700;">{rank_num}</span></div>
-<div style="flex:3;"><span style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span></div>
+<div style="flex:3;"><span style="font-size:0.88rem; font-weight:600; color:{COLORS["text_dark"]};">{name}</span> {rank_badge}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(발주)}</div>
 <div style="flex:1.5; text-align:right; font-size:0.85rem; font-weight:600; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif;">{format_억(수주)}</div>
 <div style="flex:1.2; text-align:right; font-size:0.88rem; font-weight:700; color:{rc};">{rate}%</div>
