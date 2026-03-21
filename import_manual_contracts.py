@@ -18,10 +18,23 @@ except ImportError:
 sys.stdout.reconfigure(encoding='utf-8')
 
 # ============ 설정 ============
-EXCEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    '00000.2026년 계약대장현황(시설공단)-노인일자리(수기).xlsx')
-if not os.path.exists(EXCEL):
-    EXCEL = r'c:\Users\doors\OneDrive\바탕 화면\사무실 작업\00000.2026년 계약대장현황(시설공단)-노인일자리(수기).xlsx'
+EXCEL_NAME = '00000.2026년 계약대장현황(시설공단)-노인일자리(수기).xlsx'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 엑셀 파일 탐색 순서: 1) 스크립트와 같은 폴더 2) 상위 폴더 3) Windows 하드코딩
+EXCEL = None
+for candidate in [
+    os.path.join(SCRIPT_DIR, EXCEL_NAME),
+    os.path.join(os.path.dirname(SCRIPT_DIR), EXCEL_NAME),
+    r'c:\Users\doors\OneDrive\바탕 화면\사무실 작업' + '\\' + EXCEL_NAME,
+]:
+    if os.path.exists(candidate):
+        EXCEL = candidate
+        break
+if EXCEL is None:
+    print(f'❌ 엑셀 파일을 찾을 수 없습니다: {EXCEL_NAME}')
+    print(f'   스크립트와 같은 폴더에 넣어주세요: {SCRIPT_DIR}')
+    sys.exit(1)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'procurement_contracts.db')
 AG_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'busan_agencies_master.db')
