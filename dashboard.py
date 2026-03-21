@@ -956,10 +956,12 @@ elif page == "🏆 기관별 순위":
                                             s_율_v = sv.get("수주율", 0)
                                             st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; padding:12px 14px; margin-top:8px;"><div style="display:flex; justify-content:space-between;"><div><div style="font-size:0.7rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:4px;">{sn}계약액</div><div style="font-size:1rem; font-weight:800; font-family:Nunito Sans,sans-serif;">{format_억(sv.get("발주액",0))}</div><div style="font-size:0.55rem; font-weight:600; color:{COLORS["text_light"]}; margin-top:6px;">지역업체 수주액</div><div style="font-size:0.82rem; font-weight:800; font-family:Nunito Sans,sans-serif; margin-top:1px;">{format_억(sv.get("수주액",0))} <span style="color:{COLORS["primary"]};">({s_율_v}%)</span></div></div><div style="display:flex; flex-direction:column; align-items:flex-end;"><span style="width:7px; height:7px; border-radius:50%; background:{dc}; display:inline-block;"></span><div style="display:flex; align-items:flex-end; gap:2px; height:30px; margin-top:6px;">{brs}</div></div></div></div>', unsafe_allow_html=True)
                                 # 유출계약
-                                leaks_t = det.get("유출계약", [])
-                                if leaks_t:
+                                leaks_all_t = det.get("유출계약", [])
+                                if leaks_all_t:
+                                    leaks_t = leaks_all_t[:50]
+                                    limit_txt_t = " (상위 50건)" if len(leaks_all_t) > 50 else ""
                                     th_lr = f'font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]}; padding:8px 0;'
-                                    lk_hd = f'<div style="display:flex; justify-content:space-between; padding:10px 16px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.85rem; font-weight:700; color:#fff;">🔴 {u} 유출 계약</div><div style="font-size:0.7rem; color:rgba(255,255,255,0.7);">{len(leaks_t)}건</div></div>'
+                                    lk_hd = f'<div style="display:flex; justify-content:space-between; padding:10px 16px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.85rem; font-weight:700; color:#fff;">🔴 {u} 유출 계약{limit_txt_t}</div><div style="font-size:0.7rem; color:rgba(255,255,255,0.7);">총 {len(leaks_all_t):,}건 중 상위 {len(leaks_t)}건</div></div>'
                                     ch_r = f'<div style="display:flex; padding:6px 16px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.8; {th_lr}">분야</div><div style="flex:3; {th_lr}">계약명</div><div style="flex:1.2; {th_lr} text-align:right;">계약액</div><div style="flex:1.2; {th_lr} text-align:right;">유출액</div><div style="flex:1; {th_lr} text-align:right;">유출율</div><div style="flex:2.5; {th_lr} padding-left:12px;">수주업체</div></div>'
                                     rws = ""
                                     for li, lk in enumerate(leaks_t):
@@ -1039,10 +1041,12 @@ elif page == "🏆 기관별 순위":
                                             s_율_v = sv.get("수주율", 0)
                                             st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; padding:12px 14px; margin-top:8px;"><div style="display:flex; justify-content:space-between;"><div><div style="font-size:0.7rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:4px;">{sn}계약액</div><div style="font-size:1rem; font-weight:800; font-family:Nunito Sans,sans-serif;">{format_억(sv.get("발주액",0))}</div><div style="font-size:0.55rem; font-weight:600; color:{COLORS["text_light"]}; margin-top:6px;">지역업체 수주액</div><div style="font-size:0.82rem; font-weight:800; font-family:Nunito Sans,sans-serif; margin-top:1px;">{format_억(sv.get("수주액",0))} <span style="color:{COLORS["primary"]};">({s_율_v}%)</span></div></div><div style="display:flex; flex-direction:column; align-items:flex-end;"><span style="width:7px; height:7px; border-radius:50%; background:{dc}; display:inline-block;"></span><div style="display:flex; align-items:flex-end; gap:2px; height:30px; margin-top:6px;">{brs}</div></div></div></div>', unsafe_allow_html=True)
                                 # 유출계약
-                                leaks_b = det.get("유출계약", [])
-                                if leaks_b:
+                                leaks_all_b = det.get("유출계약", [])
+                                if leaks_all_b:
+                                    leaks_b = leaks_all_b[:50]
+                                    limit_txt_b = " (상위 50건)" if len(leaks_all_b) > 50 else ""
                                     th_lr = f'font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]}; padding:8px 0;'
-                                    lk_hd = f'<div style="display:flex; justify-content:space-between; padding:10px 16px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.85rem; font-weight:700; color:#fff;">🔴 {u} 유출 계약</div><div style="font-size:0.7rem; color:rgba(255,255,255,0.7);">{len(leaks_b)}건</div></div>'
+                                    lk_hd = f'<div style="display:flex; justify-content:space-between; padding:10px 16px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.85rem; font-weight:700; color:#fff;">🔴 {u} 유출 계약{limit_txt_b}</div><div style="font-size:0.7rem; color:rgba(255,255,255,0.7);">총 {len(leaks_all_b):,}건 중 상위 {len(leaks_b)}건</div></div>'
                                     ch_r = f'<div style="display:flex; padding:6px 16px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.8; {th_lr}">분야</div><div style="flex:3; {th_lr}">계약명</div><div style="flex:1.2; {th_lr} text-align:right;">계약액</div><div style="flex:1.2; {th_lr} text-align:right;">유출액</div><div style="flex:1; {th_lr} text-align:right;">유출율</div><div style="flex:2.5; {th_lr} padding-left:12px;">수주업체</div></div>'
                                     rws = ""
                                     for li, lk in enumerate(leaks_b):
@@ -1153,12 +1157,14 @@ elif page == "🔍 기관별 실적 검색":
                             if row_idx == 0:
                                 st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
 
-                leaks = details.get("유출계약", [])
-                if leaks:
+                leaks_all = details.get("유출계약", [])
+                if leaks_all:
+                    leaks = leaks_all[:50]
+                    limit_txt = " (상위 50건)" if len(leaks_all) > 50 else ""
                     th_lk = f'font-size:0.72rem; font-weight:600; color:{COLORS["text_light"]}; letter-spacing:0.03em; padding:10px 0;'
                     leak_header = f"""<div style="display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;">
-<div style="font-size:0.9rem; font-weight:700; color:#fff;">🔴 {u} 주요 지역외 유출 계약</div>
-<div style="font-size:0.72rem; color:rgba(255,255,255,0.7);">{len(leaks)}건</div>
+<div style="font-size:0.9rem; font-weight:700; color:#fff;">🔴 {u} 주요 지역외 유출 계약{limit_txt}</div>
+<div style="font-size:0.72rem; color:rgba(255,255,255,0.7);">총 {len(leaks_all):,}건 중 상위 {len(leaks)}건</div>
 </div>"""
                     col_hdr = f'<div style="display:flex; align-items:center; padding:8px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.8; {th_lk}">분야</div><div style="flex:3; {th_lk}">계약명</div><div style="flex:1.2; {th_lk} text-align:right;">계약액</div><div style="flex:1.2; {th_lk} text-align:right;">유출액</div><div style="flex:1; {th_lk} text-align:right;">유출율</div><div style="flex:2.5; {th_lk} padding-left:12px;">수주업체</div></div>'
                     leak_rows = ""
@@ -1175,7 +1181,7 @@ elif page == "🔍 기관별 실적 검색":
                         leak_rows += f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};"><div style="flex:0.8;"><span style="background:{분야_clr}; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:600;">{분야_l}</span></div><div style="flex:3; font-size:0.8rem; font-weight:600; color:{COLORS["text_dark"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{계약명_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:600; font-family:Nunito Sans,sans-serif;">{계약액_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS["danger"]}; font-family:Nunito Sans,sans-serif;">{유출액_l}</div><div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{율_clr};">{유출율_l}%</div><div style="flex:2.5; font-size:0.75rem; color:{COLORS["text_light"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:12px;">{수주업체_l}</div></div>'
                     st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden; margin-top:8px;">{leak_header}{col_hdr}{leak_rows}</div>', unsafe_allow_html=True)
                     # Excel 다운로드
-                    df_dl = pd.DataFrame(leaks)
+                    df_dl = pd.DataFrame(leaks_all)
                     cols_dl = ["분야", "계약명", "계약액", "유출액", "유출율", "수주업체"]
                     df_dl = df_dl[[c for c in cols_dl if c in df_dl.columns]].copy()
                     import io
