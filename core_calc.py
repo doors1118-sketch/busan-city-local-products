@@ -414,7 +414,8 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         if np.isnan(amt) or amt == 0:
             amt = float(row.get('totCntrctAmt', 0))
         if np.isnan(amt): amt = 0
-        inst_cd = str(row.get('dminsttCd', '')).strip()
+        # dminsttCd가 SELECT에 없을 때 cntrctInsttCd를 fallback으로 사용
+        inst_cd = str(row.get('dminsttCd', '') or row.get('cntrctInsttCd', '') or '').strip()
         biz_nos = parse_corp_shares(row.get('corpList', ''))
 
     # 기관 매칭 (dminsttCd → dminsttList fallback)
