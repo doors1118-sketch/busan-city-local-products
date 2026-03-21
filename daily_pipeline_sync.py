@@ -94,6 +94,10 @@ def update_agency_master_daily(target_date):
                 item.get('chgDt')
             ))
             
+    # 제외 기관 (대행 계약이 실적으로 둔갑하는 문제 방지)
+    EXCLUDE_AGENCY_CODES = {'1230130'}  # 부산지방조달청
+    busan_agencies = [ag for ag in busan_agencies if str(ag[0]).strip() not in EXCLUDE_AGENCY_CODES]
+    
     if busan_agencies:
         conn = sqlite3.connect(AGENCY_DB_PATH)
         cursor = conn.cursor()
@@ -119,9 +123,16 @@ def update_agency_master_daily(target_date):
             print(f"   -> 조치방법: 파일에 소속을 기입하신 뒤, `update_agency_categories.py`를 실행하세요!\n")
             
         cursor.executemany('''
-            INSERT OR REPLACE INTO agency_master 
+            INSERT INTO agency_master 
             (dminsttCd, dminsttNm, bizno, rgnNm, adrs, dltYn, rgstDt, chgDt)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(dminsttCd) DO UPDATE SET
+            dminsttNm=excluded.dminsttNm,
+            bizno=excluded.bizno,
+            rgnNm=excluded.rgnNm,
+            adrs=excluded.adrs,
+            dltYn=excluded.dltYn,
+            chgDt=excluded.chgDt
         ''', busan_agencies)
         conn.commit()
         conn.close()
@@ -195,9 +206,20 @@ def update_company_master_daily(target_date):
         conn = sqlite3.connect(COMPANY_DB_PATH)
         cursor = conn.cursor()
         cursor.executemany('''
-            INSERT OR REPLACE INTO company_master
+            INSERT INTO company_master
             (bizno, corpNm, ceoNm, rgnNm, adrs, dtlAdrs, hdoffceDivNm, corpBsnsDivNm, mnfctDivNm, opbizDt, rgstDt, chgDt, source)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bizno) DO UPDATE SET
+            corpNm=excluded.corpNm,
+            ceoNm=excluded.ceoNm,
+            rgnNm=excluded.rgnNm,
+            adrs=excluded.adrs,
+            dtlAdrs=excluded.dtlAdrs,
+            hdoffceDivNm=excluded.hdoffceDivNm,
+            corpBsnsDivNm=excluded.corpBsnsDivNm,
+            mnfctDivNm=excluded.mnfctDivNm,
+            opbizDt=excluded.opbizDt,
+            chgDt=excluded.chgDt
         ''', busan_companies)
         conn.commit()
         conn.close()

@@ -27,7 +27,7 @@ MIN_AMT = {
     '용역': 30e8,
     '물품': 10e8,
     '쇼핑몰': 10e8,
-    None: 50e8,
+    None: 30e8,
 }
 TOP_N = 10
 
@@ -205,6 +205,12 @@ def build_cache():
     
 
     
+    agency_suui_details = defaultdict(lambda: {
+        "총발주액": 0, "총수주액": 0, "총수주율": 0, "그룹": "",
+        "분야별": {},
+        "유출계약": {"공사": [], "용역": [], "물품": [], "쇼핑몰": []}
+    })
+
     # --- 쇼핑몰 (공사자재 현장 필터) + 유출품목 집계 ---
     print("  [쇼핑몰] 계산 중...")
     df = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
@@ -214,10 +220,9 @@ def build_cache():
     df.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
     
-    # 공사자재 현장 필터 적용
     df, n_site_drop, amt_site_drop = filter_shopping_by_site(
-        df, conn, set(inst_dict.keys()))
-    print(f"    공사자재 현장배제: {n_site_drop}건 ({amt_site_drop/1e8:.1f}억)")
+        df, conn, set(inst_dict.keys()), inst_dict=inst_dict)
+    print(f"    쇼핑몰 현장배제: {n_site_drop}건 ({amt_site_drop/1e8:.1f}억)")
     
     grp_r = {}
     ag_r = defaultdict(lambda:{'total':0,'local':0})
@@ -362,6 +367,58 @@ def build_cache():
                 "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
                 "그룹": grp,
             })
+
+    # 쇼핑몰 유출계약
+    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn FROM shopping_cntrct", conn2)
+    df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
+    df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
+    df_shop.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
+    df_shop, _, _ = filter_shopping_by_site(df_shop, conn2, set(inst_dict.keys()), inst_dict=inst_dict)
+    
+    # 그룹핑 (dlvrReqNo 단위 합산)
+    df_shop['prdctAmt'] = pd.to_numeric(df_shop['prdctAmt'], errors='coerce').fillna(0)
+    grouped_shop = df_shop.groupby([
+        'dlvrReqNo', 'dminsttCd', 'cntrctCorpBizno', 'corpNm', 'dlvrReqNm'
+    ], as_index=False, dropna=False).agg({
+        'prdctAmt': 'sum'
+    })
+    
+    for _, row in grouped_shop.iterrows():
+        result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
+        if not result: continue
+        cd, amt, loc = result
+        if amt == 0: continue
+        nloc = amt - loc
+        if nloc < amt * 0.5: continue
+        unit = get_unit(cd)
+        grp = inst_grp.get(cd, "")
+        bno = str(row.get('cntrctCorpBizno','')).replace('-','').strip()
+        corp_nm = ''
+        if bno and bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
+            corp_nm = str(row.get('corpNm','')).strip()
+        leak_contracts.append({
+            "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
+            "계약액": round(amt), "유출액": round(nloc),
+            "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
+            "그룹": grp,
+        })
+        
+        # --- agency_suui_details for 쇼핑몰 ---
+        if "쇼핑몰" not in agency_suui_details[unit]["분야별"]:
+            agency_suui_details[unit]["분야별"]["쇼핑몰"] = {"발주액": 0, "수주액": 0}
+        agency_suui_details[unit]["총발주액"] += amt
+        agency_suui_details[unit]["총수주액"] += loc
+        if grp: agency_suui_details[unit]["그룹"] = grp
+        agency_suui_details[unit]["분야별"]["쇼핑몰"]["발주액"] += amt
+        agency_suui_details[unit]["분야별"]["쇼핑몰"]["수주액"] += loc
+        if nloc >= amt * 0.5:
+            agency_suui_details[unit]["유출계약"]["쇼핑몰"].append({
+                "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
+                "계약액": round(amt), "유출액": round(nloc),
+                "유출율": round(nloc/amt*100, 1) if amt>0 else 0, "수주업체": corp_nm[:40], "그룹": grp
+            })
+        # -------------------------------------
+        
     conn2.close()
     
     leak_contracts.sort(key=lambda x: x['유출액'], reverse=True)
@@ -585,6 +642,35 @@ def build_cache():
                 if not bypassed: continue
             biz_list = parse_corp_shares(row.get('corpList', ''))
             if not biz_list: continue
+            
+            # --- agency_suui_details logic ---
+            res = process_contract_row(row, inst_dict, biznos, use_location_filter=True, bid_dict=bid_dict, award_set=award_sets.get(sector, set()))
+            if res:
+                _, p_amt, p_loc = res
+                if p_amt > 0:
+                    if sector not in agency_suui_details[unit]["분야별"]:
+                        agency_suui_details[unit]["분야별"][sector] = {"발주액": 0, "수주액": 0}
+                    agency_suui_details[unit]["총발주액"] += p_amt
+                    agency_suui_details[unit]["총수주액"] += p_loc
+                    if grp: agency_suui_details[unit]["그룹"] = grp
+                    agency_suui_details[unit]["분야별"][sector]["발주액"] += p_amt
+                    agency_suui_details[unit]["분야별"][sector]["수주액"] += p_loc
+                    pnloc = p_amt - p_loc
+                    if pnloc >= p_amt * 0.5:
+                        corp_nmm = ''
+                        for chunk in str(row.get('corpList','') or '').split('[')[1:]:
+                            parts = chunk.split(']')[0].split('^')
+                            if len(parts) >= 10:
+                                bnn = str(parts[9]).replace('-','').strip()
+                                if bnn not in biznos and not (len(bnn) >= 3 and bnn[:3] in BUSAN_BIZNO_PREFIXES) and len(parts) >= 4:
+                                    corp_nmm = parts[3].strip(); break
+                        agency_suui_details[unit]["유출계약"][sector].append({
+                            "분야": sector, "수요기관": unit, "계약명": str(row.get('cntrctNm', '') or '')[:60],
+                            "계약액": round(p_amt), "유출액": round(pnloc),
+                            "유출율": round(pnloc/p_amt*100, 1) if p_amt>0 else 0, "수주업체": corp_nmm[:40], "그룹": grp
+                        })
+            # ---------------------------------
+            
             key = f"{grp}_{sector}"
             suui_stats[key]['total'] += 1
             prot_by_agency[unit]['total'] += 1
@@ -764,6 +850,19 @@ def build_cache():
             agency_details[u]["유출계약"].append(lc)
 
     cache["12_기관별_상세"] = dict(agency_details)
+    
+    for unit, details in agency_suui_details.items():
+        details["총수주율"] = pct(details["총발주액"], details["총수주액"])
+        details["총발주액"] = round(details["총발주액"])
+        details["총수주액"] = round(details["총수주액"])
+        for sct, sct_d in details["분야별"].items():
+            sct_d["수주율"] = pct(sct_d["발주액"], sct_d["수주액"])
+            sct_d["발주액"] = round(sct_d["발주액"])
+            sct_d["수주액"] = round(sct_d["수주액"])
+        for sct, leak_list in details["유출계약"].items():
+            leak_list.sort(key=lambda x: x["유출액"], reverse=True)
+            
+    cache["13_수의계약_기관별_상세"] = dict(agency_suui_details)
     
     # 지역업체 현황표 (busan_companies_master.db에서 집계)
     print("  [지역업체 현황표] 집계 중...")

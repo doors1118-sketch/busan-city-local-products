@@ -167,7 +167,7 @@ def main():
     
     # 공사자재 현장 필터
     df_shop, n_shop_drop, amt_shop_drop = filter_shopping_by_site(
-        df_shop, conn_pr, set(busan_inst_dict.keys()))
+        df_shop, conn_pr, set(busan_inst_dict.keys()), inst_dict=busan_inst_dict)
     print(f"  🚨 [쇼핑몰 현장배제] 공사자재 타지역 {n_shop_drop}건 배제 ({amt_shop_drop:,.0f}원)")
     
     stats_shop = process_dataframe(df_shop, busan_inst_dict, busan_comp_biznos, is_shopping=True)

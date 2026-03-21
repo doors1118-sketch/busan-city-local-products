@@ -41,6 +41,10 @@ NON_BUSAN_KEYWORDS = [
     '새만금',
     # 특정 비부산 프로젝트 지명
     '웅상', '삼자현',
+    # 우체국 등 국가기관 관할구역 내 비부산 지역
+    '거창', '진해',
+    # 한전 비부산 변전소/송전선 (부산울산지역본부 관할 내 경북/경남 시설)
+    '상운', '풍기', '칠산', '선산', '명곡', '옥동', '신장수',
     # 전국 단위 사업
     '국도', '국가지원지방도',
     # 권역명
@@ -71,6 +75,9 @@ BUSAN_EXCEPTIONS = {
     '고성': ['고성동'],             # 부산 고성동 (없지만 안전장치)
     '남해': ['남해안', '남해고속'],   # 부산 남해안 관련 공사
     '국도': ['부산'],               # 부산 구간 국도 사업 허용
+    '진해': ['진해신항', '진해항', '부산진해'],  # 부산항 진해신항, LH 부산진해 사업
+    '풍기': ['송풍기'],              # 장비명 '송풍기' 오탐 방지
+    '산청': ['청사'],                # '부산청사'에서 '산청' 오탐 방지
 }
 
 
@@ -352,13 +359,12 @@ def _match_project(dlvr_nm, agency_notices):
     return None, None
 
 
-def filter_shopping_by_site(df, conn, busan_agency_cds):
-    """쇼핑몰 공사자재에서 부산 외 현장 건 배제.
+def filter_shopping_by_site(df, conn, busan_agency_cds, inst_dict=None):
+    """쇼핑몰에서 부산 외 현장 건 배제 (2단계 필터).
     
-    3그룹 분류:
-    - 부산 전용 기관(928개): 통과
-    - 타지역 전용 기관(11개): cnstwkMtrlDrctPurchsObjYn='Y' 배제
-    - 혼재 기관(64개): dlvrReqNm ↔ bidNtceNm 텍스트 매칭
+    1차: 관급자재(Y) 현장추적 — 기존 공사현장 매칭 로직
+    2차: 전체 — 납품건명(dlvrReqNm)에 타지역 키워드가 명확한 건 배제
+         (단, 부산시 소속기관은 2차 필터 면제)
     
     Returns: (filtered_df, n_dropped, amt_dropped)
     """
@@ -370,6 +376,7 @@ def filter_shopping_by_site(df, conn, busan_agency_cds):
     
     drop_mask = pd.Series(False, index=df.index)
     
+    # --- 1차: 관급자재(Y) 현장추적 필터 (기존 로직) ---
     for idx, row in df.iterrows():
         is_cnstwk = str(row.get('cnstwkMtrlDrctPurchsObjYn', '')).strip() == 'Y'
         if not is_cnstwk:
@@ -391,6 +398,32 @@ def filter_shopping_by_site(df, conn, busan_agency_cds):
             site, is_busan = _match_project(dlvr_nm, agency_ntcs)
             if site is not None and not is_busan:
                 drop_mask[idx] = True
+    
+    # --- 2차: 납품건명 텍스트 키워드 필터 (관급·일반 모두 대상) ---
+    # 부산시 소속기관은 2차 필터 면제
+    for idx, row in df.iterrows():
+        if drop_mask[idx]:
+            continue  # 이미 1차에서 배제된 건은 스킵
+        
+        cd = str(row.get('dminsttCd', '')).strip()
+        
+        # 부산시 소속기관은 면제
+        if inst_dict:
+            agency_info = inst_dict.get(cd, {})
+            if agency_info.get('cate_lrg') == '부산광역시 및 소속기관':
+                continue
+        
+        dlvr_nm = str(row.get('dlvrReqNm', '') or '').strip()
+        if not dlvr_nm:
+            continue
+        
+        for kw in NON_BUSAN_KEYWORDS:
+            if kw in dlvr_nm:
+                exceptions = BUSAN_EXCEPTIONS.get(kw, [])
+                if any(exc in dlvr_nm for exc in exceptions):
+                    continue
+                drop_mask[idx] = True
+                break
     
     n_dropped = drop_mask.sum()
     amt_dropped = df.loc[drop_mask, 'prdctAmt'].astype(float).sum()
