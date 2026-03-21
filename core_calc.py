@@ -414,19 +414,29 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         if np.isnan(amt) or amt == 0:
             amt = float(row.get('totCntrctAmt', 0))
         if np.isnan(amt): amt = 0
-        # dminsttCd가 SELECT에 없을 때 cntrctInsttCd를 fallback으로 사용
-        inst_cd = str(row.get('dminsttCd', '') or row.get('cntrctInsttCd', '') or '').strip()
         biz_nos = parse_corp_shares(row.get('corpList', ''))
 
-    # 기관 매칭 (dminsttCd → dminsttList fallback)
+    # 기관 매칭 (dminsttCd -> dminsttList -> cntrctInsttCd 최후 수단)
     matched_cd = None
-    if inst_cd in inst_dict:
-        matched_cd = inst_cd
-    elif not is_shopping:
+    
+    # 1. dminsttCd 확인
+    cd_cand = str(row.get('dminsttCd', '') or '').strip()
+    if cd_cand in inst_dict:
+        matched_cd = cd_cand
+        
+    # 2. dminsttList 확인 (일반 공고의 수요기관은 주로 여기에 있음)
+    if matched_cd is None and not is_shopping:
         for dcd in extract_dminstt_codes(row.get('dminsttList', '')):
             if dcd in inst_dict:
                 matched_cd = dcd
                 break
+                
+    # 3. cntrctInsttCd 확인 (기본값 없고 수기 계약처럼 dminstt 정보 누락 시 최후의 수단)
+    if matched_cd is None:
+        cd_cand2 = str(row.get('cntrctInsttCd', '') or '').strip()
+        if cd_cand2 in inst_dict:
+            matched_cd = cd_cand2
+            
     if matched_cd is None:
         return None
 
