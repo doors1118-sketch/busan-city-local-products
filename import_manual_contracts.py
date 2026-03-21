@@ -69,15 +69,19 @@ def format_date(val):
 
 
 def build_corp_list(corp_name, bizno, addr, phone, repr_name):
-    """조달청 corpList 형식으로 변환 (간이)
-    형식: [1^대표^업체명^사업자번호^대표자^주소^전화^100]
+    """조달청 corpList 형식으로 변환
+    parse_corp_shares가 parts[9]=사업자번호, parts[6]=지분율 을 읽으므로
+    10개 이상 필드를 맞춰야 함.
+    원본 형식: [순번^역할^업종^업종2^업체명^대표자^지분율^주소^전화^사업자번호^...]
     """
-    bizno = str(bizno or '').strip()
+    bizno = str(bizno or '').strip().replace('-', '')
     corp_name = (corp_name or '').strip()
     addr = (addr or '').strip()
     phone = (phone or '').strip()
     repr_name = (repr_name or '').strip()
-    return f"[1^대표^{corp_name}^{bizno}^{repr_name}^{addr}^{phone}^100]"
+    # parts[0]=순번, [1]=역할, [2]=업종, [3]=업종2, [4]=업체명, 
+    # [5]=대표자, [6]=지분율, [7]=주소, [8]=전화, [9]=사업자번호
+    return f"[1^대표^^{corp_name}^^{repr_name}^100^{addr}^{phone}^{bizno}]"
 
 
 def get_table_for_type(contract_type):
