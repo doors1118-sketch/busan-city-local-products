@@ -445,7 +445,7 @@ def filter_shopping_by_site(df, conn, busan_agency_cds, inst_dict=None):
     
     # --- 3차: 국도 구간명 패턴 필터 ---
     # "지명-지명(차수) 관급(자재)" 형식 (예: 군북-가야(7차) 관급(레미콘))
-    road_section_pattern = re.compile(r'^[가-힣]+-[가-힣]+\(?\d*차?\)?\s*관급')
+    road_section_pattern = re.compile(r'^[가-힣]+-[가-힣]+[\s가-힣]*\([\d차이월\s]*\)\s*관급')
     for idx, row in df.iterrows():
         if drop_mask[idx]:
             continue
