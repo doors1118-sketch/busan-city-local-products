@@ -442,6 +442,16 @@ def filter_shopping_by_site(df, conn, busan_agency_cds, inst_dict=None):
                 drop_mask[idx] = True
                 break
     
+    # --- 3차: 국도 구간명 패턴 필터 ---
+    # "지명-지명(차수) 관급(자재)" 형식 (예: 군북-가야(7차) 관급(레미콘))
+    road_section_pattern = re.compile(r'^[가-힣]+-[가-힣]+\(?\d*차?\)?\s*관급')
+    for idx, row in df.iterrows():
+        if drop_mask[idx]:
+            continue
+        dlvr_nm = str(row.get('dlvrReqNm', '') or '').strip()
+        if road_section_pattern.match(dlvr_nm):
+            drop_mask[idx] = True
+    
     n_dropped = drop_mask.sum()
     amt_dropped = df.loc[drop_mask, 'prdctAmt'].astype(float).sum()
     filtered = df[~drop_mask].copy()
