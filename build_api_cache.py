@@ -430,7 +430,10 @@ def build_cache():
     print("  [보호제도] 계약 기반 분석 중...")
 
     SPECIALTY_TYPES = ['전기공사', '정보통신공사', '소방시설공사', '기계설비공사',
-                       '전기', '통신', '소방', '기계설비', '기계공사', '정보통신']
+                       '전기', '통신', '소방', '기계설비', '기계공사', '정보통신',
+                       '조경', '실내건축', '철근·콘크리트', '상하수도', '포장',
+                       '철강구조물', '금속구조물창호', '도장', '습식방수', '석공사',
+                       '비계', '지반조성', '철도궤도']
     PROT_THRESHOLDS = {
         '부산광역시 및 소속기관': {'종합공사': 100e8, '전문공사': 10e8, '용역': 3.3e8},
         '정부 및 국가공공기관':  {'종합공사': 88e8,  '전문공사': 10e8, '용역': 2.2e8},
@@ -456,7 +459,8 @@ def build_cache():
     prot_contract_queries = {
         'cnstwk_cntrct': ('공사', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
             dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
-            cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm
+            cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
+            cnstwkTypeLrg, cnstwkTypeDtl
             FROM [cnstwk_cntrct]
             WHERE cntrctCnclsMthdNm IN ('일반경쟁', '제한경쟁')"""),
         'servc_cntrct': ('용역', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
@@ -510,9 +514,13 @@ def build_cache():
                             bypassed = True
                     if not bypassed:
                         continue
-                # 공사 세분류
+                # 공사 세분류: cnstwkTypeLrg → mainCnsttyNm → 계약명 순으로 확인
+                type_lrg = str(row.get('cnstwkTypeLrg', '') or '').strip()
+                type_dtl = str(row.get('cnstwkTypeDtl', '') or '').strip()
                 main_type = str(row.get('mainCnsttyNm', '') or '').strip()
-                if main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
+                if type_lrg and any(k in type_lrg for k in SPECIALTY_TYPES): sub = '전문공사'
+                elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
+                elif main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
                 elif any(k in name for k in SPECIALTY_TYPES): sub = '전문공사'
                 else: sub = '종합공사'
             else:
@@ -521,8 +529,10 @@ def build_cache():
                 if is_non_busan_contract(row, lrg): continue
                 sub = '용역'
 
-            # 추정가격 (공고매칭 → 없으면 계약금액)
-            est_price = price_map.get(ntce_clean, amt)
+            # 추정가격 (공고매칭 → 총계약액 → 당해계약액)
+            # 장기계속계약은 당해(thtmCntrctAmt)가 작으므로 총계약액(totCntrctAmt) 우선
+            tot_amt = float(row.get('totCntrctAmt', 0) or 0)
+            est_price = price_map.get(ntce_clean, None) or tot_amt or amt
             threshold = PROT_THRESHOLDS[grp].get(sub)
             if not threshold: continue
 
