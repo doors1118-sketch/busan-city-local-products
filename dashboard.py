@@ -1441,14 +1441,14 @@ elif page == "🛡️ 지역업체 보호제도":
                     for vi, vals in enumerate(gov_미적용[:30]):
                         ct_name = str(vals[2]) if len(vals) > 2 else ""
                         ct_amt = vals[3] if len(vals) > 3 else 0
-                        ct_agency = str(vals[5]) if len(vals) > 5 else ""
+                        ct_agency = str(vals[6]) if len(vals) > 6 else (str(vals[5]) if len(vals) > 5 else "")
                         ct_sector = str(vals[0]) if len(vals) > 0 else ""
                         ct_method = str(vals[1]) if len(vals) > 1 else ""
                         rbg = "#fafbfe" if vi % 2 == 1 else COLORS["card_bg"]
                         st.markdown(f'''<div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid {COLORS['card_border']}; background:{rbg};">
 <div style="flex:0.3; font-size:0.82rem; font-weight:600; color:{COLORS['text_light']};">{vi+1}</div>
 <div style="flex:3; font-size:0.88rem; font-weight:600; color:{COLORS['text_dark']};">{ct_name}</div>
-<div style="flex:1; font-size:0.82rem; color:{COLORS['text_light']};">{ct_agency}</div>
+<div style="flex:1.2; font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']};">{ct_agency}</div>
 <div style="flex:0.6;"><span style="padding:2px 8px; border-radius:3px; background:#e9ecef; color:#364a63; font-size:0.75rem; font-weight:600;">{ct_sector}</span></div>
 <div style="flex:1; text-align:right; font-size:0.95rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(ct_amt)}</div>
 </div>''', unsafe_allow_html=True)
@@ -1472,14 +1472,14 @@ elif page == "🛡️ 지역업체 보호제도":
                     for vi, vals in enumerate(busan_미적용[:30]):
                         ct_name = str(vals[2]) if len(vals) > 2 else ""
                         ct_amt = vals[3] if len(vals) > 3 else 0
-                        ct_agency = str(vals[5]) if len(vals) > 5 else ""
+                        ct_agency = str(vals[6]) if len(vals) > 6 else (str(vals[5]) if len(vals) > 5 else "")
                         ct_sector = str(vals[0]) if len(vals) > 0 else ""
                         ct_method = str(vals[1]) if len(vals) > 1 else ""
                         rbg = "#fafbfe" if vi % 2 == 1 else COLORS["card_bg"]
                         st.markdown(f'''<div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid {COLORS['card_border']}; background:{rbg};">
 <div style="flex:0.3; font-size:0.82rem; font-weight:600; color:{COLORS['text_light']};">{vi+1}</div>
 <div style="flex:3; font-size:0.88rem; font-weight:600; color:{COLORS['text_dark']};">{ct_name}</div>
-<div style="flex:1; font-size:0.82rem; color:{COLORS['text_light']};">{ct_agency}</div>
+<div style="flex:1.2; font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']};">{ct_agency}</div>
 <div style="flex:0.6;"><span style="padding:2px 8px; border-radius:3px; background:#e8eaff; color:#6576ff; font-size:0.75rem; font-weight:600;">{ct_sector}</span></div>
 <div style="flex:1; text-align:right; font-size:0.95rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(ct_amt)}</div>
 </div>''', unsafe_allow_html=True)
@@ -1907,61 +1907,141 @@ elif page == "📝 수의계약":
 <span style="font-size:0.78rem; color:{COLORS['text_light']}; margin-left:8px;">기관 선택 시 해당 기관의 수의계약 유출 내역을 확인</span>
 </div>""", unsafe_allow_html=True)
 
-        all_vals_sui = _summary_vals
-        유출_기관 = _유출_기관
-        유출_계약 = _유출_계약
-
-        search_suui = st.text_input("🔍 기관 검색", key="suui_agency_search", placeholder="기관명을 입력하세요 (예: 해운대구, 부산교육청)")
+        search_suui = st.text_input("🔍 수의계약 대상 기관 검색", key="suui_agency_search", placeholder="기관명을 입력하세요 (예: 해운대구, 부산교육청)")
         
         if search_suui and search_suui.strip():
-            kw = search_suui.strip()
-            # 기관별 유출 데이터에서 검색
-            matched_기관 = [it for it in 유출_기관 if kw in it.get("기관", "")]
-            matched_계약 = [ct for ct in 유출_계약 if kw in ct.get("수요기관", "")]
-            
-            if matched_기관:
-                for 기관_info in matched_기관:
-                    agency_name = 기관_info.get("기관", "")
-                    유출액 = 기관_info.get("유출액", 0)
-                    건수 = 기관_info.get("건수", 0)
-                    그룹 = 기관_info.get("그룹", "")
-                    grp_display = format_group_display(그룹, for_html=True) if 그룹 else ""
+            st.markdown(f"### 🔍 '{search_suui}' 수의계약 유출현황 검색 결과")
+            found = False
+            search_api_res = fetch_api(f"/api/agency/suui-search?q={search_suui.strip()}")
+            if search_api_res and "검색결과" in search_api_res and search_api_res["검색결과"]:
+                found = True
+                for u, details in search_api_res["검색결과"].items():
+                    rate = details.get("총수주율", 0)
+                    rc = rate_color(rate)
+                    발주_t = details.get("총발주액", 0)
+                    수주_t = details.get("총수주액", 0)
+                    그룹 = details.get("그룹", "")
+                    법적용 = "지방계약법" if "부산" in 그룹 else "국가계약법"
+                    분야별 = details.get("분야별", {})
                     
-                    st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-top:3px solid {COLORS['danger']}; border-radius:4px; padding:16px; margin-top:8px;">
-<div style="display:flex; justify-content:space-between; align-items:flex-start;">
-<div>
-<div style="font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">{agency_name}</div>
-<div style="font-size:0.75rem; color:{COLORS['text_light']}; margin-top:4px;">{grp_display}</div>
+                    with st.container(border=True):
+                        col_hero, col_side = st.columns([6, 4])
+                        
+                        with col_hero:
+                            # 인디고 히어로 카드
+                            sub_parts = []
+                            for sn in ["공사", "용역", "물품", "쇼핑몰"]:
+                                sv = 분야별.get(sn, {})
+                                if sv.get("발주액", 0) > 0:
+                                    sub_parts.append(f"{sn}({format_억(sv.get('발주액',0))})")
+                            sub_info = " · ".join(sub_parts) if sub_parts else ""
+                            
+                            st.markdown(f"""<div style="background: linear-gradient(135deg, #232e7a 0%, #3b4ab8 100%); border-radius: 8px; padding: 28px 32px 22px; box-shadow: 0 4px 20px rgba(35,46,122,0.35);">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+<span style="font-size:1.3rem; font-weight:800; color:#fff;">{u} (수의계약 전체)</span>
+<span style="font-size:0.78rem; color:rgba(255,255,255,0.55); font-weight:600;">({법적용})</span>
 </div>
-<div style="text-align:right;">
-<div style="font-size:0.75rem; color:{COLORS['text_light']};">수의계약 유출액</div>
-<div style="font-size:1.4rem; font-weight:800; color:{COLORS['danger']};">{format_억(유출액)}</div>
-<div style="font-size:0.72rem; color:{COLORS['text_light']};">{건수}건</div>
+<div style="font-size:0.85rem; font-weight:600; color:rgba(255,255,255,0.7);">총 수의계약액</div>
+<div style="font-size:2.6rem; font-weight:800; color:#fff; line-height:1; font-family:Nunito Sans,sans-serif; letter-spacing:-0.02em; margin-top:4px;">{format_억(발주_t)}</div>
+<div style="font-size:0.72rem; color:rgba(255,255,255,0.4); margin-top:6px;">{sub_info}</div>
+<div style="font-size:0.85rem; font-weight:600; color:rgba(255,255,255,0.7); margin-top:18px;">지역업체 수주액 (수주율)</div>
+<div style="font-size:1.8rem; font-weight:800; color:rgba(255,255,255,0.95); font-family:Nunito Sans,sans-serif; line-height:1; letter-spacing:-0.02em; margin-top:6px;">{format_억(수주_t)} <span style="color:{rc};">({rate}%)</span></div>
+</div>""", unsafe_allow_html=True)
+
+                        
+                        with col_side:
+                            # 2x2 분야별 미니 카드
+                            dot_colors_s = {"공사":"#6576ff","용역":"#1ee0ac","물품":"#f4bd0e","쇼핑몰":"#ff63a5"}
+                            bar_sets_s = [
+                                [40,55,35,60,45,70,80], [60,45,50,35,55,40,65],
+                                [30,50,65,45,70,55,75], [45,35,55,40,50,60,70],
+                            ]
+                            분야_list = ["공사","용역","물품","쇼핑몰"]
+                            
+                            for row_idx in range(2):
+                                mc1, mc2 = st.columns(2)
+                                for ci, col_wgt in enumerate([mc1, mc2]):
+                                    si = row_idx * 2 + ci
+                                    if si >= len(분야_list):
+                                        break
+                                    sn = 분야_list[si]
+                                    sv = 분야별.get(sn, {})
+                                    s_발주 = sv.get("발주액", 0)
+                                    s_수주 = sv.get("수주액", 0)
+                                    s_율 = sv.get("수주율", 0)
+                                    dc = dot_colors_s.get(sn, "#aaa")
+                                    bars = ""
+                                    for j, h in enumerate(bar_sets_s[si]):
+                                        op = "0.3" if j < 6 else "1"
+                                        bars += f'<div style="width:6px; height:{h}%; background:{dc}; opacity:{op}; border-radius:1px;"></div>'
+                                    with col_wgt:
+                                        st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+<div style="display:flex; justify-content:space-between; align-items:flex-start;">
+<div style="flex:1;">
+<div style="font-size:0.75rem; font-weight:700; color:{COLORS['text_dark']}; margin-bottom:6px;">{sn}계약액</div>
+<div style="font-size:1.15rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif; line-height:1;">{format_억(s_발주)}</div>
+<div style="margin-top:8px;">
+<div style="font-size:0.6rem; font-weight:600; color:{COLORS['text_light']}; letter-spacing:0.03em;">지역업체 수주액</div>
+<div style="font-size:0.9rem; font-weight:800; color:{COLORS['text_dark']}; margin-top:2px; font-family:Nunito Sans,sans-serif;">{format_억(s_수주)} <span style="color:{COLORS['primary']};">({s_율}%)</span></div>
+</div>
+</div>
+<div style="text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
+<span style="width:8px; height:8px; border-radius:50%; background:{dc}; display:inline-block; margin-bottom:6px;"></span>
+<div style="display:flex; align-items:flex-end; gap:2px; height:36px; margin-top:6px;">{bars}</div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
+                                if row_idx == 0:
+                                    st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
+
+                    leaks_all = []
+                    for s, leak_list in details.get("유출계약", {}).items():
+                        leaks_all.extend(leak_list)
+                    leaks_all.sort(key=lambda x: x["유출액"], reverse=True)
                     
-                    # 해당 기관의 유출 계약 목록
-                    기관_유출 = [ct for ct in 유출_계약 if ct.get("수요기관") == agency_name]
-                    if 기관_유출:
-                        st.markdown(f"**🔴 {agency_name} 수의계약 유출 내역**")
-                        df_sui = pd.DataFrame(기관_유출)
-                        cols_show = ["분야", "계약명", "금액", "수주업체"]
-                        df_sui = df_sui[[c for c in cols_show if c in df_sui.columns]].copy()
-                        if "금액" in df_sui.columns:
-                            df_sui["금액"] = df_sui["금액"].apply(format_억)
-                        st.dataframe(df_sui, use_container_width=True, hide_index=True)
-            elif matched_계약:
-                # 기관별 상위에는 없지만 유출계약 목록에는 있는 경우
-                st.markdown(f"**🔴 '{kw}' 관련 수의계약 유출 내역**")
-                df_sui = pd.DataFrame(matched_계약)
-                cols_show = ["분야", "계약명", "금액", "수요기관", "수주업체"]
-                df_sui = df_sui[[c for c in cols_show if c in df_sui.columns]].copy()
-                if "금액" in df_sui.columns:
-                    df_sui["금액"] = df_sui["금액"].apply(format_억)
-                st.dataframe(df_sui, use_container_width=True, hide_index=True)
-            else:
-                st.info(f"'{kw}' 관련 수의계약 유출 데이터가 없습니다.")
+                    if leaks_all:
+                        leaks = leaks_all[:50]
+                        limit_txt = " (상위 50건)" if len(leaks_all) > 50 else ""
+                        th_lk = f'font-size:0.72rem; font-weight:600; color:{COLORS["text_light"]}; letter-spacing:0.03em; padding:10px 0;'
+                        leak_header = f"""<div style="display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;">
+<div style="font-size:0.9rem; font-weight:700; color:#fff;">🔴 {u} 주요 지역외 유출 수의계약{limit_txt}</div>
+<div style="font-size:0.72rem; color:rgba(255,255,255,0.7);">총 {len(leaks_all):,}건 중 상위 {len(leaks)}건</div>
+</div>"""
+                        col_hdr = f'<div style="display:flex; align-items:center; padding:8px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.8; {th_lk}">분야</div><div style="flex:3; {th_lk}">계약명</div><div style="flex:1.2; {th_lk} text-align:right;">계약액</div><div style="flex:1.2; {th_lk} text-align:right;">유출액</div><div style="flex:1; {th_lk} text-align:right;">유출율</div><div style="flex:2.5; {th_lk} padding-left:12px;">수주업체</div></div>'
+                        leak_rows = ""
+                        for li, lk in enumerate(leaks):
+                            분야_l = lk.get("분야", "")
+                            계약명_l = lk.get("계약명", "")[:40]
+                            계약액_l = format_억(lk.get("계약액", 0))
+                            유출액_l = format_억(lk.get("유출액", 0))
+                            유출율_l = lk.get("유출율", 0)
+                            수주업체_l = lk.get("수주업체", "")
+                            row_bg = "#fafbfe" if li % 2 == 1 else COLORS["card_bg"]
+                            율_clr = COLORS['danger'] if 유출율_l >= 80 else (COLORS['warning'] if 유출율_l >= 50 else COLORS['text_dark'])
+                            분야_clr = {"공사":"#6576ff","용역":"#1ee0ac","물품":"#f4bd0e","쇼핑몰":"#ff63a5"}.get(분야_l, COLORS["text_light"])
+                            leak_rows += f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};"><div style="flex:0.8;"><span style="background:{분야_clr}; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:600;">{분야_l}</span></div><div style="flex:3; font-size:0.8rem; font-weight:600; color:{COLORS["text_dark"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{계약명_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:600; font-family:Nunito Sans,sans-serif;">{계약액_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS["danger"]}; font-family:Nunito Sans,sans-serif;">{유출액_l}</div><div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{율_clr};">{유출율_l}%</div><div style="flex:2.5; font-size:0.75rem; color:{COLORS["text_light"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:12px;">{수주업체_l}</div></div>'
+                        st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden; margin-top:8px;">{leak_header}{col_hdr}{leak_rows}</div>', unsafe_allow_html=True)
+                        # Excel 다운로드
+                        df_dl = pd.DataFrame(leaks_all)
+                        cols_dl = ["분야", "수요기관", "계약명", "계약액", "유출액", "유출율", "수주업체", "그룹"]
+                        df_dl = df_dl[[c for c in cols_dl if c in df_dl.columns]].copy()
+                        import io
+                        buf = io.BytesIO()
+                        df_dl.to_excel(buf, index=False, engine='openpyxl')
+                        st.download_button(
+                            label=f"📥 {u} 수의계약 유출내역 전체 다운로드",
+                            data=buf.getvalue(),
+                            file_name=f"{u}_수의계약_유출.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_leak_suui_{u}"
+                        )
+                    else:
+                        st.info(f"{u}의 주요 지역외 유출 수의계약이 없습니다.")
+
+            if not found:
+                st.info(f"'{search_suui}' 기관 관련 데이터를 찾을 수 없습니다.")
+        else:
+            st.info("검색어를 입력하면 해당 기관의 수의계약 유출현황을 확인할 수 있습니다.")
 # ════════════════════════════════════════════
 # PAGE: 지역업체 정보
 # ════════════════════════════════════════════
@@ -2189,9 +2269,10 @@ elif page == "🏢 지역업체 정보":
                                             where_parts.append("(c.rprsntDtlPrdnm LIKE ? OR i.indstrytyNm LIKE ?)")
                                             params.extend([f"%{kw}%", f"%{kw}%"])
                                         sql = (
-                                            "SELECT DISTINCT c.corpNm, c.rgnNm FROM company_master c "
+                                            "SELECT DISTINCT c.corpNm, c.ceoNm, c.rgnNm, c.adrs, c.dtlAdrs, c.opbizDt, c.rgstDt "
+                                            "FROM company_master c "
                                             "LEFT JOIN company_industry i ON c.bizno = i.bizno "
-                                            f"WHERE ({' OR '.join(where_parts)}) ORDER BY c.corpNm LIMIT 50"
+                                            f"WHERE ({' OR '.join(where_parts)}) ORDER BY c.corpNm"
                                         )
                                         companies = cur.execute(sql, params).fetchall()
                                     else:
@@ -2199,18 +2280,35 @@ elif page == "🏢 지역업체 정보":
                                 else:
                                     # 공사/용역: 업종명으로 검색
                                     companies = cur.execute(
-                                        "SELECT DISTINCT c.corpNm, c.rgnNm FROM company_industry i "
+                                        "SELECT DISTINCT c.corpNm, c.ceoNm, c.rgnNm, c.adrs, c.dtlAdrs, c.opbizDt, c.rgstDt "
+                                        "FROM company_industry i "
                                         "JOIN company_master c ON i.bizno = c.bizno "
-                                        "WHERE i.indstrytyNm LIKE ? ORDER BY c.corpNm LIMIT 50",
+                                        "WHERE i.indstrytyNm LIKE ? ORDER BY c.corpNm",
                                         (f"%{selected}%",)
                                     ).fetchall()
                                 conn.close()
                                 if companies:
                                     comp_html = ""
-                                    for ci, (nm, rgn) in enumerate(companies):
+                                    for ci, row in enumerate(companies[:50]):
+                                        nm, rgn = row[0], row[2]
                                         comp_html += f'<div style="display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid {COLORS["card_border"]}; font-size:0.75rem;"><span style="font-weight:600; color:{COLORS["text_dark"]};">{nm}</span><span style="color:{COLORS["text_light"]};">{rgn or ""}</span></div>'
                                     st.markdown(f'<div style="max-height:200px; overflow-y:auto; padding:4px 8px; background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:4px;">{comp_html}</div>', unsafe_allow_html=True)
-                                    st.caption(f"{selected}: {len(companies)}개 업체")
+                                    
+                                    import pandas as pd
+                                    import io
+                                    df = pd.DataFrame(companies, columns=['업체명', '대표자명', '구군', '주소', '상세주소', '개업일', '등록일'])
+                                    buffer = io.BytesIO()
+                                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                                        df.to_excel(writer, index=False, sheet_name='업체목록')
+                                        
+                                    st.caption(f"총 {len(companies):,}개 통계 (화면에는 상위 50건만 표시됩니다)")
+                                    st.download_button(
+                                        label="📥 전체 다운로드 (Excel)",
+                                        data=buffer.getvalue(),
+                                        file_name=f"{selected.replace('/', '_')}_업체목록.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        key=f"dl_{search_key}_{selected}"
+                                    )
                                 else:
                                     st.caption("해당 업종 업체 없음")
                             except Exception as e:
