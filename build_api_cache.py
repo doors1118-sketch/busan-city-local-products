@@ -223,7 +223,7 @@ def build_cache():
                 busan_share += share
         busan_share = round(busan_share)
         
-        is_busan_grp = '부산' in (grp or '')
+        is_busan_grp = '부산' in str(grp or '')
         
         if is_joint:
             # 공동이행 지분 검증
@@ -388,7 +388,7 @@ def build_cache():
             "분야": "공사", "수요기관": unit or '', "계약명": str(row.get('cnstwkNm',''))[:60],
             "계약액": round(amt), "유출액": round(nloc),
             "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
-            "그룹": grp,
+            "그룹": grp, "비고": gen_비고(row, '공사', grp, biznos, bid_dict),
         })
     
     # 용역/물품 유출계약
@@ -427,7 +427,7 @@ def build_cache():
                 "분야": sector, "수요기관": unit or '', "계약명": str(row.get('cntrctNm',''))[:60],
                 "계약액": round(amt), "유출액": round(nloc),
                 "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
-                "그룹": grp,
+                "그룹": grp, "비고": gen_비고(row, sector, grp, biznos, bid_dict),
             })
 
     # 쇼핑몰 유출계약
@@ -462,7 +462,7 @@ def build_cache():
             "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
             "계약액": round(amt), "유출액": round(nloc),
             "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
-            "그룹": grp,
+            "그룹": grp, "비고": "직접구매",
         })
         
         # --- agency_shop_details (쇼핑몰 별도 탭용) ---
