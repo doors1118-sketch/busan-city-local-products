@@ -371,7 +371,7 @@ with st.sidebar:
     
     page = st.radio(
         "nav",
-        ["📊 종합현황", "🏆 기관별 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🏢 지역업체 정보"],
+        ["📊 종합현황", "🏆 기관별 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🛒 종합쇼핑몰", "🏢 지역업체 정보"],
         label_visibility="collapsed",
     )
     
@@ -2042,6 +2042,168 @@ elif page == "📝 수의계약":
                 st.info(f"'{search_suui}' 기관 관련 데이터를 찾을 수 없습니다.")
         else:
             st.info("검색어를 입력하면 해당 기관의 수의계약 유출현황을 확인할 수 있습니다.")
+# ════════════════════════════════════════════
+# PAGE: 종합쇼핑몰
+# ════════════════════════════════════════════
+elif page == "🛒 종합쇼핑몰":
+    data_shop = fetch_api("/api/shopping-contract")
+    _summary_shop = fetch_api("/api/summary")
+
+    if data_shop:
+        유출_기관_shop = data_shop.get("유출_기관별", [])
+        유출_list_shop = data_shop.get("유출_쇼핑몰", [])
+
+        # --- 쇼핑몰 요약 ---
+        st.markdown(f"""<div style="background:linear-gradient(135deg, #ff9a56 0%, #ff6b6b 100%); border-radius:8px; padding:20px 24px; margin-bottom:20px;">
+<h2 style="margin:0 0 4px; font-size:1.2rem; font-weight:800; color:#fff; letter-spacing:-0.02em;">🛒 종합쇼핑몰 분석</h2>
+<p style="margin:0; font-size:0.78rem; color:rgba(255,255,255,0.8);">나라장터 종합쇼핑몰 구매 현황 (경쟁입찰 없이 직접 구매)</p>
+</div>""", unsafe_allow_html=True)
+
+        # 쇼핑몰 전체 수주율 (종합현황에서 가져옴)
+        if _summary_shop:
+            분야별_shop = _summary_shop.get("2_분야별", {})
+            쇼핑몰_dat = 분야별_shop.get("쇼핑몰", {})
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:18px 20px;">
+<div style="font-size:0.7rem; font-weight:600; color:{COLORS['text_light']};">총 쇼핑몰 구매액</div>
+<div style="font-size:1.5rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif; margin-top:4px;">{format_억(쇼핑몰_dat.get('발주액', 0))}</div>
+</div>""", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:18px 20px;">
+<div style="font-size:0.7rem; font-weight:600; color:{COLORS['text_light']};">지역업체 수주액</div>
+<div style="font-size:1.5rem; font-weight:800; color:{COLORS['primary']}; font-family:Nunito Sans,sans-serif; margin-top:4px;">{format_억(쇼핑몰_dat.get('수주액', 0))}</div>
+</div>""", unsafe_allow_html=True)
+            with c3:
+                rate_shop = 쇼핑몰_dat.get('수주율', 0)
+                st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:18px 20px;">
+<div style="font-size:0.7rem; font-weight:600; color:{COLORS['text_light']};">수주율</div>
+<div style="font-size:1.5rem; font-weight:800; color:{'#1ee0ac' if rate_shop >= 50 else '#e85347'}; font-family:Nunito Sans,sans-serif; margin-top:4px;">{rate_shop}%</div>
+</div>""", unsafe_allow_html=True)
+
+        # --- 유출 기관별 + 유출 계약 Top 10 ---
+        if 유출_기관_shop or 유출_list_shop:
+            st.markdown("---")
+            col_ag, col_ct = st.columns([1, 1])
+            with col_ag:
+                st.markdown(f"""<div style="padding:16px 0 12px;">
+<h3 style="margin:0; font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">유출액 상위 기관</h3>
+<span style="font-size:0.7rem; color:{COLORS['text_light']};">쇼핑몰 유출 상위 15개 기관</span>
+</div>""", unsafe_allow_html=True)
+                if 유출_기관_shop:
+                    max_amt_s = max(a.get('유출액', 1) for a in 유출_기관_shop) if 유출_기관_shop else 1
+                    for ai, ag in enumerate(유출_기관_shop):
+                        pct_w = min(ag['유출액'] / max_amt_s * 100, 100)
+                        grp_c = COLORS['primary'] if ag.get('그룹','') == '부산광역시 및 소속기관' else '#9cabff'
+                        st.markdown(f"""<div style="padding:10px 4px; border-bottom:1px solid {COLORS['card_border']};">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+<span style="font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']};">{ag['기관']}</span>
+<span style="font-size:0.85rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(ag['유출액'])}</span>
+</div>
+<div style="height:4px; background:{COLORS['card_border']}; border-radius:2px;">
+<div style="width:{pct_w}%; height:100%; background:{grp_c}; border-radius:2px;"></div></div>
+<div style="font-size:0.6rem; color:{COLORS['text_light']}; margin-top:3px;">{ag.get('건수',0):,}건 · {ag.get('그룹','')}</div>
+</div>""", unsafe_allow_html=True)
+
+            with col_ct:
+                st.markdown(f"""<div style="padding:16px 0 12px;">
+<h3 style="margin:0; font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">유출 쇼핑몰 구매 상위</h3>
+<span style="font-size:0.7rem; color:{COLORS['text_light']};">비부산 업체 유출액 상위 10건</span>
+</div>""", unsafe_allow_html=True)
+                if 유출_list_shop:
+                    rows_ct = ""
+                    for idx, item in enumerate(유출_list_shop[:10]):
+                        계약명 = item.get("계약명", "")
+                        금액 = item.get("유출액", 0)
+                        기관 = item.get("수요기관", "")
+                        rank_clr = "#e85347" if idx < 3 else COLORS["text_light"]
+                        rows_ct += f'''<div style="padding:13px 0; border-bottom:1px solid {COLORS["card_border"]};">
+<div style="display:flex; justify-content:space-between; align-items:flex-start;">
+<div style="flex:1; min-width:0;">
+<div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+<span style="font-size:0.8rem; font-weight:800; color:{rank_clr}; font-family:Nunito Sans,sans-serif; min-width:16px;">{idx+1}</span>
+<span style="font-size:0.8rem; font-weight:600; color:{COLORS["text_dark"]}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{계약명[:35]}</span>
+</div>
+<div style="display:flex; align-items:center; gap:6px; padding-left:22px;">
+<span style="background:#f4bd0e; color:#fff; padding:1px 6px; border-radius:8px; font-size:0.6rem; font-weight:600;">쇼핑몰</span>
+<span style="font-size:0.65rem; color:{COLORS["text_light"]};">{기관}</span>
+</div>
+</div>
+<div style="font-size:0.88rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif; white-space:nowrap; padding-left:8px;">{format_억(금액)}</div>
+</div>
+</div>'''
+                    st.markdown(f'<div style="padding:0 4px;">{rows_ct}</div>', unsafe_allow_html=True)
+
+        # ── 기관별 쇼핑몰 유출 조회 ──
+        st.markdown("---")
+        st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:16px 20px; margin-bottom:12px;">
+<span style="font-size:1rem; font-weight:700; color:{COLORS['text_dark']};">🏛️ 기관별 쇼핑몰 유출 조회</span>
+<span style="font-size:0.78rem; color:{COLORS['text_light']}; margin-left:8px;">기관 선택 시 해당 기관의 쇼핑몰 유출 내역을 확인</span>
+</div>""", unsafe_allow_html=True)
+
+        search_shop = st.text_input("🔍 쇼핑몰 대상 기관 검색", key="shop_agency_search", placeholder="기관명을 입력하세요 (예: 해운대구, 부산교육청)")
+        if search_shop and search_shop.strip():
+            search_api_res = fetch_api(f"/api/agency/shop-search?q={search_shop.strip()}")
+            if search_api_res:
+                results_shop = search_api_res.get("검색결과", {})
+                found = False
+                for u, details in results_shop.items():
+                    found = True
+                    발주 = details.get("총발주액", 0)
+                    수주 = details.get("총수주액", 0)
+                    율 = details.get("총수주율", 0)
+
+                    st.markdown(f"""<div style="background:linear-gradient(135deg, {COLORS['primary']} 0%, {COLORS['primary_light']} 100%); border-radius:8px; padding:18px 24px; margin:12px 0;">
+<div style="font-size:0.75rem; color:rgba(255,255,255,0.7);">🔍 '{search_shop}' 쇼핑몰 유출현황 검색 결과</div>
+<div style="font-size:1.3rem; font-weight:800; color:#fff; margin-top:4px;">{u}</div>
+<div style="display:flex; gap:24px; margin-top:12px;">
+<div><span style="font-size:0.7rem; color:rgba(255,255,255,0.7);">총 구매액</span><br><span style="font-size:1.1rem; font-weight:700; color:#fff; font-family:Nunito Sans,sans-serif;">{format_억(발주)}</span></div>
+<div><span style="font-size:0.7rem; color:rgba(255,255,255,0.7);">지역업체 수주</span><br><span style="font-size:1.1rem; font-weight:700; color:#fff; font-family:Nunito Sans,sans-serif;">{format_억(수주)} ({율}%)</span></div>
+<div><span style="font-size:0.7rem; color:rgba(255,255,255,0.7);">유출액</span><br><span style="font-size:1.1rem; font-weight:700; color:#ffd93d; font-family:Nunito Sans,sans-serif;">{format_억(발주 - 수주)}</span></div>
+</div></div>""", unsafe_allow_html=True)
+
+                    leaks_shop = details.get("유출계약", [])
+                    if leaks_shop:
+                        leaks_disp = leaks_shop[:50]
+                        limit_txt = " (상위 50건)" if len(leaks_shop) > 50 else ""
+                        th_lk = f'font-size:0.72rem; font-weight:600; color:{COLORS["text_light"]}; letter-spacing:0.03em; padding:10px 0;'
+                        leak_header = f"""<div style="display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;">
+<div style="font-size:0.9rem; font-weight:700; color:#fff;">🔴 {u} 쇼핑몰 유출 내역{limit_txt}</div>
+<div style="font-size:0.72rem; color:rgba(255,255,255,0.7);">총 {len(leaks_shop):,}건 중 상위 {len(leaks_disp)}건</div>
+</div>"""
+                        col_hdr = f'<div style="display:flex; align-items:center; padding:8px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:3; {th_lk}">품목명</div><div style="flex:1.2; {th_lk} text-align:right;">구매액</div><div style="flex:1.2; {th_lk} text-align:right;">유출액</div><div style="flex:1; {th_lk} text-align:right;">유출율</div><div style="flex:2.5; {th_lk} padding-left:12px;">수주업체</div></div>'
+                        leak_rows = ""
+                        for li, lk in enumerate(leaks_disp):
+                            계약명_l = lk.get("계약명", "")[:40]
+                            계약액_l = format_억(lk.get("계약액", 0))
+                            유출액_l = format_억(lk.get("유출액", 0))
+                            유출율_l = lk.get("유출율", 0)
+                            수주업체_l = lk.get("수주업체", "")
+                            row_bg = "#fafbfe" if li % 2 == 1 else COLORS["card_bg"]
+                            율_clr = COLORS['danger'] if 유출율_l >= 80 else (COLORS['warning'] if 유출율_l >= 50 else COLORS['text_dark'])
+                            leak_rows += f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};"><div style="flex:3; font-size:0.8rem; font-weight:600; color:{COLORS["text_dark"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{계약명_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:600; font-family:Nunito Sans,sans-serif;">{계약액_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS["danger"]}; font-family:Nunito Sans,sans-serif;">{유출액_l}</div><div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{율_clr};">{유출율_l}%</div><div style="flex:2.5; font-size:0.75rem; color:{COLORS["text_light"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:12px;">{수주업체_l}</div></div>'
+                        st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden; margin-top:8px;">{leak_header}{col_hdr}{leak_rows}</div>', unsafe_allow_html=True)
+                        # Excel 다운로드
+                        df_dl = pd.DataFrame(leaks_shop)
+                        cols_dl = ["분야", "수요기관", "계약명", "계약액", "유출액", "유출율", "수주업체"]
+                        df_dl = df_dl[[c for c in cols_dl if c in df_dl.columns]].copy()
+                        import io
+                        buf = io.BytesIO()
+                        df_dl.to_excel(buf, index=False, engine='openpyxl')
+                        st.download_button(
+                            label=f"📥 {u} 쇼핑몰 유출내역 전체 다운로드",
+                            data=buf.getvalue(),
+                            file_name=f"{u}_쇼핑몰_유출.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_leak_shop_{u}"
+                        )
+                    else:
+                        st.info(f"{u}의 쇼핑몰 유출 내역이 없습니다.")
+
+                if not found:
+                    st.info(f"'{search_shop}' 기관 관련 쇼핑몰 데이터를 찾을 수 없습니다.")
+        else:
+            st.info("검색어를 입력하면 해당 기관의 쇼핑몰 유출현황을 확인할 수 있습니다.")
 # ════════════════════════════════════════════
 # PAGE: 지역업체 정보
 # ════════════════════════════════════════════

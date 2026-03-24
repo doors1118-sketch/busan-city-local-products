@@ -205,10 +205,16 @@ def build_cache():
     
 
     
+    # 수의계약 기관별 상세 (공사/용역/물품만 — 쇼핑몰 제외)
     agency_suui_details = defaultdict(lambda: {
         "총발주액": 0, "총수주액": 0, "총수주율": 0, "그룹": "",
         "분야별": {},
-        "유출계약": {"공사": [], "용역": [], "물품": [], "쇼핑몰": []}
+        "유출계약": {"공사": [], "용역": [], "물품": []}
+    })
+    # 쇼핑몰 기관별 상세 (별도 탭용)
+    agency_shop_details = defaultdict(lambda: {
+        "총발주액": 0, "총수주액": 0, "총수주율": 0, "그룹": "",
+        "유출계약": []
     })
 
     # --- 쇼핑몰 (공사자재 현장 필터) + 유출품목 집계 ---
@@ -403,16 +409,12 @@ def build_cache():
             "그룹": grp,
         })
         
-        # --- agency_suui_details for 쇼핑몰 ---
-        if "쇼핑몰" not in agency_suui_details[unit]["분야별"]:
-            agency_suui_details[unit]["분야별"]["쇼핑몰"] = {"발주액": 0, "수주액": 0}
-        agency_suui_details[unit]["총발주액"] += amt
-        agency_suui_details[unit]["총수주액"] += loc
-        if grp: agency_suui_details[unit]["그룹"] = grp
-        agency_suui_details[unit]["분야별"]["쇼핑몰"]["발주액"] += amt
-        agency_suui_details[unit]["분야별"]["쇼핑몰"]["수주액"] += loc
+        # --- agency_shop_details (쇼핑몰 별도 탭용) ---
+        agency_shop_details[unit]["총발주액"] += amt
+        agency_shop_details[unit]["총수주액"] += loc
+        if grp: agency_shop_details[unit]["그룹"] = grp
         if nloc >= amt * 0.5:
-            agency_suui_details[unit]["유출계약"]["쇼핑몰"].append({
+            agency_shop_details[unit]["유출계약"].append({
                 "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
                 "계약액": round(amt), "유출액": round(nloc),
                 "유출율": round(nloc/amt*100, 1) if amt>0 else 0, "수주업체": corp_nm[:40], "그룹": grp
@@ -880,6 +882,24 @@ def build_cache():
          "건수": sum(len(lk) for lk in d["유출계약"].values()),
          "그룹": d["그룹"]}
         for u, d in agency_suui_details.items()
+        if d["총발주액"] - d["총수주액"] > 0
+    ], key=lambda x: x["유출액"], reverse=True)[:15]
+
+    # ── 쇼핑몰 별도 탭용 캐시 (agency_shop_details 기반) ──
+    for unit, details in agency_shop_details.items():
+        details["총수주율"] = pct(details["총발주액"], details["총수주액"])
+        details["총발주액"] = round(details["총발주액"])
+        details["총수주액"] = round(details["총수주액"])
+        details["유출계약"].sort(key=lambda x: x["유출액"], reverse=True)
+    cache["14_쇼핑몰_기관별_상세"] = dict(agency_shop_details)
+    _all_shop_leaks = [
+        lk for d in agency_shop_details.values() for lk in d["유출계약"]
+    ]
+    cache["14_쇼핑몰_유출"] = sorted(_all_shop_leaks, key=lambda x: x["유출액"], reverse=True)[:20]
+    cache["14_쇼핑몰_유출_기관별"] = sorted([
+        {"기관": u, "유출액": round(d["총발주액"] - d["총수주액"]),
+         "건수": len(d["유출계약"]), "그룹": d["그룹"]}
+        for u, d in agency_shop_details.items()
         if d["총발주액"] - d["총수주액"] > 0
     ], key=lambda x: x["유출액"], reverse=True)[:15]
     

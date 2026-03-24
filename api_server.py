@@ -171,6 +171,34 @@ def search_agency_suui(q: str = Query(..., min_length=1, description="검색할 
         "검색결과": results
     }
 
+@app.get("/api/shopping-contract", tags=["종합쇼핑몰"])
+def get_shopping_contract():
+    """종합쇼핑몰 유출 현황 (유출 기관별, 유출 계약별)"""
+    cache = load_cache()
+    return {
+        "generated_at": cache.get("generated_at"),
+        "유출_쇼핑몰": cache.get("14_쇼핑몰_유출", []),
+        "유출_기관별": cache.get("14_쇼핑몰_유출_기관별", []),
+    }
+
+@app.get("/api/agency/shop-search", tags=["기관 검색"])
+def search_agency_shop(q: str = Query(..., min_length=1, description="검색할 기관명")):
+    """특정 수요기관의 쇼핑몰 유출 현황 검색"""
+    cache = load_cache()
+    shop_details = cache.get("14_쇼핑몰_기관별_상세", {})
+    
+    results = {}
+    q_clean = q.strip()
+    for unit, details in shop_details.items():
+        if q_clean in unit:
+            results[unit] = details
+            
+    return {
+        "generated_at": cache.get("generated_at"),
+        "검색어": q_clean,
+        "검색결과": results
+    }
+
 if __name__ == '__main__':
     import uvicorn
     print("[API] 부산 조달 모니터링 API 서버 시작")
