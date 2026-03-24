@@ -1873,13 +1873,13 @@ elif page == "📝 수의계약":
 </div>""", unsafe_allow_html=True)
                         
                         if 유출_list:
-                            분야_colors = {"공사": "#6576ff", "용역": "#9cabff", "물품": "#1ee0ac"}
+                            분야_colors = {"공사": "#6576ff", "용역": "#9cabff", "물품": "#1ee0ac", "쇼핑몰": "#f4bd0e"}
                             rows_ct = ""
                             for idx, item in enumerate(유출_list):
-                                iv = list(item.values()) if isinstance(item, dict) else []
-                                if len(iv) < 5:
-                                    continue
-                                분야, 계약명, 금액, 그룹, 기관 = iv[0], iv[1], iv[2], iv[3], iv[4]
+                                분야 = item.get("분야", "")
+                                계약명 = item.get("계약명", "")
+                                금액 = item.get("유출액", 0)
+                                기관 = item.get("수요기관", "")
                                 분야_clr = 분야_colors.get(분야, COLORS["text_light"])
                                 rank_clr = "#e85347" if idx < 3 else COLORS["text_light"]
                                 rows_ct += f'''<div style="padding:13px 0; border-bottom:1px solid {COLORS["card_border"]};">

@@ -815,18 +815,9 @@ def build_cache():
                   "busan_amt": round(suui_stats[key].get('busan_amt', 0)),
                   "수주율_건수": round(suui_stats[key]['busan']/suui_stats[key]['total']*100, 1) if suui_stats[key]['total'] > 0 else 0}
             for key in suui_stats},
-        "9_수의계약_유출": sorted(suui_leakages, key=lambda x: x['금액'], reverse=True)[:20],
-        "9_수의계약_유출_기관별": (lambda: [
-            {"기관": k, "유출액": v["amt"], "건수": v["cnt"], "그룹": v["grp"]}
-            for k, v in sorted(
-                {item['수요기관']: {
-                    "amt": sum(x['금액'] for x in suui_leakages if x['수요기관'] == item['수요기관']),
-                    "cnt": sum(1 for x in suui_leakages if x['수요기관'] == item['수요기관']),
-                    "grp": item['그룹'],
-                } for item in suui_leakages}.items(),
-                key=lambda x: x[1]["amt"], reverse=True
-            )[:15]
-        ])(),
+        # 9_수의계약_유출, 9_수의계약_유출_기관별: agency_suui_details 확정 후 아래에서 설정
+        "9_수의계약_유출": [],
+        "9_수의계약_유출_기관별": [],
     }
 
     # 기관별 상세 검색용 데이터 (12_기관별_상세)
@@ -873,6 +864,24 @@ def build_cache():
             leak_list.sort(key=lambda x: x["유출액"], reverse=True)
             
     cache["13_수의계약_기관별_상세"] = dict(agency_suui_details)
+
+    # ── 수의계약 유출 데이터 통일 (agency_suui_details 기반) ──
+    # 기존 suui_leakages(이진 판정, 쇼핑몰 미포함) 대신
+    # agency_suui_details(지분율 비례, 쇼핑몰 포함)로 통일하여
+    # 수의계약 탭 내 좌측 차트 ↔ 하단 기관검색 수치 일치
+    # (쇼핑몰도 경쟁입찰 없이 직접 구매하므로 수의계약 성격)
+    _all_suui_leaks = [
+        lk for d in agency_suui_details.values()
+        for lks in d["유출계약"].values() for lk in lks
+    ]
+    cache["9_수의계약_유출"] = sorted(_all_suui_leaks, key=lambda x: x["유출액"], reverse=True)[:20]
+    cache["9_수의계약_유출_기관별"] = sorted([
+        {"기관": u, "유출액": round(d["총발주액"] - d["총수주액"]),
+         "건수": sum(len(lk) for lk in d["유출계약"].values()),
+         "그룹": d["그룹"]}
+        for u, d in agency_suui_details.items()
+        if d["총발주액"] - d["총수주액"] > 0
+    ], key=lambda x: x["유출액"], reverse=True)[:15]
     
     # 지역업체 현황표 (busan_companies_master.db에서 집계)
     print("  [지역업체 현황표] 집계 중...")
