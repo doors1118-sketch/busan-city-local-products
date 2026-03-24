@@ -1547,7 +1547,9 @@ elif page == "🛡️ 지역업체 보호제도":
 <span style="font-size:1.05rem; font-weight:700; color:{COLORS['text_dark']};">⚠️ 보호제도 미적용 기관</span>
 <span style="font-size:0.75rem; color:{COLORS['text_light']};">미적용률 높은 순</span>
 </div>''', unsafe_allow_html=True)
-        기관별 = data_prot.get("기관별_미적용", [])
+        기관별_전체 = data_prot.get("기관별_미적용", [])
+        기관별_유효 = [c for c in 기관별_전체 if (c.get("미적용", 0) if isinstance(c, dict) else (c[4] if len(c)>4 else 0)) > 0]
+        기관별 = 기관별_유효[:20]
         if 기관별:
             df_org = pd.DataFrame(기관별)
             if len(df_org.columns) >= 7:
@@ -1557,7 +1559,7 @@ elif page == "🛡️ 지역업체 보호제도":
             org_header = f'''<div style="display:flex; align-items:center; padding:0 20px; border-bottom:1px solid {COLORS['card_border']}; background:#fafbfe;">
 <div style="flex:2; {th_s}">수요기관명</div>
 <div style="flex:1; {th_s}">적용법규</div>
-<div style="flex:1; {th_s} text-align:right;">적용가능</div>
+<div style="flex:1; {th_s} text-align:right;">적용가능(모수)</div>
 <div style="flex:1; {th_s} text-align:right;">적용</div>
 <div style="flex:1; {th_s} text-align:right;">미적용</div>
 <div style="flex:1.2; {th_s} text-align:right;">미적용 금액</div>
@@ -1600,98 +1602,84 @@ elif page == "🛡️ 지역업체 보호제도":
 {org_header}{org_rows}
 </div>''', unsafe_allow_html=True)
 
-        # ── 기관 선택 → 미적용 계약 상세 ──
-        if 기관별:
-            org_names = [str(row.iloc[0]) for _, row in df_org.iterrows() if row.iloc[0]]
-            if org_names:
-                sel_org = st.selectbox("🔍 기관별 미적용 계약 조회", ["선택하세요"] + org_names, key="prot_org_select")
-                if sel_org and sel_org != "선택하세요":
-                    주요미적용 = data_prot.get("미적용_건", [])
-                    # prot_violations: keys=[분야, 계약방식, 공고명, 추정가격, 기관그룹, 수요기관, 비교단위]
-                    matched = []
-                    for c in 주요미적용:
-                        vals = list(c.values())
-                        # vals[5]=수요기관, vals[6]=비교단위
-                        agency_val = str(vals[5]) if len(vals) > 5 else ""
-                        compare_val = str(vals[6]) if len(vals) > 6 else ""
-                        if sel_org == compare_val or sel_org in agency_val:
-                            matched.append(vals)
-                    # 금액(추정가격) 기준 내림차순 정렬, 상위 10건
-                    matched.sort(key=lambda v: v[3] if len(v) > 3 else 0, reverse=True)
-                    matched = matched[:10]
-                    if matched:
-                        st.markdown(f"#### ⚠️ {sel_org} 미적용 계약 ({len(matched)}건)")
-                        for vals in matched:
-                            ct_sector = str(vals[0]) if len(vals) > 0 else ""   # 분야
-                            ct_method = str(vals[1]) if len(vals) > 1 else ""   # 계약방식
-                            ct_name = str(vals[2]) if len(vals) > 2 else ""     # 공고명
-                            ct_amt = vals[3] if len(vals) > 3 else 0            # 추정가격
-                            ct_grp = str(vals[4]) if len(vals) > 4 else ""      # 기관그룹
-                            ct_agency = str(vals[5]) if len(vals) > 5 else ""   # 수요기관
-                            ct_compare = str(vals[6]) if len(vals) > 6 else ""  # 비교단위
-                            grp_short = "지방계약법" if "부산" in ct_grp else "국가계약법"
-                            st.markdown(f"""
-                            <div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-top:3px solid #e85347;
-                                border-radius:4px; padding:20px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-                                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                                    <div>
-                                        <div style="font-size:1.05rem; font-weight:700; color:{COLORS['text_dark']}; margin-bottom:4px;">{ct_name}</div>
-                                        <div style="font-size:0.8rem; color:{COLORS['text_light']};">{ct_method} · {grp_short}</div>
-                                    </div>
-                                    <div style="text-align:right;">
-                                        <div style="font-size:0.8rem; color:{COLORS['text_light']}; margin-bottom:2px;">추정가격</div>
-                                        <div style="font-size:1.8rem; font-weight:800; color:#e85347; line-height:1;">{format_억(ct_amt)}</div>
-                                    </div>
-                                </div>
-                                <div style="margin-top:16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; padding-top:16px; border-top:1px solid {COLORS['card_border']};">
-                                    <div><span style="color:{COLORS['text_light']}; font-size:0.85rem;">수요기관</span><br>
-                                        <span style="font-size:1rem; font-weight:700; color:{COLORS['text_dark']};">{ct_agency}</span></div>
-                                    <div><span style="color:{COLORS['text_light']}; font-size:0.85rem;">분야</span><br>
-                                        <span style="font-size:1rem; font-weight:700; color:{COLORS['text_dark']};">{ct_sector}</span></div>
-                                    <div><span style="color:{COLORS['text_light']}; font-size:0.85rem;">비교단위</span><br>
-                                        <span style="font-size:1rem; font-weight:700; color:{COLORS['text_dark']};">{ct_compare}</span></div>
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.info(f"{sel_org}의 주요 미적용 계약 데이터가 없습니다.")
-
-        # ── 전체 위반계약 검색 및 다운로드 ──
+        # ── 기관별 세부 위반내역 검색 및 다운로드 ──
         st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
         st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px 6px 0 0; padding:16px 20px; display:flex; justify-content:space-between; align-items:center;">
-<span style="font-size:1.05rem; font-weight:700; color:{COLORS['text_dark']};">🔍 전체 위반계약(상세) 검색 및 다운로드</span>
+<span style="font-size:1.05rem; font-weight:700; color:{COLORS['text_dark']};">🔍 기관별 상세 검색 및 다운로드</span>
 </div>''', unsafe_allow_html=True)
         
         with st.container():
-            search_kw_prot = st.text_input("수요기관, 수주업체, 공고명 등으로 검색하세요.", key="search_kw_prot")
-            all_violations = data_prot.get("미적용_건", [])
+            search_kw_prot = st.text_input("검색할 수요기관명을 입력하세요. (예: 부산교통공사)", key="search_kw_prot").strip()
             
-            filtered_prot = []
-            for c in all_violations:
-                vals = list(c.values())
-                if not search_kw_prot or search_kw_prot in str(vals):
-                    filtered_prot.append(vals)
-            
-            if filtered_prot:
-                cols_prot = ["분야", "계약방식", "공고명", "추정가격(원)", "기관그룹", "수요기관", "비교단위", "수주업체", "비고"]
-                # Pad to ensure 9 columns for backwards compatibility with old caches
-                padded_prot = [vals + [""] * (9 - len(vals)) for vals in filtered_prot]
-                df_filtered_prot = pd.DataFrame(padded_prot, columns=cols_prot)
+            if search_kw_prot:
+                # 1. 수요기관 보호제도 적용 스탯 요약카드 표시
+                matched_org_stats = []
+                for o in 기관별_전체:
+                    org_name = str(o.get('기관', '')) if isinstance(o, dict) else str(o[0] if len(o)>0 else '')
+                    if search_kw_prot in org_name:
+                        matched_org_stats.append(o)
                 
-                st.dataframe(df_filtered_prot, use_container_width=True)
+                if matched_org_stats:
+                    st.markdown(f"#### 🏢 '{search_kw_prot}' 관련 기관 현황 요약 ({len(matched_org_stats)}개 기관)")
+                    for stat in matched_org_stats:
+                        if isinstance(stat, dict):
+                            org_name = stat.get('기관', '')
+                            total = stat.get('기준이하', 0)
+                            applied = stat.get('적용', 0)
+                            unapplied = stat.get('미적용', 0)
+                        else:
+                            org_name = stat[0] if len(stat)>0 else ''
+                            total = stat[2] if len(stat)>2 else 0
+                            unapplied = stat[3] if len(stat)>3 else 0
+                            applied = stat[4] if len(stat)>4 else 0
+                            
+                        st.markdown(f'''<div style="display:flex; gap:12px; margin-bottom:16px;">
+<div style="flex:1.5; padding:14px; background:#f8f9fa; border:1px solid #e9ecef; border-radius:6px;">
+<div style="font-size:0.8rem; color:#6c757d; margin-bottom:4px; font-weight:600;">수요기관</div>
+<div style="font-size:1.05rem; font-weight:700; color:#343a40;">{org_name}</div>
+</div>
+<div style="flex:1; padding:14px; background:#f8f9fa; border:1px solid #e9ecef; border-radius:6px; text-align:right;">
+<div style="font-size:0.8rem; color:#6c757d; margin-bottom:4px; font-weight:600;">적용가능(모수)</div>
+<div style="font-size:1.2rem; font-weight:700; color:#495057;">{total:,}건</div>
+</div>
+<div style="flex:1; padding:14px; background:#e0fff5; border:1px solid #1ee0ac; border-radius:6px; text-align:right;">
+<div style="font-size:0.8rem; color:#10b981; margin-bottom:4px; font-weight:600;">제도 적용(준수)</div>
+<div style="font-size:1.2rem; font-weight:700; color:#059669;">{applied:,}건</div>
+</div>
+<div style="flex:1; padding:14px; background:#ffebeb; border:1px solid #ffb8b8; border-radius:6px; text-align:right;">
+<div style="font-size:0.8rem; color:#e85347; margin-bottom:4px; font-weight:600;">미적용(위반)</div>
+<div style="font-size:1.2rem; font-weight:700; color:#dc2626;">{unapplied:,}건</div>
+</div>
+</div>''', unsafe_allow_html=True)
+                else:
+                    st.info(f"'{search_kw_prot}'에 해당하는 기관 실적 데이터가 없습니다.")
+
+                # 2. 계약 상세내역 및 다운로드
+                all_violations = data_prot.get("미적용_건", [])
+                filtered_dicts = []
+                for c in all_violations:
+                    if isinstance(c, dict):
+                        agency_val = str(c.get("수요기관", ""))
+                        if search_kw_prot in agency_val:
+                            filtered_dicts.append(c)
                 
-                import io
-                excel_buffer = io.BytesIO()
-                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                    df_filtered_prot.to_excel(writer, index=False, sheet_name='위반계약_목록')
-                st.download_button(
-                    label="📥 검색결과 엑셀 다운로드",
-                    data=excel_buffer.getvalue(),
-                    file_name="보호제도_위반계약_상세목록.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            elif search_kw_prot:
-                st.info("검색 결과가 없습니다.")
+                if filtered_dicts:
+                    df_filtered_prot = pd.DataFrame(filtered_dicts)
+                    st.markdown(f"**상세 유출(미적용) 계약 내역 ({len(filtered_dicts)}건)**")
+                    st.dataframe(df_filtered_prot, use_container_width=True)
+                    
+                    import io
+                    excel_buffer = io.BytesIO()
+                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                        df_filtered_prot.to_excel(writer, index=False, sheet_name='위반계약_목록')
+                    st.download_button(
+                        label="📥 검색결과 엑셀 다운로드",
+                        data=excel_buffer.getvalue(),
+                        file_name=f"보호제도_위반계약_{search_kw_prot}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.info("해당 기관의 상세 위반(미적용) 계약 내역이 없습니다.")
 
 # ════════════════════════════════════════════
 # PAGE: 수의계약

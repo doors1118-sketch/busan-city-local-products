@@ -873,7 +873,7 @@ def build_cache():
         "7_유출계약_주요": leakage_contracts,
         "8_보호제도_현황": protection_summary,
         "8_보호제도_미적용": prot_violations,
-        "8_보호제도_기관별": prot_agency_ranking[:20],
+        "8_보호제도_기관별": prot_agency_ranking,
         "9_수의계약": {
             key: {**dict(suui_stats[key]),
                   "busan_amt": round(suui_stats[key].get('busan_amt', 0)),
