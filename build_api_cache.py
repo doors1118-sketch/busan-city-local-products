@@ -69,7 +69,7 @@ def build_cache():
     """, conn_cp)
     supplier_names_map = {}
     for prd, grp in supplier_names_df.groupby('rprsntDtlPrdnm'):
-        supplier_names_map[prd] = grp['corpNm'].tolist()[:20]
+        supplier_names_map[prd] = grp['corpNm'].drop_duplicates().tolist()
     conn_cp.close()
     
     # 쇼핑몰 품목분류→세부품명 매핑 (상위분류로 검색 시 세부분류 업체까지 합산)
@@ -104,7 +104,7 @@ def build_cache():
             all_names = []
             for child in children:
                 all_names.extend(supplier_names_map.get(child, []))
-            return all_names[:20]
+            return list(dict.fromkeys(all_names))  # 중복 제거, 순서 유지
         return []
     
     conn = sqlite3.connect(DB_PROCUREMENT)
@@ -298,6 +298,12 @@ def build_cache():
     item_leak = defaultdict(float)
     item_count = defaultdict(int)
     item_top_agency = defaultdict(lambda: defaultdict(float))  # 품목→{기관:금액}
+    # 관급자재 vs 일반물품 구분 집계 (그룹별)
+    shop_type_stats = defaultdict(lambda: {
+        '관급자재': {'total': 0, 'local': 0},
+        '일반물품': {'total': 0, 'local': 0},
+    })
+    _DISTRICTS = {"중구", "서구", "동구", "영도구", "부산진구", "동래구", "남구", "북구", "해운대구", "사하구", "금정구", "강서구", "연제구", "수영구", "사상구", "기장군"}
     
     for _, row in df.iterrows():
         result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
@@ -306,9 +312,32 @@ def build_cache():
         lrg = inst_grp.get(cd)
         unit = get_unit(cd)
         if not lrg or not unit: continue
+        unit = str(unit).strip()
+        if not unit or unit == 'nan': continue
         if lrg not in grp_r: grp_r[lrg] = {'total':0,'local':0}
         grp_r[lrg]['total'] += amt; grp_r[lrg]['local'] += loc
         ag_r[unit]['total'] += amt; ag_r[unit]['local'] += loc
+        
+        # 관급자재 vs 일반물품 구분
+        is_material = str(row.get('cnstwkMtrlDrctPurchsObjYn', '') or '').strip().upper() == 'Y'
+        stype = '관급자재' if is_material else '일반물품'
+        shop_type_stats['전체'][stype]['total'] += amt
+        shop_type_stats['전체'][stype]['local'] += loc
+        shop_type_stats[lrg][stype]['total'] += amt
+        shop_type_stats[lrg][stype]['local'] += loc
+        # 구군 유형별 집계
+        if unit in _DISTRICTS or any(unit.endswith(d) for d in _DISTRICTS):
+            shop_type_stats['구군'][stype]['total'] += amt
+            shop_type_stats['구군'][stype]['local'] += loc
+            # 개별 구군 유형별 집계
+            district_key = f'구군_{unit}'
+            shop_type_stats[district_key][stype]['total'] += amt
+            shop_type_stats[district_key][stype]['local'] += loc
+        # 부산시 비구군 기관 유형별 집계
+        if lrg == '부산광역시 및 소속기관' and unit not in _DISTRICTS:
+            agency_key = f'부산기관_{unit}'
+            shop_type_stats[agency_key][stype]['total'] += amt
+            shop_type_stats[agency_key][stype]['local'] += loc
         
         # 유출품목 집계
         item_nm = str(row.get('prdctClsfcNoNm', '') or '').strip()
@@ -445,7 +474,7 @@ def build_cache():
     # 그룹핑 (dlvrReqNo 단위 합산)
     df_shop['prdctAmt'] = pd.to_numeric(df_shop['prdctAmt'], errors='coerce').fillna(0)
     grouped_shop = df_shop.groupby([
-        'dlvrReqNo', 'dminsttCd', 'cntrctCorpBizno', 'corpNm', 'dlvrReqNm'
+        'dlvrReqNo', 'dminsttCd', 'cntrctCorpBizno', 'corpNm', 'dlvrReqNm', 'cnstwkMtrlDrctPurchsObjYn'
     ], as_index=False, dropna=False).agg({
         'prdctAmt': 'sum'
     })
@@ -456,30 +485,33 @@ def build_cache():
         cd, amt, loc = result
         if amt == 0: continue
         nloc = amt - loc
-        if nloc < amt * 0.5: continue
         unit = get_unit(cd)
         grp = inst_grp.get(cd, "")
         bno = str(row.get('cntrctCorpBizno','')).replace('-','').strip()
         corp_nm = ''
         if bno and bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
             corp_nm = str(row.get('corpNm','')).strip()
-        leak_contracts.append({
-            "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
-            "계약액": round(amt), "유출액": round(nloc),
-            "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
-            "그룹": grp, "비고": "직접구매",
-        })
+        if nloc >= amt * 0.5:
+            leak_contracts.append({
+                "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
+                "계약액": round(amt), "유출액": round(nloc),
+                "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
+                "그룹": grp, "비고": "직접구매",
+                "관급자재여부": str(row.get('cnstwkMtrlDrctPurchsObjYn', '') or '').strip().upper(),
+            })
         
         # --- agency_shop_details (쇼핑몰 별도 탭용) ---
         agency_shop_details[unit]["총발주액"] += amt
         agency_shop_details[unit]["총수주액"] += loc
         if grp: agency_shop_details[unit]["그룹"] = grp
-        if nloc >= amt * 0.5:
+        # 유출이 있는 계약만 저장 (관급자재 + 일반물품 모두 포함)
+        if nloc > 0:
             agency_shop_details[unit]["유출계약"].append({
                 "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
                 "계약액": round(amt), "유출액": round(nloc),
                 "유출율": round(nloc/amt*100, 1) if amt>0 else 0, "수주업체": corp_nm[:40], "그룹": grp,
-                "비고": "직접구매"
+                "비고": "직접구매",
+                "관급자재여부": str(row.get('cnstwkMtrlDrctPurchsObjYn', '') or '').strip().upper(),
             })
         # -------------------------------------
         
@@ -610,6 +642,7 @@ def build_cache():
             corp_nm = corp_names[0] if corp_names else ""
 
             # ===== 판정 로직 =====
+            if est_price < 1_000_000: continue  # 100만원 미만 이상 데이터 제외
             if grp == '정부 및 국가공공기관':
                 if est_price > threshold: continue  # 기준 초과 → 대상 아님
                 gov_stats[sub]['기준이하'] += 1
@@ -766,6 +799,7 @@ def build_cache():
                 })
 
     prot_violations.sort(key=lambda x: x['추정가격'], reverse=True)
+    prot_violations = [v for v in prot_violations if v['추정가격'] >= 1_000_000]  # 100만원 미만 이상 데이터 제외
 
     protection_summary = {
         "정부 및 국가공공기관": {sub: dict(gov_stats[sub]) for sub in gov_stats},
@@ -860,6 +894,25 @@ def build_cache():
             }
         return result
     
+    BUSAN_DISTRICTS = {"중구", "서구", "동구", "영도구", "부산진구", "동래구", "남구", "북구", "해운대구", "사하구", "금정구", "강서구", "연제구", "수영구", "사상구", "기장군"}
+    shop_districts = {"발주액": 0, "수주액": 0, "수주율": 0}
+    if '쇼핑몰' in unit_data:
+        for u, d in unit_data['쇼핑몰'].items():
+            name = str(u).strip()
+            if name in BUSAN_DISTRICTS or any(name.endswith(bdu) for bdu in BUSAN_DISTRICTS):
+                shop_districts["발주액"] += d["total"]
+                shop_districts["수주액"] += d["local"]
+        shop_districts["수주율"] = pct(shop_districts["발주액"], shop_districts["수주액"])
+
+    # 관급자재/일반물품 구분 캐시 직렬화
+    def _type_summary(d):
+        return {
+            k: {"발주액": round(v["total"]), "수주액": round(v["local"]),
+                "수주율": pct(v["total"], v["local"])}
+            for k, v in d.items()
+        }
+    shop_type_cache = {grp: _type_summary(td) for grp, td in shop_type_stats.items()}
+
     cache = {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "데이터_기간": "2026-01-01 ~ 현재",
@@ -879,9 +932,10 @@ def build_cache():
                   "busan_amt": round(suui_stats[key].get('busan_amt', 0)),
                   "수주율_건수": round(suui_stats[key]['busan']/suui_stats[key]['total']*100, 1) if suui_stats[key]['total'] > 0 else 0}
             for key in suui_stats},
-        # 9_수의계약_유출, 9_수의계약_유출_기관별: agency_suui_details 확정 후 아래에서 설정
         "9_수의계약_유출": [],
         "9_수의계약_유출_기관별": [],
+        "15_쇼핑몰_구군_상세": shop_districts,
+        "16_쇼핑몰_유형별": shop_type_cache,
     }
 
     # 기관별 상세 검색용 데이터 (12_기관별_상세)
@@ -952,7 +1006,8 @@ def build_cache():
         details["총수주율"] = pct(details["총발주액"], details["총수주액"])
         details["총발주액"] = round(details["총발주액"])
         details["총수주액"] = round(details["총수주액"])
-        details["유출계약"].sort(key=lambda x: x["유출액"], reverse=True)
+        details["유출계약"].sort(key=lambda x: x["계약액"], reverse=True)
+        details["유출계약"] = details["유출계약"][:100]  # 계약액 상위 100건
     cache["14_쇼핑몰_기관별_상세"] = dict(agency_shop_details)
     _all_shop_leaks = [
         lk for d in agency_shop_details.values() for lk in d["유출계약"]
@@ -960,10 +1015,11 @@ def build_cache():
     cache["14_쇼핑몰_유출"] = sorted(_all_shop_leaks, key=lambda x: x["유출액"], reverse=True)[:20]
     cache["14_쇼핑몰_유출_기관별"] = sorted([
         {"기관": u, "유출액": round(d["총발주액"] - d["총수주액"]),
+         "발주액": d["총발주액"], "수주액": d["총수주액"], "수주율": d["총수주율"],
          "건수": len(d["유출계약"]), "그룹": d["그룹"]}
         for u, d in agency_shop_details.items()
         if d["총발주액"] - d["총수주액"] > 0
-    ], key=lambda x: x["유출액"], reverse=True)[:15]
+    ], key=lambda x: x["유출액"], reverse=True)[:50]
     
     # 지역업체 현황표 (busan_companies_master.db에서 집계)
     print("  [지역업체 현황표] 집계 중...")

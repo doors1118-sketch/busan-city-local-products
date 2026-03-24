@@ -179,6 +179,8 @@ def get_shopping_contract():
         "generated_at": cache.get("generated_at"),
         "유출_쇼핑몰": cache.get("14_쇼핑몰_유출", []),
         "유출_기관별": cache.get("14_쇼핑몰_유출_기관별", []),
+        "구군_상세": cache.get("15_쇼핑몰_구군_상세", {}),
+        "유형별": cache.get("16_쇼핑몰_유형별", {}),
     }
 
 @app.get("/api/agency/shop-search", tags=["기관 검색"])
