@@ -1572,8 +1572,8 @@ elif page == "🛡️ 지역업체 보호제도":
                 name = row.iloc[0] if len(row) > 0 else ""
                 grp = str(row[grp_col]) if grp_col else ""
                 total = int(row.iloc[2]) if len(row) > 2 else 0
-                unapplied = int(row.iloc[3]) if len(row) > 3 else 0
-                applied = int(row.iloc[4]) if len(row) > 4 else 0
+                applied = int(row.iloc[3]) if len(row) > 3 else 0
+                unapplied = int(row.iloc[4]) if len(row) > 4 else 0
                 amt = row.iloc[5] if len(row) > 5 else 0
                 rate = row.iloc[6] if len(row) > 6 else 0
                 initials = name[:2] if len(name) >= 2 else name
