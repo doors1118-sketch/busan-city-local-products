@@ -1656,6 +1656,42 @@ elif page == "🛡️ 지역업체 보호제도":
                     else:
                         st.info(f"{sel_org}의 주요 미적용 계약 데이터가 없습니다.")
 
+        # ── 전체 위반계약 검색 및 다운로드 ──
+        st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
+        st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px 6px 0 0; padding:16px 20px; display:flex; justify-content:space-between; align-items:center;">
+<span style="font-size:1.05rem; font-weight:700; color:{COLORS['text_dark']};">🔍 전체 위반계약(상세) 검색 및 다운로드</span>
+</div>''', unsafe_allow_html=True)
+        
+        with st.container():
+            search_kw_prot = st.text_input("수요기관, 수주업체, 공고명 등으로 검색하세요.", key="search_kw_prot")
+            all_violations = data_prot.get("미적용_건", [])
+            
+            filtered_prot = []
+            for c in all_violations:
+                vals = list(c.values())
+                if not search_kw_prot or search_kw_prot in str(vals):
+                    filtered_prot.append(vals)
+            
+            if filtered_prot:
+                cols_prot = ["분야", "계약방식", "공고명", "추정가격(원)", "기관그룹", "수요기관", "비교단위", "수주업체", "비고"]
+                # Pad to ensure 9 columns for backwards compatibility with old caches
+                padded_prot = [vals + [""] * (9 - len(vals)) for vals in filtered_prot]
+                df_filtered_prot = pd.DataFrame(padded_prot, columns=cols_prot)
+                
+                st.dataframe(df_filtered_prot, use_container_width=True)
+                
+                import io
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    df_filtered_prot.to_excel(writer, index=False, sheet_name='위반계약_목록')
+                st.download_button(
+                    label="📥 검색결과 엑셀 다운로드",
+                    data=excel_buffer.getvalue(),
+                    file_name="보호제도_위반계약_상세목록.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            elif search_kw_prot:
+                st.info("검색 결과가 없습니다.")
 
 # ════════════════════════════════════════════
 # PAGE: 수의계약

@@ -605,6 +605,10 @@ def build_cache():
             if not blist: continue
             local_share = sum(s for b, s in blist if b in biznos or (len(b)>=3 and b[:3] in BUSAN_BIZNO_PREFIXES))
 
+            # 수주업체 추출 (대표 1개사)
+            corp_names = [parts[3].strip() for chunk in str(row.get('corpList', '')).split('[')[1:] if len((parts := chunk.split(']')[0].split('^'))) >= 4]
+            corp_nm = corp_names[0] if corp_names else ""
+
             # ===== 판정 로직 =====
             if grp == '정부 및 국가공공기관':
                 if est_price > threshold: continue  # 기준 초과 → 대상 아님
@@ -625,7 +629,7 @@ def build_cache():
                     prot_violations.append({"분야": sub, "계약방식": method,
                         "공고명": name[:55], "추정가격": round(est_price),
                         "기관그룹": grp, "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
-                        "비교단위": unit})
+                        "비교단위": unit, "수주업체": corp_nm, "비고": "비정상(지역제한 미적용)"})
 
             elif grp == '부산광역시 및 소속기관':
                 if sector == '공사' and est_price > threshold:
@@ -644,7 +648,7 @@ def build_cache():
                         prot_violations.append({"분야": sub, "계약방식": method,
                             "공고명": name[:55], "추정가격": round(est_price),
                             "기관그룹": grp, "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
-                            "비교단위": unit})
+                            "비교단위": unit, "수주업체": corp_nm, "비고": "비정상(의무공동 위반)"})
                 elif est_price <= threshold:
                     # 기준이하: 지역제한경쟁 대상
                     bsn_stats[sub]['기준이하'] += 1
@@ -664,7 +668,7 @@ def build_cache():
                         prot_violations.append({"분야": sub, "계약방식": method,
                             "공고명": name[:55], "추정가격": round(est_price),
                             "기관그룹": grp, "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
-                            "비교단위": unit})
+                            "비교단위": unit, "수주업체": corp_nm, "비고": "비정상(지역제한 미적용)"})
                 # 의무공동도급 집계
                 if method != '제한경쟁':
                     sec_key = '공사' if sub in ('종합공사', '전문공사') else '용역'
