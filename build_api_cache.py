@@ -247,20 +247,23 @@ def build_cache():
                 else:
                     remark = f"공동이행(정상) 부산{busan_share}%"
         else:
-            # 단독계약
-            if is_long:
-                remark = "장기계속"
-            elif sector == '공사':
-                # 지역제한 미적용 체크
-                check_amt = tot_amt  # 총계약액 기준
-                if is_busan_grp and check_amt <= 10_000_000_000:  # 부산시 100억
-                    remark = "지역제한 미적용"
-                elif not is_busan_grp and check_amt <= 8_800_000_000:  # 국가 88억
-                    remark = "지역제한 미적용"
+            # 단독계약 (유출건이므로 부산업체 지분 0%)
+            if sector == '공사':
+                check_amt = tot_amt
+                if is_busan_grp:
+                    if check_amt <= 10_000_000_000:
+                        remark = "지역제한 미적용"
+                    else:
+                        # 100억 초과는 지역제한 대상은 아니나, 
+                        # 단독 유출이면 의무공동(40%) 위반임
+                        remark = "의무공동 미적용(단독)"
                 else:
-                    remark = "단독유출"
+                    if check_amt <= 8_800_000_000:
+                        remark = "지역제한 미적용"
+                    else:
+                        remark = "장기계속" if is_long else "단독유출"
             else:
-                remark = "단독유출"
+                remark = "장기계속" if is_long else "단독유출"
         return remark
 
     # 수의계약 기관별 상세 (공사/용역/물품만 — 쇼핑몰 제외)
