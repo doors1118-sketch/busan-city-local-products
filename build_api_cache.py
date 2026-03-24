@@ -205,6 +205,62 @@ def build_cache():
     
 
     
+    # ── 유출계약 비고란 생성 함수 ──
+    def gen_비고(row, sector, grp, biznos, bid_dict=None):
+        """유출계약의 비고(장기계속/공동이행/지역제한/단독) 생성"""
+        tot_amt = float(row.get('totCntrctAmt', 0) or 0)
+        thtm_amt = float(row.get('thtmCntrctAmt', 0) or 0)
+        is_long = tot_amt > thtm_amt * 1.5 and tot_amt > 0 and thtm_amt > 0
+        
+        biz_list = parse_corp_shares(row.get('corpList', ''))
+        n_comp = len(biz_list)
+        is_joint = n_comp >= 2
+        
+        # 부산업체 지분 계산
+        busan_share = 0
+        for bno, share in biz_list:
+            if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
+                busan_share += share
+        busan_share = round(busan_share)
+        
+        is_busan_grp = '부산' in (grp or '')
+        
+        if is_joint:
+            # 공동이행 지분 검증
+            if is_busan_grp and busan_share < 40:
+                remark = f"공동이행(비정상) 부산{busan_share}%"
+            elif not is_busan_grp and busan_share < 30:  # 국가기관도 30% 미만이면 의심
+                remark = f"공동이행(비정상) 부산{busan_share}%"
+            else:
+                if is_long:
+                    remark = f"장기계속 · 공동이행 부산{busan_share}%"
+                else:
+                    remark = f"공동이행(정상) 부산{busan_share}%"
+        else:
+            # 단독계약
+            if is_long:
+                remark = "장기계속"
+            elif sector == '공사':
+                # 지역제한 미적용 체크
+                check_amt = tot_amt  # 총계약액 기준
+                if is_busan_grp and check_amt <= 10_000_000_000:  # 부산시 100억
+                    remark = "지역제한 미적용"
+                elif not is_busan_grp and check_amt <= 8_800_000_000:  # 국가 88억
+                    remark = "지역제한 미적용"
+                else:
+                    remark = "단독유출"
+            elif sector == '용역':
+                check_amt = tot_amt
+                if is_busan_grp and check_amt <= 330_000_000:  # 부산시 3.3억
+                    remark = "지역제한 미적용"
+                elif not is_busan_grp and check_amt <= 220_000_000:  # 국가 2.2억
+                    remark = "지역제한 미적용"
+                else:
+                    remark = "단독유출"
+            else:
+                remark = "단독유출"
+        return remark
+
     # 수의계약 기관별 상세 (공사/용역/물품만 — 쇼핑몰 제외)
     agency_suui_details = defaultdict(lambda: {
         "총발주액": 0, "총수주액": 0, "총수주율": 0, "그룹": "",
@@ -417,7 +473,8 @@ def build_cache():
             agency_shop_details[unit]["유출계약"].append({
                 "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
                 "계약액": round(amt), "유출액": round(nloc),
-                "유출율": round(nloc/amt*100, 1) if amt>0 else 0, "수주업체": corp_nm[:40], "그룹": grp
+                "유출율": round(nloc/amt*100, 1) if amt>0 else 0, "수주업체": corp_nm[:40], "그룹": grp,
+                "비고": "직접구매"
             })
         # -------------------------------------
         
@@ -679,7 +736,8 @@ def build_cache():
                         agency_suui_details[unit]["유출계약"][sector].append({
                             "분야": sector, "수요기관": unit, "계약명": str(row.get('cntrctNm', '') or '')[:60],
                             "계약액": round(p_amt), "유출액": round(pnloc),
-                            "유출율": round(pnloc/p_amt*100, 1) if p_amt>0 else 0, "수주업체": corp_nmm[:40], "그룹": grp
+                            "유출율": round(pnloc/p_amt*100, 1) if p_amt>0 else 0, "수주업체": corp_nmm[:40], "그룹": grp,
+                            "비고": gen_비고(row, sector, grp, biznos, bid_dict)
                         })
             # ---------------------------------
             

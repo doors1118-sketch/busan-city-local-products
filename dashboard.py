@@ -1187,7 +1187,7 @@ elif page == "🔍 기관별 실적 검색":
 <div style="font-size:0.9rem; font-weight:700; color:#fff;">🔴 {u} 주요 지역외 유출 계약{limit_txt}</div>
 <div style="font-size:0.72rem; color:rgba(255,255,255,0.7);">총 {len(leaks_all):,}건 중 상위 {len(leaks)}건</div>
 </div>"""
-                    col_hdr = f'<div style="display:flex; align-items:center; padding:8px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.8; {th_lk}">분야</div><div style="flex:3; {th_lk}">계약명</div><div style="flex:1.2; {th_lk} text-align:right;">계약액</div><div style="flex:1.2; {th_lk} text-align:right;">유출액</div><div style="flex:1; {th_lk} text-align:right;">유출율</div><div style="flex:2.5; {th_lk} padding-left:12px;">수주업체</div></div>'
+                    col_hdr = f'<div style="display:flex; align-items:center; padding:8px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.8; {th_lk}">분야</div><div style="flex:2.5; {th_lk}">계약명</div><div style="flex:1; {th_lk} text-align:right;">계약액</div><div style="flex:1; {th_lk} text-align:right;">유출액</div><div style="flex:0.8; {th_lk} text-align:right;">유출율</div><div style="flex:2; {th_lk} padding-left:12px;">수주업체</div><div style="flex:2; {th_lk} padding-left:8px;">비고</div></div>'
                     leak_rows = ""
                     for li, lk in enumerate(leaks):
                         분야_l = lk.get("분야", "")
@@ -1199,11 +1199,13 @@ elif page == "🔍 기관별 실적 검색":
                         row_bg = "#fafbfe" if li % 2 == 1 else COLORS["card_bg"]
                         율_clr = COLORS['danger'] if 유출율_l >= 80 else (COLORS['warning'] if 유출율_l >= 50 else COLORS['text_dark'])
                         분야_clr = {"공사":"#6576ff","용역":"#1ee0ac","물품":"#f4bd0e","쇼핑몰":"#ff63a5"}.get(분야_l, COLORS["text_light"])
-                        leak_rows += f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};"><div style="flex:0.8;"><span style="background:{분야_clr}; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:600;">{분야_l}</span></div><div style="flex:3; font-size:0.8rem; font-weight:600; color:{COLORS["text_dark"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{계약명_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:600; font-family:Nunito Sans,sans-serif;">{계약액_l}</div><div style="flex:1.2; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS["danger"]}; font-family:Nunito Sans,sans-serif;">{유출액_l}</div><div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{율_clr};">{유출율_l}%</div><div style="flex:2.5; font-size:0.75rem; color:{COLORS["text_light"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:12px;">{수주업체_l}</div></div>'
+                        비고_l = lk.get("비고", "")
+                        비고_clr = '#e85347' if '비정상' in 비고_l or '미적용' in 비고_l else (COLORS['text_light'] if '정상' in 비고_l or '장기' in 비고_l else COLORS['text_dark'])
+                        leak_rows += f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:{row_bg};"><div style="flex:0.8;"><span style="background:{분야_clr}; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:600;">{분야_l}</span></div><div style="flex:2.5; font-size:0.8rem; font-weight:600; color:{COLORS["text_dark"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{계약명_l}</div><div style="flex:1; text-align:right; font-size:0.82rem; font-weight:600; font-family:Nunito Sans,sans-serif;">{계약액_l}</div><div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS["danger"]}; font-family:Nunito Sans,sans-serif;">{유출액_l}</div><div style="flex:0.8; text-align:right; font-size:0.82rem; font-weight:700; color:{율_clr};">{유출율_l}%</div><div style="flex:2; font-size:0.75rem; color:{COLORS["text_light"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:12px;">{수주업체_l}</div><div style="flex:2; font-size:0.68rem; font-weight:600; color:{비고_clr}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:8px;">{비고_l}</div></div>'
                     st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden; margin-top:8px;">{leak_header}{col_hdr}{leak_rows}</div>', unsafe_allow_html=True)
                     # Excel 다운로드
                     df_dl = pd.DataFrame(leaks_all)
-                    cols_dl = ["분야", "계약명", "계약액", "유출액", "유출율", "수주업체"]
+                    cols_dl = ["분야", "계약명", "계약액", "유출액", "유출율", "수주업체", "비고"]
                     df_dl = df_dl[[c for c in cols_dl if c in df_dl.columns]].copy()
                     import io
                     buf = io.BytesIO()
