@@ -687,7 +687,7 @@ def build_cache():
             prot_by_agency[unit]['grp'] = grp
             amt = float(row.get('thtmCntrctAmt', 0) or 0)
             if amt == 0: amt = float(row.get('totCntrctAmt', 0) or 0)
-            if sum(1 for bno, _ in biz_list if bno in biznos) > 0:
+            if sum(1 for bno, _ in biz_list if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES)) > 0:
                 suui_stats[key]['busan'] += 1
                 suui_stats[key]['busan_amt'] = suui_stats[key].get('busan_amt', 0) + amt
                 prot_by_agency[unit]['applied'] += 1
