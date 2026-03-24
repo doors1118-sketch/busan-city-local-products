@@ -1141,6 +1141,78 @@ def build_cache():
     print(f"    이번주({weekly_cache['이번주_기간']}): 계약액 {tw_all.get('이번주_계약액',0)/1e8:,.0f}억, 수주율 {tw_all.get('이번주_수주율',0)}%")
     print(f"    지난주({weekly_cache['지난주_기간']}): 계약액 {tw_all.get('지난주_계약액',0)/1e8:,.0f}억, 수주율 {tw_all.get('지난주_수주율',0)}%")
     print(f"    수주율 증감: {tw_all.get('수주율_증감',0):+.1f}%p")
+
+    # ── 일별 누계 수주율의 7일 평균 vs 현재 수주율 비교 ──
+    # 현재 누계 총액 (1/1 ~ today)
+    cum_total = cache["1_전체"]["발주액"]
+    cum_local = cache["1_전체"]["수주액"]
+    current_rate = cache["1_전체"]["수주율"]
+    
+    # 지난 7일간 일별 계약 실적을 구해서 역으로 누계를 추정
+    daily_rates = []
+    running_total = cum_total
+    running_local = cum_local
+    for d_offset in range(7):
+        # d_offset=0: 오늘, d_offset=1: 어제, ...
+        target_date = today - timedelta(days=d_offset)
+        ds = target_date.strftime('%Y-%m-%d')
+        day_total = 0; day_local = 0
+        for tbl, award_key in [('cnstwk_cntrct','공사'),('servc_cntrct','용역'),('thng_cntrct','물품')]:
+            try:
+                ddf = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
+                    totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
+                    {'cnstwkNm' if tbl=='cnstwk_cntrct' else 'cntrctNm'} as cntrctNm,
+                    cntrctInsttOfclTelNo
+                    FROM [{tbl}]
+                    WHERE cntrctCnclsDate = '{ds}'""", conn)
+                ddf.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
+                ddf = dedup_by_dcsn(ddf)
+                for _, row in ddf.iterrows():
+                    result = process_contract_row(row, inst_dict, biznos,
+                                                   use_location_filter=True,
+                                                   bid_dict=bid_dict,
+                                                   award_set=award_sets.get(award_key, set()))
+                    if not result: continue
+                    cd, amt, loc = result
+                    if inst_grp.get(cd):
+                        day_total += amt; day_local += loc
+            except: pass
+        # 쇼핑몰
+        try:
+            sdf2 = pd.read_sql(f"""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
+                prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
+                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm
+                FROM shopping_cntrct WHERE dlvrReqRcptDate = '{ds}'""", conn)
+            sdf2['dlvrReqChgOrd'] = pd.to_numeric(sdf2['dlvrReqChgOrd'], errors='coerce').fillna(0)
+            sdf2.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
+            sdf2.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
+            for _, row in sdf2.iterrows():
+                result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
+                if not result: continue
+                cd, amt, loc = result
+                if inst_grp.get(cd):
+                    day_total += amt; day_local += loc
+        except: pass
+        
+        if d_offset > 0:  # 오늘 제외, 지난 7일간의 "그 날 마감 기준" 누계 수주율
+            # running_total/local은 이미 d_offset-1까지의 차감이 반영됨
+            rate_as_of = round(running_local / running_total * 100, 1) if running_total > 0 else 0
+            daily_rates.append(rate_as_of)
+        
+        # 해당 일의 실적을 누계에서 차감 (역순 계산)
+        running_total -= day_total
+        running_local -= day_local
+    
+    avg_7day_rate = round(sum(daily_rates) / len(daily_rates), 1) if daily_rates else current_rate
+    rate_vs_avg = round(current_rate - avg_7day_rate, 1)
+    
+    weekly_cache["누계비교"] = {
+        "현재_수주율": current_rate,
+        "7일평균_수주율": avg_7day_rate,
+        "증감": rate_vs_avg,
+        "일별_수주율": daily_rates,  # [어제, 그저께, ..., 7일전]
+    }
+    print(f"    [누계비교] 현재 {current_rate}% vs 7일평균 {avg_7day_rate}% = {rate_vs_avg:+.1f}%p")
     
     import tempfile, os, math
     # NaN/Inf 치환: Pandas 계산 결과에 NaN이 섞이면 FastAPI가 500 에러 발생
