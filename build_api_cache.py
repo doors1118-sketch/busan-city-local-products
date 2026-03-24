@@ -225,6 +225,16 @@ def build_cache():
         
         is_busan_grp = '부산' in str(grp or '')
         
+        if sector == '용역':
+            check_amt = tot_amt
+            if is_busan_grp and check_amt < 330_000_000:
+                remark = "비정상(지역제한비적용)"
+            elif not is_busan_grp and check_amt < 220_000_000:
+                remark = "비정상(지역제한비적용)"
+            else:
+                remark = "단독유출" if not is_joint else ""
+            return remark
+
         if is_joint:
             # 공동이행 지분 검증
             if is_busan_grp and busan_share < 40:
@@ -246,14 +256,6 @@ def build_cache():
                 if is_busan_grp and check_amt <= 10_000_000_000:  # 부산시 100억
                     remark = "지역제한 미적용"
                 elif not is_busan_grp and check_amt <= 8_800_000_000:  # 국가 88억
-                    remark = "지역제한 미적용"
-                else:
-                    remark = "단독유출"
-            elif sector == '용역':
-                check_amt = tot_amt
-                if is_busan_grp and check_amt <= 330_000_000:  # 부산시 3.3억
-                    remark = "지역제한 미적용"
-                elif not is_busan_grp and check_amt <= 220_000_000:  # 국가 2.2억
                     remark = "지역제한 미적용"
                 else:
                     remark = "단독유출"
