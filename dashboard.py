@@ -464,7 +464,7 @@ if page == "📊 종합현황":
                 sc = COLORS["success"]
                 # 주간 수주율 증감 (누계기준: 7일 평균 누계 수주율 vs 현재)
                 _weekly = data.get("13_주간데이터", {})
-                _cum = _weekly.get("누계비교", {})
+                _cum = _weekly.get("누계비교", {}).get("전체", {})
                 _wk_change = _cum.get("증감", 0)
                 _wk_arrow = "↑" if _wk_change >= 0 else "↓"
                 _wk_color = COLORS["success"] if _wk_change >= 0 else COLORS["danger"]
@@ -683,7 +683,7 @@ if page == "📊 종합현황":
 <div style="font-size:0.72rem; font-weight:700; color:{COLORS['text_dark']};">이번주 지역업체 수주액</div>
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
 <div style="font-size:1.05rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(w_부산_수주)}</div>
-<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{COLORS['success']};">↑ 3.8%</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
+<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{ (lambda c: COLORS['success'] if c >= 0 else COLORS['danger'])(_weekly.get('누계비교',{}).get('부산광역시 및 소속기관',{}).get('증감',0)) };">{ (lambda c: ('↑' if c >= 0 else '↓') + f' {abs(c):.1f}%p')(_weekly.get('누계비교',{}).get('부산광역시 및 소속기관',{}).get('증감',0)) }</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
@@ -698,8 +698,16 @@ if page == "📊 종합현황":
                         ("물품", 부산_분야.get("물품", {}), "#1ee0ac"),
                         ("쇼핑몰", 부산_분야.get("쇼핑몰", 부산_분야.get("종합쇼핑몰", {})), "#f4bd0e"),
                     ]
-                    trends_r = ["4.29% ↑", "15.8% ↓", "6.5% ↑", "2.1% ↑"]
-                    trend_c = [COLORS["success"], COLORS["danger"], COLORS["success"], COLORS["success"]]
+                    # 누계비교 데이터로 전주대비 계산
+                    _cum_all = _weekly.get("누계비교", {})
+                    trends_r = []
+                    trend_c = []
+                    for _sn in ['공사','용역','물품','쇼핑몰']:
+                        _sc = _cum_all.get(_sn, {})
+                        _chg = _sc.get('증감', 0)
+                        _arr = '↑' if _chg >= 0 else '↓'
+                        trends_r.append(f"{abs(_chg):.1f}%p {_arr}")
+                        trend_c.append(COLORS['success'] if _chg >= 0 else COLORS['danger'])
                     spark_data = [
                         [65, 72, 68, 74, 70, 73, 72],
                         [55, 50, 53, 48, 52, 50, 52],
@@ -807,8 +815,14 @@ if page == "📊 종합현황":
                         ("물품", 정부_분야.get("물품", {}), "#1ee0ac"),
                         ("쇼핑몰", 정부_분야.get("쇼핑몰", 정부_분야.get("종합쇼핑몰", {})), "#f4bd0e"),
                     ]
-                    gov_trends = ["2.1% ↑", "3.5% ↓", "4.8% ↑", "1.2% ↑"]
-                    gov_tc = [COLORS["success"], COLORS["danger"], COLORS["success"], COLORS["success"]]
+                    gov_trends = []
+                    gov_tc = []
+                    for _sn in ['공사','용역','물품','쇼핑몰']:
+                        _sc = _cum_all.get(_sn, {})
+                        _chg = _sc.get('증감', 0)
+                        _arr = '↑' if _chg >= 0 else '↓'
+                        gov_trends.append(f"{abs(_chg):.1f}%p {_arr}")
+                        gov_tc.append(COLORS['success'] if _chg >= 0 else COLORS['danger'])
                     gov_spark = [
                         [60, 65, 58, 63, 61, 64, 62],
                         [22, 18, 20, 16, 19, 17, 20],
