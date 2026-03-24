@@ -994,6 +994,22 @@ elif page == "🏆 기관별 순위":
                                         _bc = '#e85347' if '비정상' in _bigo or '미적용' in _bigo else (COLORS['text_light'] if '정상' in _bigo or '장기' in _bigo else COLORS['text_dark'])
                                         rws += f'<div style="display:flex; align-items:center; padding:8px 16px; border-bottom:1px solid {COLORS["card_border"]}; background:{rb};"><div style="flex:0.8;"><span style="background:{fc}; color:#fff; padding:2px 6px; border-radius:10px; font-size:0.6rem; font-weight:600;">{lk.get("분야","")}</span></div><div style="flex:2.5; font-size:0.75rem; font-weight:600; color:{COLORS["text_dark"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{lk.get("계약명","")[:35]}</div><div style="flex:1; text-align:right; font-size:0.78rem; font-weight:600; font-family:Nunito Sans,sans-serif;">{format_억(lk.get("계약액",0))}</div><div style="flex:1; text-align:right; font-size:0.78rem; font-weight:700; color:{COLORS["danger"]}; font-family:Nunito Sans,sans-serif;">{format_억(lk.get("유출액",0))}</div><div style="flex:0.8; text-align:right; font-size:0.78rem; font-weight:700; color:{uc};">{ul}%</div><div style="flex:1.8; font-size:0.7rem; color:{COLORS["text_light"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:12px;">{lk.get("수주업체","")}</div><div style="flex:2; font-size:0.65rem; font-weight:600; color:{_bc}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:8px;">{_bigo}</div></div>'
                                     st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; overflow:hidden; margin-top:8px;">{lk_hd}{ch_r}{rws}</div>', unsafe_allow_html=True)
+                                    
+                                    # Excel 다운로드
+                                    df_dl_t = pd.DataFrame(leaks_all_t)
+                                    cols_dl = ["분야", "계약명", "계약액", "유출액", "유출율", "수주업체", "비고"]
+                                    if not df_dl_t.empty:
+                                        df_dl_t = df_dl_t[[c for c in cols_dl if c in df_dl_t.columns]].copy()
+                                        import io
+                                        buf_t = io.BytesIO()
+                                        df_dl_t.to_excel(buf_t, index=False, engine='openpyxl')
+                                        st.download_button(
+                                            label=f"📥 {u} 지역외 유출계약 전체 다운로드",
+                                            data=buf_t.getvalue(),
+                                            file_name=f"{u}_유출계약(상세).xlsx",
+                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                            key=f"dl_leak_top_{u}"
+                                        )
                                 else:
                                     st.info(f"{u}의 주요 유출 계약이 없습니다.")
 
@@ -1079,6 +1095,22 @@ elif page == "🏆 기관별 순위":
                                         rb = "#fafbfe" if li%2==1 else COLORS["card_bg"]
                                         rws += f'<div style="display:flex; align-items:center; padding:8px 16px; border-bottom:1px solid {COLORS["card_border"]}; background:{rb};"><div style="flex:0.8;"><span style="background:{fc}; color:#fff; padding:2px 6px; border-radius:10px; font-size:0.6rem; font-weight:600;">{lk.get("분야","")}</span></div><div style="flex:3; font-size:0.75rem; font-weight:600; color:{COLORS["text_dark"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{lk.get("계약명","")[:35]}</div><div style="flex:1.2; text-align:right; font-size:0.78rem; font-weight:600; font-family:Nunito Sans,sans-serif;">{format_억(lk.get("계약액",0))}</div><div style="flex:1.2; text-align:right; font-size:0.78rem; font-weight:700; color:{COLORS["danger"]}; font-family:Nunito Sans,sans-serif;">{format_억(lk.get("유출액",0))}</div><div style="flex:1; text-align:right; font-size:0.78rem; font-weight:700; color:{uc};">{ul}%</div><div style="flex:2.5; font-size:0.7rem; color:{COLORS["text_light"]}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:12px;">{lk.get("수주업체","")}</div></div>'
                                     st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; overflow:hidden; margin-top:8px;">{lk_hd}{ch_r}{rws}</div>', unsafe_allow_html=True)
+                                    
+                                    # Excel 다운로드
+                                    df_dl_b = pd.DataFrame(leaks_all_b)
+                                    cols_dl = ["분야", "계약명", "계약액", "유출액", "유출율", "수주업체", "비고"]
+                                    if not df_dl_b.empty:
+                                        df_dl_b = df_dl_b[[c for c in cols_dl if c in df_dl_b.columns]].copy()
+                                        import io
+                                        buf_b = io.BytesIO()
+                                        df_dl_b.to_excel(buf_b, index=False, engine='openpyxl')
+                                        st.download_button(
+                                            label=f"📥 {u} 지역외 유출계약 전체 다운로드",
+                                            data=buf_b.getvalue(),
+                                            file_name=f"{u}_유출계약(상세).xlsx",
+                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                            key=f"dl_leak_bot_{u}"
+                                        )
                                 else:
                                     st.info(f"{u}의 주요 유출 계약이 없습니다.")
             
