@@ -1630,8 +1630,8 @@ elif page == "🛡️ 지역업체 보호제도":
                         else:
                             org_name = stat[0] if len(stat)>0 else ''
                             total = stat[2] if len(stat)>2 else 0
-                            unapplied = stat[3] if len(stat)>3 else 0
-                            applied = stat[4] if len(stat)>4 else 0
+                            applied = stat[3] if len(stat)>3 else 0
+                            unapplied = stat[4] if len(stat)>4 else 0
                             
                         st.markdown(f'''<div style="display:flex; gap:12px; margin-bottom:16px;">
 <div style="flex:1.5; padding:14px; background:#f8f9fa; border:1px solid #e9ecef; border-radius:6px;">
@@ -1660,8 +1660,15 @@ elif page == "🛡️ 지역업체 보호제도":
                 for c in all_violations:
                     if isinstance(c, dict):
                         agency_val = str(c.get("수요기관", ""))
-                        if search_kw_prot in agency_val:
+                        unit_val = str(c.get("비교단위", ""))
+                        if search_kw_prot in agency_val or search_kw_prot in unit_val:
                             filtered_dicts.append(c)
+                    else:
+                        agency_val = str(c[5]) if len(c) > 5 else ""
+                        unit_val = str(c[6]) if len(c) > 6 else ""
+                        if search_kw_prot in agency_val or search_kw_prot in unit_val:
+                            cols = ["분야", "계약방식", "공고명", "추정가격", "기관그룹", "수요기관", "비교단위", "수주업체", "비고"]
+                            filtered_dicts.append(dict(zip(cols, c)))
                 
                 if filtered_dicts:
                     df_filtered_prot = pd.DataFrame(filtered_dicts)
