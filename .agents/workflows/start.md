@@ -15,7 +15,13 @@ description: 새 대화 시작 시 자동 적용되는 작업 지침
    - 새 규칙/스크립트 추가 시 반드시 문서에 반영
 
 4. **캐시 재생성 후 자동 검증 테스트 실행**
-   ```
-   python test_integrity.py
-   ```
-   - 전체 통과 확인 후 작업 완료 처리
+    ```
+    python test_integrity.py
+    ```
+    - 전체 통과 확인 후 작업 완료 처리
+
+5. **집에서 서버 SSH 접속 시 비밀번호 방식 사용**
+    - Windows SSH 클라이언트(ssh.exe)는 stdin 비밀번호 입력이 안 됨
+    - Python `paramiko` 라이브러리로 접속: `pip install paramiko`
+    - 접속 정보: `root@49.50.133.160:22`, 비밀번호 인증
+    - 배포 명령: `cd /opt/busan && git pull origin main --ff-only && python3 build_api_cache.py && systemctl restart busan-api`
