@@ -1034,6 +1034,15 @@ def main():
     except Exception as e:
         print(f"   [오류] 경보 체크 실패: {e}")
 
+    # [Step 6] DB 백업 (NCP Object Storage, 7일 보관)
+    print("\n--------------------------------------------------")
+    try:
+        from backup_db import backup_and_upload
+        backup_and_upload()
+    except Exception as e:
+        print(f"   [오류] DB 백업 실패: {e}")
+        print(f"   → 파이프라인 자체는 정상 완료됩니다.")
+
     end_time = time.time()
     print("\n==================================================")
     print(f"🎉 Daily Sync 완료! ({len(success_dates)}일 수집: {', '.join(success_dates)})")
