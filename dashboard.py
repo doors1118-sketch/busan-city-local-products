@@ -1273,14 +1273,37 @@ elif page == "🔍 기관별 실적 검색":
                     import io
                     buf = io.BytesIO()
                     df_dl.to_excel(buf, index=False, engine='openpyxl')
-                    st.download_button(
-                        label=f"📥 {u} 유출계약 엑셀 다운로드",
-                        data=buf.getvalue(),
-                        file_name=f"{u}_유출계약.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_leak_{u}"
-                    )
-                else:
+                    
+                    st.markdown("---")
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        st.download_button(
+                            label=f"📥 {u} 유출계약 엑셀 다운로드",
+                            data=buf.getvalue(),
+                            file_name=f"{u}_유출계약.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_leak_{u}"
+                        )
+                        
+                    with col_dl2:
+                        state_key = f"gen_excel_{u}"
+                        if st.button(f"📥 {u} 전체 계약 생성 (지역업체 포함)", key=f"btn_gen_{u}"):
+                            st.session_state[state_key] = True
+                            
+                        if st.session_state.get(state_key):
+                            with st.spinner("DB 데이터 조회 및 필터링 중..."):
+                                from export_excel import generate_agency_excel
+                                excel_buf = generate_agency_excel(u)
+                                if excel_buf:
+                                    st.download_button(
+                                        label=f"✅ 준비 완료! 클릭하여 저장",
+                                        data=excel_buf.getvalue(),
+                                        file_name=f"{u}_전체계약내역.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        key=f"dl_all_{u}"
+                                    )
+                                else:
+                                    st.error("데이터 생성 실패 또는 데이터 없음")
                     st.info(f"{u}의 주요 지역외 유출 계약(기준 충족 건)이 없습니다.")
 
         if not found:
@@ -2405,8 +2428,31 @@ elif page == "🛒 종합쇼핑몰":
                         cols_dl = ["분야","수요기관","계약명","계약액","유출액","유출율","수주업체","관급자재여부","그룹"]
                         df_dl = df_dl[[c for c in cols_dl if c in df_dl.columns]].copy()
                         buf = io.BytesIO(); df_dl.to_excel(buf, index=False, engine='openpyxl')
-                        st.download_button(label=f"📥 {u} 쇼핑몰 구매내역 엑셀 다운로드", data=buf.getvalue(), file_name=f"{u}_쇼핑몰_구매.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dl_shop_{u}{suffix}")
-
+                        
+                        col_dl1, col_dl2 = st.columns(2)
+                        with col_dl1:
+                            st.download_button(label=f"📥 {u} 쇼핑몰 유출계약 엑셀 다운로드", data=buf.getvalue(), file_name=f"{u}_쇼핑몰_유출.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dl_shop_{u}{suffix}")
+                            
+                        with col_dl2:
+                            state_key_shop = f"gen_excel_shop_{u}{suffix}"
+                            if st.button(f"📥 {u} 전체 계약 생성 (모든 분야)", key=f"btn_gen_shop_{u}{suffix}"):
+                                st.session_state[state_key_shop] = True
+                                
+                            if st.session_state.get(state_key_shop):
+                                with st.spinner("DB 데이터 조회 및 필터링 중..."):
+                                    from export_excel import generate_agency_excel
+                                    excel_buf = generate_agency_excel(u)
+                                    if excel_buf:
+                                        st.download_button(
+                                            label=f"✅ 준비 완료! 클릭하여 저장",
+                                            data=excel_buf.getvalue(),
+                                            file_name=f"{u}_전체계약내역.xlsx",
+                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                            key=f"dl_all_shop_{u}{suffix}"
+                                        )
+                                    else:
+                                        st.error("데이터 생성 실패 또는 데이터 없음")
+                                        
         district_rows = []
         if '쇼핑몰' in (_summary_shop.get("12_기관별_상세", {}) if _summary_shop else {}):
             pass  # fallback below
