@@ -122,14 +122,22 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
             else:
                 method = str(row.get('cntrctCnclsMthdNm', ''))
                 
-            cntrct_name = str(row.get('cntrctNm', '') or row.get('cnstwkNm', '') or row.get('dlvrReqNm', '') or '')
+            cntrct_name = str(row.get('cntrctNm', '') or row.get('cnstwkNm', '') or row.get('dlvrReqNm', '') or '').strip()
+            
+            if is_shopping:
+                prdct_nm = str(row.get('prdctIdntNoNm', '')).strip()
+                if prdct_nm and prdct_nm != 'nan' and prdct_nm != 'None':
+                    # 품목명이 너무 길면 자름
+                    if len(prdct_nm) > 40:
+                        prdct_nm = prdct_nm[:37] + "..."
+                    cntrct_name = f"{cntrct_name} [{prdct_nm}]"
             
             exported_rows.append({
                 "계약일자": date,
                 "기관그룹": agency_info.get('cate_lrg', ''),
                 "수요기관": agency_info.get('compare_unit', '') or agency_info.get('dminsttNm', ''),
                 "분야": sector_name,
-                "계약명": cntrct_name[:100],
+                "계약명": cntrct_name[:150],  # 넉넉하게 150자로 증가
                 "계약방식": method,
                 "수주업체": corp_nm[:50],
                 "수주업체 주소": corp_adrs,
@@ -201,7 +209,7 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
     
     # 쇼핑몰
     t0 = time.time()
-    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct", conn_pr)
+    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, prdctIdntNoNm, dlvrReqRcptDate FROM shopping_cntrct", conn_pr)
     df_shop = pre_filter(df_shop)
     df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
