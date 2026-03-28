@@ -76,7 +76,9 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
             # 수주업체명 추출
             corp_nm = ""
             if is_shopping:
-                corp_nm = str(row.get('cntrctCorpBizno', '')).strip()
+                corp_nm = str(row.get('corpNm', '')).strip()
+                if not corp_nm or corp_nm == 'nan' or corp_nm == 'None':
+                    corp_nm = str(row.get('cntrctCorpBizno', '')).strip()
             else:
                 corp_names = []
                 cl = str(row.get('corpList', ''))
@@ -177,7 +179,7 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
     
     # 쇼핑몰
     t0 = time.time()
-    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct", conn_pr)
+    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct", conn_pr)
     df_shop = pre_filter(df_shop)
     df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
