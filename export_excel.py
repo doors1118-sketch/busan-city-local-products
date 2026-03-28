@@ -44,6 +44,13 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
     conn_cp = sqlite3.connect(DB_COMPANIES)
     conn_pr = sqlite3.connect(DB_PROCUREMENT)
     busan_comp_biznos = load_expanded_biznos(conn_cp)
+    
+    # 주소 딕셔너리 로딩
+    df_adrs = pd.read_sql("SELECT bizno, rgnNm, adrs FROM company_master", conn_cp)
+    df_adrs['bizno'] = df_adrs['bizno'].astype(str).str.replace('-', '', regex=False).str.strip()
+    df_adrs['full_adrs'] = (df_adrs['rgnNm'].fillna('') + ' ' + df_adrs['adrs'].fillna('')).str.strip()
+    comp_adrs_dict = df_adrs.set_index('bizno')['full_adrs'].to_dict()
+    
     conn_cp.close()
 
     # 3. 브릿지 데이터 로딩
@@ -73,21 +80,31 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
             non_loc_amt = amt - loc_amt
             agency_info = busan_inst_dict[matched_cd]
             
-            # 수주업체명 추출
+            # 수주업체명 및 주소 추출
             corp_nm = ""
+            corp_adrs = ""
             if is_shopping:
                 corp_nm = str(row.get('corpNm', '')).strip()
+                bizno = str(row.get('cntrctCorpBizno', '')).strip().replace('-', '')
                 if not corp_nm or corp_nm == 'nan' or corp_nm == 'None':
-                    corp_nm = str(row.get('cntrctCorpBizno', '')).strip()
+                    corp_nm = bizno
+                corp_adrs = comp_adrs_dict.get(bizno, '')
             else:
                 corp_names = []
+                adrs_list = []
                 cl = str(row.get('corpList', ''))
                 if cl:
                     for chunk in cl.split('[')[1:]:
                         parts = chunk.split(']')[0].split('^')
                         if len(parts) >= 4:
-                            corp_names.append(parts[3].strip())
+                            bizno = parts[2].strip().replace('-', '')
+                            c_name = parts[3].strip()
+                            corp_names.append(c_name)
+                            c_adrs = comp_adrs_dict.get(bizno, '')
+                            if c_adrs:
+                                adrs_list.append(f"{c_name}({c_adrs})")
                 corp_nm = ", ".join(corp_names)
+                corp_adrs = " / ".join(adrs_list)
 
             date = ""
             if is_shopping:
@@ -111,6 +128,7 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
                 "계약명": cntrct_name[:100],
                 "계약방식": method,
                 "수주업체": corp_nm[:50],
+                "수주업체 주소": corp_adrs,
                 "발주액(계약액)": amt,
                 "지역업체 수주액": loc_amt,
                 "타지역업체 수주액(유출액)": non_loc_amt,
