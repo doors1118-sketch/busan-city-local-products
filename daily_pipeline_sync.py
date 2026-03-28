@@ -23,6 +23,30 @@ DB_PATH = 'procurement_contracts.db'
 AGENCY_DB_PATH = 'busan_agencies_master.db'
 SERVC_SITE_DB_PATH = 'servc_site.db'
 
+def check_api_health():
+    """조달청 API 서비스 상태 확인. 정상이면 True, 점검/장애 시 False."""
+    test_url = (f"https://apis.data.go.kr/1230000/ao/UsrInfoService02/getDminsttInfo02"
+                f"?serviceKey={SERVICE_KEY}&inqryDiv=2"
+                f"&inqryBgnDt=202601010000&inqryEndDt=202601010100"
+                f"&numOfRows=1&pageNo=1&type=json")
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(test_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
+                data = json.loads(res.read().decode('utf-8'))
+                code = data.get('response', {}).get('header', {}).get('resultCode')
+                if code == '00':
+                    return True
+                msg = data.get('response', {}).get('header', {}).get('resultMsg', '')
+                print(f"   ⚠️ API 응답 비정상 (코드: {code}, 메시지: {msg})")
+                return False
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+            else:
+                print(f"   ⚠️ API 연결 실패 (3회 시도): {e}")
+    return False
+
 APIS = {
     '공사_중앙': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListCnstwkPPSSrch',
     '공사_자체': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListCnstwkSrch',
@@ -756,42 +780,94 @@ def download_for_category(api_type, date_str):
     return api_type, all_items
 
 def sync_one_day(target_date):
-    """하루치 데이터 수집 (Step 1~3.6). 성공 시 True 반환."""
+    """하루치 데이터 수집 (Step 1~3.6). 성공 시 True 반환.
+    API 점검 중이면 즉시 False → catch-up 메커니즘으로 추후 자동 보충."""
     print(f"\n{'='*50}")
     print(f" 📅 {target_date} 데이터 수집 시작")
     print(f"{'='*50}\n")
 
-    # [Step 1] 수요기관 마스터 동기화
-    update_agency_master_daily(target_date)
-    print("\n--------------------------------------------------")
-    # [Step 1.5] 조달업체 마스터 동기화
-    update_company_master_daily(target_date)
-    print("\n--------------------------------------------------")
-    # [Step 1.6] 조달업체 업종정보 동기화
-    update_company_industry_daily(target_date)
-    print("\n--------------------------------------------------")
-    # [Step 1.7] 공사 입찰공고 동기화
-    update_bid_notices_daily(target_date)
-    print("\n--------------------------------------------------")
-    # [Step 1.8] 용역 현장 동기화
-    update_servc_site_daily(target_date)
-    print("\n--------------------------------------------------")
-    # [Step 1.9] 낙찰정보 브릿지 동기화
-    update_busan_awards_daily(target_date)
-    print("\n--------------------------------------------------")
-    # [Step 2.0] 입찰공고 추정가격 동기화
-    update_bid_notices_price_daily(target_date)
+    # [사전 점검] API 서비스 상태 확인
+    print("[API 헬스체크] 조달청 API 서비스 상태 확인 중...")
+    if not check_api_health():
+        print("   🚫 조달청 API 서비스 점검 중 — 금일 수집을 건너뜁니다.")
+        print("   → 점검 완료 후 다음 실행 시 자동 보충 수집됩니다.")
+        return False
+    print("   ✅ API 정상 응답 확인")
     print("\n--------------------------------------------------")
 
-    # [Step 2] 전국 4개 조달계약 다운로드
+    # 각 Step 개별 실행 — 한 Step 실패가 나머지를 중단시키지 않음
+    failed_steps = []
+
+    # [Step 1] 수요기관 마스터 동기화
+    try:
+        update_agency_master_daily(target_date)
+    except Exception as e:
+        print(f"   [오류] Step 1 수요기관 동기화 실패: {e}")
+        failed_steps.append('Step1_수요기관')
+    print("\n--------------------------------------------------")
+
+    # [Step 1.5] 조달업체 마스터 동기화
+    try:
+        update_company_master_daily(target_date)
+    except Exception as e:
+        print(f"   [오류] Step 1.5 조달업체 동기화 실패: {e}")
+        failed_steps.append('Step1.5_조달업체')
+    print("\n--------------------------------------------------")
+
+    # [Step 1.6] 조달업체 업종정보 동기화
+    try:
+        update_company_industry_daily(target_date)
+    except Exception as e:
+        print(f"   [오류] Step 1.6 업종정보 동기화 실패: {e}")
+        failed_steps.append('Step1.6_업종정보')
+    print("\n--------------------------------------------------")
+
+    # [Step 1.7] 공사 입찰공고 동기화
+    try:
+        update_bid_notices_daily(target_date)
+    except Exception as e:
+        print(f"   [오류] Step 1.7 입찰공고 동기화 실패: {e}")
+        failed_steps.append('Step1.7_입찰공고')
+    print("\n--------------------------------------------------")
+
+    # [Step 1.8] 용역 현장 동기화
+    try:
+        update_servc_site_daily(target_date)
+    except Exception as e:
+        print(f"   [오류] Step 1.8 용역현장 동기화 실패: {e}")
+        failed_steps.append('Step1.8_용역현장')
+    print("\n--------------------------------------------------")
+
+    # [Step 1.9] 낙찰정보 브릿지 동기화
+    try:
+        update_busan_awards_daily(target_date)
+    except Exception as e:
+        print(f"   [오류] Step 1.9 낙찰정보 동기화 실패: {e}")
+        failed_steps.append('Step1.9_낙찰정보')
+    print("\n--------------------------------------------------")
+
+    # [Step 2.0] 입찰공고 추정가격 동기화
+    try:
+        update_bid_notices_price_daily(target_date)
+    except Exception as e:
+        print(f"   [오류] Step 2.0 추정가격 동기화 실패: {e}")
+        failed_steps.append('Step2.0_추정가격')
+    print("\n--------------------------------------------------")
+
+    # [Step 2] 전국 4개 조달계약 다운로드 (★ 핵심 — 실패 시 전체 실패)
     print(f"[전국 계약 동기화] {target_date} 계약 정보 수집 중...")
     all_data = {k: [] for k in APIS.keys()}
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(download_for_category, cat, target_date) for cat in APIS.keys()]
-        for future in as_completed(futures):
-            cat, items = future.result()
-            all_data[cat] = items
-            print(f"   -> [{cat}] {target_date}: {len(items):,}건 수집")
+    try:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(download_for_category, cat, target_date) for cat in APIS.keys()]
+            for future in as_completed(futures):
+                cat, items = future.result()
+                all_data[cat] = items
+                print(f"   -> [{cat}] {target_date}: {len(items):,}건 수집")
+    except Exception as e:
+        print(f"   [오류] Step 2 계약 데이터 수집 실패: {e}")
+        print(f"   → 핵심 데이터 수집 실패 — 전체 실패 처리 (추후 자동 보충)")
+        return False
 
     # [Step 3] 부산 수요기관 계약만 DB 저장
     print(f"\n[로컬 DB 저장] {target_date} 부산 필터 후 저장 중...")
@@ -835,6 +911,12 @@ def sync_one_day(target_date):
     except Exception as e:
         print(f"   [오류] DB 적재: {e}")
         return False
+
+    # 실패 요약
+    if failed_steps:
+        print(f"\n   ⚠️ 일부 Step 실패 ({len(failed_steps)}건): {', '.join(failed_steps)}")
+        print(f"   → 핵심 계약 데이터는 정상 수집되어 성공 처리합니다.")
+
     return True
 
 def get_last_sync_date():
