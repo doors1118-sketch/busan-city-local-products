@@ -301,9 +301,15 @@ def build_shopping_site_index(conn, busan_agency_cds):
         other_only_cds: set — 타지역 전용 기관 코드
         ntc_index: dict — {dminsttCd: [(공고명, 현장지역, is_busan), ...]}
     """
-    notices = pd.read_sql(
-        "SELECT bidNtceNm, dminsttCd, cnstrtsiteRgnNm FROM bid_notices_raw"
-        " WHERE dminsttCd IS NOT NULL AND dminsttCd != ''", conn)
+    if busan_agency_cds:
+        placeholders = ','.join(['?'] * len(busan_agency_cds))
+        query = (f"SELECT bidNtceNm, dminsttCd, cnstrtsiteRgnNm FROM bid_notices_raw "
+                 f"WHERE dminsttCd IS NOT NULL AND dminsttCd != '' AND dminsttCd IN ({placeholders})")
+        notices = pd.read_sql(query, conn, params=tuple(busan_agency_cds))
+    else:
+        notices = pd.read_sql(
+            "SELECT bidNtceNm, dminsttCd, cnstrtsiteRgnNm FROM bid_notices_raw"
+            " WHERE dminsttCd IS NOT NULL AND dminsttCd != ''", conn)
     
     agency_sites = defaultdict(lambda: {'busan': 0, 'other': 0})
     for _, r in notices.iterrows():

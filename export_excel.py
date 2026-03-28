@@ -40,10 +40,10 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
     if not target_cds:
         return None
 
-    # 2. 지역업체 마스터 로딩
+    # 2. 지역업체 마스터 로딩 (동적 지점 스캔 제외: conn_pr=None)
     conn_cp = sqlite3.connect(DB_COMPANIES)
     conn_pr = sqlite3.connect(DB_PROCUREMENT)
-    busan_comp_biznos = load_expanded_biznos(conn_cp, conn_pr)
+    busan_comp_biznos = load_expanded_biznos(conn_cp)
     conn_cp.close()
 
     # 3. 브릿지 데이터 로딩
@@ -115,37 +115,83 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
                 "지역수주 여부": "관내수주" if loc_amt >= amt * 0.5 else "관외유출"
             })
 
+    # --- Pre-filter Helper (Superfast using itertuples) ---
+    def pre_filter(df):
+        if df.empty: return df
+        target_list = [str(c).strip() for c in target_cds.keys() if str(c).strip()]
+        target_set = set(target_list)
+        
+        has_d = 'dminsttCd' in df.columns
+        has_c = 'cntrctInsttCd' in df.columns
+        has_l = 'dminsttList' in df.columns
+        
+        # Determine column indices for itertuples
+        d_idx = df.columns.get_loc('dminsttCd') + 1 if has_d else -1
+        c_idx = df.columns.get_loc('cntrctInsttCd') + 1 if has_c else -1
+        l_idx = df.columns.get_loc('dminsttList') + 1 if has_l else -1
+        
+        mask = []
+        for row in df.itertuples(index=False):
+            if has_d and str(row[d_idx - 1]).strip() in target_set:
+                mask.append(True); continue
+            if has_c and str(row[c_idx - 1]).strip() in target_set:
+                mask.append(True); continue
+            if has_l:
+                dl = str(row[l_idx - 1])
+                if dl and dl not in ('nan', 'None'):
+                    if any(c in dl for c in target_list):
+                        mask.append(True); continue
+            mask.append(False)
+            
+        return df[mask].copy()
+
     # 공사
     import core_calc
+    import time
+    t0 = time.time()
+    with open('log.txt', 'a') as f:
+        f.write(f"공사 시작\n")
     df_const = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM cnstwk_cntrct", conn_pr)
+    df_const = pre_filter(df_const)
     df_const = core_calc.dedup_by_dcsn(df_const)
     df_const, _, _ = filter_cnstwk_by_site(df_const, bid_df)
     process_and_append(df_const, "공사", award_set=award_sets['공사'])
+    with open('log.txt', 'a') as f: f.write(f"공사 완료: {time.time() - t0:.2f}초\n")
     
     # 용역
+    t0 = time.time()
     df_servc = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cnstrtsiteRgnNm, dminsttCd, cntrctCnclsMthdNm, cntrctCnclsDate FROM servc_cntrct", conn_pr)
+    df_servc = pre_filter(df_servc)
     df_servc = core_calc.dedup_by_dcsn(df_servc)
     df_servc, _, _ = filter_servc_by_site(df_servc, busan_inst_dict)
     process_and_append(df_servc, "용역", award_set=award_sets['용역'])
+    with open('log.txt', 'a') as f: f.write(f"용역 완료: {time.time() - t0:.2f}초\n")
     
     # 물품
+    t0 = time.time()
     df_thng = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM thng_cntrct", conn_pr)
+    df_thng = pre_filter(df_thng)
     df_thng = core_calc.dedup_by_dcsn(df_thng)
     process_and_append(df_thng, "물품", award_set=award_sets['물품'])
+    with open('log.txt', 'a') as f: f.write(f"물품 완료: {time.time() - t0:.2f}초\n")
     
     # 쇼핑몰
+    t0 = time.time()
     df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct", conn_pr)
+    df_shop = pre_filter(df_shop)
     df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df_shop.drop_duplicates(subset=['dlvrReqNo', 'prdctSno'], keep='first', inplace=True)
     df_shop, _, _ = filter_shopping_by_site(df_shop, conn_pr, set(busan_inst_dict.keys()), inst_dict=busan_inst_dict)
     process_and_append(df_shop, "쇼핑몰", is_shopping=True)
+    with open('log.txt', 'a') as f: f.write(f"쇼핑몰 완료: {time.time() - t0:.2f}초\n")
     
     conn_pr.close()
     
     if not exported_rows:
         return None
         
+    t0 = time.time()
     df_export = pd.DataFrame(exported_rows)
     df_export.sort_values(by="발주액(계약액)", ascending=False, inplace=True)
     
@@ -173,4 +219,5 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
                         cell.number_format = '#,##0'
                 
     output.seek(0)
+    with open('log.txt', 'a') as f: f.write(f"엑셀 렌더링 완료: {time.time() - t0:.2f}초\n")
     return output
