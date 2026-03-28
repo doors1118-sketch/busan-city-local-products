@@ -1209,6 +1209,9 @@ def build_cache():
                     if not lrg: continue
                     wk[lrg]['total'] += amt; wk[lrg]['local'] += loc
                     wk['전체']['total'] += amt; wk['전체']['local'] += loc
+                    # 분야별 + 그룹×분야별 추적
+                    wk[nm]['total'] += amt; wk[nm]['local'] += loc
+                    wk[f"{lrg}_{nm}"]['total'] += amt; wk[f"{lrg}_{nm}"]['local'] += loc
             except:
                 pass
         try:
@@ -1228,6 +1231,9 @@ def build_cache():
                 if not lrg: continue
                 wk[lrg]['total'] += amt; wk[lrg]['local'] += loc
                 wk['전체']['total'] += amt; wk['전체']['local'] += loc
+                # 분야별 + 그룹×분야별 추적
+                wk['쇼핑몰']['total'] += amt; wk['쇼핑몰']['local'] += loc
+                wk[f"{lrg}_쇼핑몰"]['total'] += amt; wk[f"{lrg}_쇼핑몰"]['local'] += loc
         except:
             pass
         return dict(wk)
@@ -1261,7 +1267,9 @@ def build_cache():
     print(f"    수주율 증감: {tw_all.get('수주율_증감',0):+.1f}%p")
     # ── 일별 누계 수주율의 7일 평균 vs 현재 수주율 비교 ──
     # 전체 + 분야별 + 그룹별 running totals 초기화
-    dims = ['전체', '공사', '용역', '물품', '쇼핑몰', '부산광역시 및 소속기관', '정부 및 국가공공기관']
+    # 그룹×분야 조합 추가
+    grp_sec_dims = [f"{g}_{s}" for g in groups for s in sectors]
+    dims = ['전체', '공사', '용역', '물품', '쇼핑몰', '부산광역시 및 소속기관', '정부 및 국가공공기관'] + grp_sec_dims
     running = {d: {'total': 0, 'local': 0} for d in dims}
     
     # 현재 누계 값 세팅
@@ -1275,6 +1283,11 @@ def build_cache():
         gd = cache.get("3_그룹별", {}).get(grp_name, {})
         running[grp_name]['total'] = gd.get('발주액', 0)
         running[grp_name]['local'] = gd.get('수주액', 0)
+        for sector_name in sectors:
+            gs_key = f"{grp_name}_{sector_name}"
+            gsd = cache.get("4_그룹별_분야별", {}).get(grp_name, {}).get(sector_name, {})
+            running[gs_key]['total'] = gsd.get('발주액', 0)
+            running[gs_key]['local'] = gsd.get('수주액', 0)
     
     daily_dim_rates = {d: [] for d in dims}  # 7일간의 일별 누계 수주율
     
@@ -1306,6 +1319,9 @@ def build_cache():
                     day_by_dim[sector_name]['total'] += amt; day_by_dim[sector_name]['local'] += loc
                     if lrg in day_by_dim:
                         day_by_dim[lrg]['total'] += amt; day_by_dim[lrg]['local'] += loc
+                    gs_key = f"{lrg}_{sector_name}"
+                    if gs_key in day_by_dim:
+                        day_by_dim[gs_key]['total'] += amt; day_by_dim[gs_key]['local'] += loc
             except: pass
         # 쇼핑몰
         try:
@@ -1326,6 +1342,9 @@ def build_cache():
                 day_by_dim['쇼핑몰']['total'] += amt; day_by_dim['쇼핑몰']['local'] += loc
                 if lrg in day_by_dim:
                     day_by_dim[lrg]['total'] += amt; day_by_dim[lrg]['local'] += loc
+                gs_key = f"{lrg}_쇼핑몰"
+                if gs_key in day_by_dim:
+                    day_by_dim[gs_key]['total'] += amt; day_by_dim[gs_key]['local'] += loc
         except: pass
         
         if d_offset > 0:  # 오늘 제외
@@ -1342,9 +1361,16 @@ def build_cache():
     cum_compare = {}
     for d in dims:
         rates = daily_dim_rates[d]
-        cur = cache["1_전체"]["수주율"] if d == '전체' else \
-              cache.get("2_분야별", {}).get(d, {}).get('수주율', 0) if d in ['공사','용역','물품','쇼핑몰'] else \
-              cache.get("3_그룹별", {}).get(d, {}).get('수주율', 0)
+        if d == '전체':
+            cur = cache["1_전체"]["수주율"]
+        elif d in ['공사','용역','물품','쇼핑몰']:
+            cur = cache.get("2_분야별", {}).get(d, {}).get('수주율', 0)
+        elif '_' in d:
+            # 그룹×분야 (e.g. "부산광역시 및 소속기관_공사")
+            parts = d.rsplit('_', 1)
+            cur = cache.get("4_그룹별_분야별", {}).get(parts[0], {}).get(parts[1], {}).get('수주율', 0)
+        else:
+            cur = cache.get("3_그룹별", {}).get(d, {}).get('수주율', 0)
         avg7 = round(sum(rates) / len(rates), 1) if rates else cur
         cum_compare[d] = {
             "현재_수주율": cur,

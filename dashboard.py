@@ -563,8 +563,16 @@ if page == "📊 종합현황":
                     ("종합쇼핑몰계약액", amt_쇼핑, 분야_items[3][1] if len(분야_items) > 3 else {}),
                 ]
                 dot_colors = ["#6576ff", "#1ee0ac", "#e85347", "#f4bd0e"]
-                trends = ["↑ 3.2%", "↓ 1.8%", "↑ 6.5%", "↑ 2.1%"]
-                trend_colors = [sc, COLORS["danger"], sc, sc]
+                # 누계비교 데이터 기반 증감 값
+                _cum_sectors = _weekly.get("누계비교", {})
+                _sector_keys = ['공사', '용역', '물품', '쇼핑몰']
+                trends = []
+                trend_colors = []
+                for _sk in _sector_keys:
+                    _schg = _cum_sectors.get(_sk, {}).get('증감', 0)
+                    _arr = '↑' if _schg >= 0 else '↓'
+                    trends.append(f"{_arr} {abs(_schg):.1f}%p")
+                    trend_colors.append(COLORS['success'] if _schg >= 0 else COLORS['danger'])
                 bar_sets = [
                     [40, 55, 35, 60, 45, 70, 80],
                     [60, 45, 50, 35, 55, 40, 65],
@@ -669,22 +677,31 @@ if page == "📊 종합현황":
                 with dc2:
                     st.markdown(f'<div style="display:flex; flex-direction:column; justify-content:center; height:220px; gap:16px; padding-left:8px;"><div><div style="font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]};">총 계약액</div><div style="font-size:1.2rem; font-weight:800; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif; margin-top:2px;">{format_조(부산_발주)}</div></div><div style="display:flex; align-items:center; gap:8px;"><span style="width:10px; height:10px; border-radius:50%; background:#6576ff; display:inline-block;"></span><div><div style="font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]};">지역업체 수주액</div><div style="font-size:1rem; font-weight:800; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif; margin-top:2px;">{format_조(부산_수주)} <span style="color:#6576ff;">({부산_율}%)</span></div></div></div><div style="display:flex; align-items:center; gap:8px;"><span style="width:10px; height:10px; border-radius:50%; background:#e4e7ff; display:inline-block;"></span><div><div style="font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]};">지역외업체 수주액</div><div style="font-size:1rem; font-weight:800; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif; margin-top:2px;">{format_조(부산_외지액)} <span style="color:#aab0c6;">({부산_외지}%)</span></div></div></div></div>', unsafe_allow_html=True)
 
-                # 이번주 계약액 / 이번주 지역업체 수주액
-                w_부산_발주 = round(부산_발주 * 0.08)
-                w_부산_수주 = round(부산_수주 * 0.08)
+                # 이번주 계약액 / 이번주 지역업체 수주액 (실제 데이터)
+                _w_부산 = _weekly.get('부산광역시 및 소속기관', {})
+                w_부산_발주 = _w_부산.get('이번주_계약액', 0)
+                w_부산_수주 = _w_부산.get('이번주_수주액', 0)
+                _w부산_증감 = _w_부산.get('수주율_증감', 0)
+                _w부산_arrow = '↑' if _w부산_증감 >= 0 else '↓'
+                _w부산_color = COLORS['success'] if _w부산_증감 >= 0 else COLORS['danger']
+                # 이번주 계약액 증감 계산
+                _w부산_지난주_계약 = _w_부산.get('지난주_계약액', 0)
+                _w부산_계약증감 = round(((w_부산_발주 - _w부산_지난주_계약) / _w부산_지난주_계약 * 100), 1) if _w부산_지난주_계약 > 0 else 0
+                _w부산_계약arrow = '↑' if _w부산_계약증감 >= 0 else '↓'
+                _w부산_계약color = COLORS['success'] if _w부산_계약증감 >= 0 else COLORS['danger']
                 st.markdown(f"""<div style="display:flex; gap:0; border-top:1px solid {COLORS['card_border']}; margin-top:4px;">
 <div style="flex:1; padding:8px 14px; border-right:1px solid {COLORS['card_border']};">
 <div style="font-size:0.72rem; font-weight:700; color:{COLORS['text_dark']};">이번주 계약액</div>
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
 <div style="font-size:1.05rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(w_부산_발주)}</div>
-<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{COLORS['success']};">↑ 5.2%</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
+<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{_w부산_계약color};">{_w부산_계약arrow} {abs(_w부산_계약증감):.1f}%</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
 </div>
 </div>
 <div style="flex:1; padding:8px 14px;">
 <div style="font-size:0.72rem; font-weight:700; color:{COLORS['text_dark']};">이번주 지역업체 수주액</div>
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
 <div style="font-size:1.05rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(w_부산_수주)}</div>
-<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{ (lambda c: COLORS['success'] if c >= 0 else COLORS['danger'])(_weekly.get('누계비교',{}).get('부산광역시 및 소속기관',{}).get('증감',0)) };">{ (lambda c: ('↑' if c >= 0 else '↓') + f' {abs(c):.1f}%p')(_weekly.get('누계비교',{}).get('부산광역시 및 소속기관',{}).get('증감',0)) }</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
+<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{_w부산_color};">{_w부산_arrow} {abs(_w부산_증감):.1f}%p</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
@@ -699,12 +716,12 @@ if page == "📊 종합현황":
                         ("물품", 부산_분야.get("물품", {}), "#1ee0ac"),
                         ("쇼핑몰", 부산_분야.get("쇼핑몰", 부산_분야.get("종합쇼핑몰", {})), "#f4bd0e"),
                     ]
-                    # 누계비교 데이터로 전주대비 계산
+                    # 누계비교 데이터로 전주대비 계산 (부산 그룹×분야)
                     _cum_all = _weekly.get("누계비교", {})
                     trends_r = []
                     trend_c = []
                     for _sn in ['공사','용역','물품','쇼핑몰']:
-                        _sc = _cum_all.get(_sn, {})
+                        _sc = _cum_all.get(f"부산광역시 및 소속기관_{_sn}", _cum_all.get(_sn, {}))
                         _chg = _sc.get('증감', 0)
                         _arr = '↑' if _chg >= 0 else '↓'
                         trends_r.append(f"{abs(_chg):.1f}%p {_arr}")
@@ -786,22 +803,31 @@ if page == "📊 종합현황":
                 with gc2:
                     st.markdown(f'<div style="display:flex; flex-direction:column; justify-content:center; height:220px; gap:16px; padding-left:8px;"><div><div style="font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]};">총 계약액</div><div style="font-size:1.2rem; font-weight:800; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif; margin-top:2px;">{format_조(정부_발주)}</div></div><div style="display:flex; align-items:center; gap:8px;"><span style="width:10px; height:10px; border-radius:50%; background:#ff63a5; display:inline-block;"></span><div><div style="font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]};">지역업체 수주액</div><div style="font-size:1rem; font-weight:800; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif; margin-top:2px;">{format_조(정부_수주)} <span style="color:#ff63a5;">({정부_율}%)</span></div></div></div><div style="display:flex; align-items:center; gap:8px;"><span style="width:10px; height:10px; border-radius:50%; background:#ffe4ef; display:inline-block;"></span><div><div style="font-size:0.7rem; font-weight:600; color:{COLORS["text_light"]};">지역외업체 수주액</div><div style="font-size:1rem; font-weight:800; color:{COLORS["text_dark"]}; font-family:Nunito Sans,sans-serif; margin-top:2px;">{format_조(정부_외지액)} <span style="color:#aab0c6;">({정부_외지}%)</span></div></div></div></div>', unsafe_allow_html=True)
 
-                # 이번주 계약액 / 이번주 지역업체 수주액
-                w_정부_발주 = round(정부_발주 * 0.08)
-                w_정부_수주 = round(정부_수주 * 0.08)
+                # 이번주 계약액 / 이번주 지역업체 수주액 (실제 데이터)
+                _w_정부 = _weekly.get('정부 및 국가공공기관', {})
+                w_정부_발주 = _w_정부.get('이번주_계약액', 0)
+                w_정부_수주 = _w_정부.get('이번주_수주액', 0)
+                _w정부_증감 = _w_정부.get('수주율_증감', 0)
+                _w정부_arrow = '↑' if _w정부_증감 >= 0 else '↓'
+                _w정부_color = COLORS['success'] if _w정부_증감 >= 0 else COLORS['danger']
+                # 이번주 계약액 증감 계산
+                _w정부_지난주_계약 = _w_정부.get('지난주_계약액', 0)
+                _w정부_계약증감 = round(((w_정부_발주 - _w정부_지난주_계약) / _w정부_지난주_계약 * 100), 1) if _w정부_지난주_계약 > 0 else 0
+                _w정부_계약arrow = '↑' if _w정부_계약증감 >= 0 else '↓'
+                _w정부_계약color = COLORS['success'] if _w정부_계약증감 >= 0 else COLORS['danger']
                 st.markdown(f"""<div style="display:flex; gap:0; border-top:1px solid {COLORS['card_border']}; margin-top:4px;">
 <div style="flex:1; padding:8px 14px; border-right:1px solid {COLORS['card_border']};">
 <div style="font-size:0.72rem; font-weight:700; color:{COLORS['text_dark']};">이번주 계약액</div>
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
 <div style="font-size:1.05rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(w_정부_발주)}</div>
-<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{COLORS['success']};">↑ 4.1%</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
+<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{_w정부_계약color};">{_w정부_계약arrow} {abs(_w정부_계약증감):.1f}%</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
 </div>
 </div>
 <div style="flex:1; padding:8px 14px;">
 <div style="font-size:0.72rem; font-weight:700; color:{COLORS['text_dark']};">이번주 지역업체 수주액</div>
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
 <div style="font-size:1.05rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(w_정부_수주)}</div>
-<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{COLORS['danger']};">↓ 2.3%</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
+<div style="text-align:right;"><span style="font-size:0.65rem; font-weight:700; color:{_w정부_color};">{_w정부_arrow} {abs(_w정부_증감):.1f}%p</span><br><span style="font-size:0.52rem; color:{COLORS['text_light']};">vs. 지난주</span></div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
@@ -819,7 +845,7 @@ if page == "📊 종합현황":
                     gov_trends = []
                     gov_tc = []
                     for _sn in ['공사','용역','물품','쇼핑몰']:
-                        _sc = _cum_all.get(_sn, {})
+                        _sc = _cum_all.get(f"정부 및 국가공공기관_{_sn}", _cum_all.get(_sn, {}))
                         _chg = _sc.get('증감', 0)
                         _arr = '↑' if _chg >= 0 else '↓'
                         gov_trends.append(f"{abs(_chg):.1f}%p {_arr}")
