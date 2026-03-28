@@ -216,6 +216,23 @@ cd /opt/busan && git pull origin main --ff-only && systemctl restart busan-api
 - SSH는 사무실 네트워크에서 차단 (보안팀 승인 대기)
 - NCP 웹 콘솔로 긴급 작업 가능 (20분 제한)
 
+#### 집에서 서버 배포 (paramiko SSH — 2026-03-28 확인)
+- Windows SSH 클라이언트는 stdin 비밀번호 입력 불가 → **paramiko** 사용
+- 접속: `root@49.50.133.160:22`, 비밀번호 `U7$B%U5843m`
+- **AI가 배포 시 반드시 아래 패턴 사용**:
+```python
+import paramiko
+client = paramiko.SSHClient()
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+client.connect('49.50.133.160', port=22, username='root', password='U7$B%U5843m', timeout=10)
+# 명령 실행
+stdin, stdout, stderr = client.exec_command('cd /opt/busan && git pull origin main --ff-only')
+print(stdout.read().decode('utf-8'))
+client.close()
+```
+- 충돌 발생 시: `git reset --hard origin/main`으로 해결
+- 배포 후 반드시: `systemctl restart busan-api`
+
 #### 서버 파일 구조
 ```
 /opt/busan/
@@ -603,6 +620,18 @@ cd /opt/busan && git pull origin main --ff-only && systemctl restart busan-api
 ---
 
 ## 6. 작업일지
+
+### 2026-03-28
+
+#### ✅ 조달청 API 점검 대응 — 파이프라인 에러 핸들링 강화
+- **점검 공지**: 네트워크 장비 교체, 3/27(금) 19:00 ~ 3/28(토) 21:00 전체 OpenAPI 중단
+- `daily_pipeline_sync.py`: `check_api_health()` 함수 추가 — 수집 전 API 상태 확인
+  - 점검 중이면 즉시 `False` 반환 → **sync_log 미기록 → catch-up 자동 보충 보존**
+- 각 Step(1~2.0) try/except 개별 래핑 — 한 Step 실패가 나머지 중단시키지 않음
+- Step 2(핵심 계약 데이터) 실패 시 전체 실패 처리
+- 실패 요약 로그 출력 추가
+- 서버 배포 완료 (paramiko SSH → `git reset --hard origin/main` → `systemctl restart busan-api`)
+- ⚠️ **3/27 데이터 미수집** — 21:00 복구 후 `python3 daily_pipeline_sync.py 20260327` 수동 보충 필요
 
 ### 2026-03-25
 
