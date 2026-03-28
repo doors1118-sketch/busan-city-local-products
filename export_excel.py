@@ -77,6 +77,10 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
             if matched_cd not in target_cds:
                 continue
                 
+            # 금액이 0원 이하인 건(취소 등)은 엑셀에서 제외 및 오류 방지
+            if amt <= 0:
+                continue
+                
             non_loc_amt = amt - loc_amt
             agency_info = busan_inst_dict[matched_cd]
             
