@@ -1323,9 +1323,30 @@ def build_cache():
     this_week_data, this_week_contracts = calc_weekly(this_monday, this_sunday)
     last_week_data, last_week_contracts = calc_weekly(last_monday, last_sunday)
     
+    # ── 7주간 주별 수주율 히스토리 ──
+    print(f"  [주간 히스토리] 7주간 수주율 계산 중...")
+    weekly_history = []
+    for wk_offset in range(6, -1, -1):  # 6주전 → 이번주 (오래된 순)
+        wk_mon = this_monday - timedelta(days=7 * wk_offset)
+        wk_sun = wk_mon + timedelta(days=6)
+        if wk_offset == 0:
+            wk_data = this_week_data
+        elif wk_offset == 1:
+            wk_data = last_week_data
+        else:
+            wk_data, _ = calc_weekly(wk_mon, wk_sun)
+        wk_entry = {"기간": f"{wk_mon.strftime('%m/%d')}~{wk_sun.strftime('%m/%d')}"}
+        for dim_key in ['전체', '공사', '용역', '물품', '쇼핑몰']:
+            wd = wk_data.get(dim_key, {'total': 0, 'local': 0})
+            wk_entry[f"{dim_key}_rate"] = round(wd['local'] / wd['total'] * 100, 1) if wd['total'] > 0 else 0
+            wk_entry[f"{dim_key}_total"] = round(wd['total'])
+        weekly_history.append(wk_entry)
+        print(f"    {wk_entry['기간']}: 전체 {wk_entry['전체_rate']}%")
+    
     weekly_cache = {
         "이번주_기간": f"{this_monday.strftime('%m/%d')}~{this_sunday.strftime('%m/%d')}",
         "지난주_기간": f"{last_monday.strftime('%m/%d')}~{last_sunday.strftime('%m/%d')}",
+        "주간이력": weekly_history,
     }
     for grp_key in set(list(this_week_data.keys()) + list(last_week_data.keys())):
         tw = this_week_data.get(grp_key, {'total': 0, 'local': 0})

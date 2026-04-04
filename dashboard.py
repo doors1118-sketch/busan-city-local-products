@@ -472,23 +472,31 @@ if page == "📊 종합현황":
                 _wk_label = f"{_wk_arrow} {abs(_wk_change):.1f}%p"
                 st.markdown(f"""<div style="background: linear-gradient(135deg, #232e7a 0%, #3b4ab8 100%); border-radius: 8px; padding: 20px 28px 20px; box-shadow: 0 4px 20px rgba(35,46,122,0.35);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><span style="font-size:0.9rem; font-weight:700; color:rgba(255,255,255,0.85);">총 계약액</span><span style="font-size:0.78rem; color:rgba(255,255,255,0.55); font-weight:600;">{agency_label}</span></div><div style="font-size:2.4rem; font-weight:800; color:#fff; line-height:1; font-family:Nunito Sans,sans-serif; letter-spacing:-0.02em;">{format_조(발주액)}</div><div style="font-size:0.68rem; color:rgba(255,255,255,0.45); margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{sub_info}</div><div style="font-size:0.9rem; font-weight:700; color:rgba(255,255,255,0.85); margin-top:16px;">지역업체 수주액 (수주율)</div><div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;"><div style="font-size:1.5rem; font-weight:700; color:rgba(255,255,255,0.92); font-family:Nunito Sans,sans-serif; line-height:1; letter-spacing:-0.02em;">{format_조(수주액)} <span style="color:{sc};">({수주율}%)</span></div><div style="text-align:right;"><span style="font-size:0.85rem; font-weight:700; color:{_wk_color};">{_wk_label}</span><br><span style="font-size:0.7rem; color:rgba(255,255,255,0.4);">vs. 지난주</span></div></div></div>""", unsafe_allow_html=True)
                 
-                # 웨이브 스파크라인 (Plotly 미니 area chart)
-                import random
-                random.seed(42)
-                wave_y = [30 + 15 * __import__('math').sin(i * 0.5) + random.uniform(-5, 5) for i in range(30)]
-                fig_wave = go.Figure()
-                fig_wave.add_trace(go.Scatter(
-                    y=wave_y, mode='lines', fill='tozeroy',
-                    line=dict(color='rgba(255,255,255,0.25)', width=2, shape='spline'),
-                    fillcolor='rgba(255,255,255,0.06)',
-                ))
-                fig_wave.update_layout(
-                    plot_bgcolor='rgba(35,46,122,1)', paper_bgcolor='rgba(35,46,122,1)',
-                    margin=dict(t=0, b=0, l=0, r=0), height=70,
-                    showlegend=False,
-                    xaxis=dict(visible=False), yaxis=dict(visible=False),
-                )
-                st.plotly_chart(fig_wave, use_container_width=True, config={"displayModeBar": False})
+                # 7주간 수주율 추이 스파크라인 (실 데이터)
+                _wk_hist = _weekly.get("주간이력", [])
+                if _wk_hist:
+                    _hist_labels = [w.get("기간","").split("~")[0] for w in _wk_hist]
+                    _hist_rates = [w.get("전체_rate", 0) for w in _wk_hist]
+                    fig_wave = go.Figure()
+                    fig_wave.add_trace(go.Scatter(
+                        x=_hist_labels, y=_hist_rates, mode='lines+markers+text',
+                        fill='tozeroy',
+                        line=dict(color='rgba(255,255,255,0.7)', width=2.5, shape='spline'),
+                        fillcolor='rgba(255,255,255,0.08)',
+                        marker=dict(size=5, color='#fff'),
+                        text=[f"{r}%" for r in _hist_rates],
+                        textposition='top center',
+                        textfont=dict(color='rgba(255,255,255,0.85)', size=9),
+                    ))
+                    fig_wave.update_layout(
+                        plot_bgcolor='rgba(35,46,122,1)', paper_bgcolor='rgba(35,46,122,1)',
+                        margin=dict(t=18, b=20, l=5, r=5), height=85,
+                        showlegend=False,
+                        xaxis=dict(showgrid=False, tickfont=dict(color='rgba(255,255,255,0.5)', size=8), tickangle=0),
+                        yaxis=dict(visible=False),
+                    )
+                    st.plotly_chart(fig_wave, use_container_width=True, config={"displayModeBar": False})
+                    st.markdown(f'<div style="text-align:center; font-size:0.6rem; color:rgba(255,255,255,0.5); margin-top:-10px;">주간 수주율 추이 (최근 7주)</div>', unsafe_allow_html=True)
                 
                 # 이번주 부가가치 / 고용 기여도 (키 이름으로 안전 접근)
                 econ_data = data.get("11_경제효과", {})
@@ -613,12 +621,16 @@ if page == "📊 종합현황":
                     _arr = '↑' if _schg >= 0 else '↓'
                     trends.append(f"{_arr} {abs(_schg):.1f}%p")
                     trend_colors.append(COLORS['success'] if _schg >= 0 else COLORS['danger'])
-                bar_sets = [
-                    [40, 55, 35, 60, 45, 70, 80],
-                    [60, 45, 50, 35, 55, 40, 65],
-                    [30, 50, 65, 45, 70, 55, 75],
-                    [45, 35, 55, 40, 50, 60, 70],
-                ]
+                # 7주간 실 데이터 바 차트 생성
+                _wk_hist = _weekly.get("주간이력", [])
+                _sector_rate_keys = ['공사_rate', '용역_rate', '물품_rate', '쇼핑몰_rate']
+                bar_sets = []
+                bar_labels = []
+                for _srk in _sector_rate_keys:
+                    rates = [w.get(_srk, 0) for w in _wk_hist] if _wk_hist else [0]*7
+                    bar_sets.append(rates)
+                if _wk_hist:
+                    bar_labels = [w.get("기간","").split("~")[0] for w in _wk_hist]
                 
                 def _mini_card(idx):
                     name, amt, detail = 분야_데이터[idx]
@@ -627,10 +639,17 @@ if page == "📊 종합현황":
                     비중 = round(amt / 발주액 * 100, 1) if 발주액 > 0 else 0
                     tc = trend_colors[idx]
                     dc = dot_colors[idx]
+                    # 7주간 수주율을 바 높이로 변환 (max를 100%로)
+                    rates = bar_sets[idx] if idx < len(bar_sets) else [0]*7
+                    max_r = max(rates) if max(rates) > 0 else 1
                     bars = ""
-                    for j, h in enumerate(bar_sets[idx]):
-                        op = "0.3" if j < 6 else "1"
-                        bars += f'<div style="width:6px; height:{h}%; background:{dc}; opacity:{op}; border-radius:1px;"></div>'
+                    for j, r in enumerate(rates):
+                        h = round(r / max_r * 100) if max_r > 0 else 0
+                        op = "0.35" if j < 6 else "1"
+                        _lbl = bar_labels[j] if j < len(bar_labels) else ""
+                        bars += f'<div title="{_lbl}: {r}%" style="width:8px; height:{max(h,3)}%; background:{dc}; opacity:{op}; border-radius:2px;"></div>'
+                    # 최신주 수주율 표시
+                    latest_rate = rates[-1] if rates else 0
                     st.markdown(f"""<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:22px 18px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
 <div style="flex:1;">
@@ -646,6 +665,7 @@ if page == "📊 종합현황":
 <div style="font-size:0.75rem; font-weight:700; color:{tc};">{trends[idx]}</div>
 <div style="font-size:0.6rem; color:{COLORS['text_light']}; margin-top:1px;">vs. 지난주</div>
 <div style="display:flex; align-items:flex-end; gap:2px; height:40px; margin-top:8px;">{bars}</div>
+<div style="font-size:0.5rem; color:{COLORS['text_light']}; margin-top:2px;">이번주 수주율 {latest_rate}%</div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
