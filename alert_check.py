@@ -223,15 +223,23 @@ def send_notifications(alerts, suspects, violations, config):
         body_lines.append('</ul>')
     send_gmail(subject, '\n'.join(body_lines), config)
 
-    # SMS (핵심만 간결하게)
+    # SMS (LMS: 상세 포함, 최대 2000자)
     sms_lines = [f'[부산 조달 경보] {today}']
     sms_lines.append(f'경보 {critical}건 / 주의 {warning}건')
+    sms_lines.append('')
     for level, msg in alerts[:5]:
-        # 이모지/HTML 제거하고 핵심만
         clean = msg.replace('🚨 ', '').replace('⚠️  ', '').replace('⚠️ ', '')
-        sms_lines.append(clean[:60])
+        sms_lines.append(clean[:70])
     if suspects:
-        sms_lines.append(f'\n보호제도 미적용 의심: {len(suspects)}건')
+        sms_lines.append(f'\n[보호제도 미적용 의심] {len(suspects)}건')
+        for i, s in enumerate(suspects[:10], 1):
+            sms_lines.append(f'{i}. [{s["분야"]}/{s["구분"]}] "{s["공고명"][:25]}" {s["추정가격"]:.1f}억 - {s["수요기관"]}')
+        if len(suspects) > 10:
+            sms_lines.append(f'  ... 외 {len(suspects)-10}건')
+    if violations:
+        sms_lines.append(f'\n[외지업체 지분초과] {len(violations)}건')
+        for i, v in enumerate(violations[:5], 1):
+            sms_lines.append(f'{i}. {v["외지업체"][:15]} {v["외지지분"]}% ({v["계약금액"]:.1f}억) - {v["수요기관"]}')
     send_ncp_sms('\n'.join(sms_lines), config)
 
 
