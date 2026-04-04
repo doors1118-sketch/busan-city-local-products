@@ -1240,12 +1240,20 @@ def build_cache():
                     wk[nm]['total'] += amt; wk[nm]['local'] += loc
                     wk[f"{lrg}_{nm}"]['total'] += amt; wk[f"{lrg}_{nm}"]['local'] += loc
                     if amt >= 1e8:  # 1억 이상만 추적
-                        contracts.append({"분야": nm, "기관": get_unit(cd) or '', "계약명": str(row.get('cntrctNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc)})
+                        _corp = ''; _rgn = ''
+                        for _ck in str(row.get('corpList','') or '').split('[')[1:]:
+                            _ps = _ck.split(']')[0].split('^')
+                            if len(_ps) >= 10:
+                                _bno = str(_ps[9]).replace('-','').strip()
+                                _corp = _ps[3].strip() if len(_ps) >= 4 else ''
+                                _rgn = bizno_region.get(_bno, '')
+                                break
+                        contracts.append({"분야": nm, "기관": get_unit(cd) or '', "계약명": str(row.get('cntrctNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp[:30], "지역": _rgn})
             except:
                 pass
         try:
             sdf = pd.read_sql(f"""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
-                prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
+                prdctAmt, cntrctCorpBizno, corpNm, prdctClsfcNoNm,
                 cnstwkMtrlDrctPurchsObjYn, dlvrReqNm
                 FROM shopping_cntrct
                 WHERE dlvrReqRcptDate >= '{start_s}' AND dlvrReqRcptDate <= '{end_s}'""", conn)
@@ -1264,7 +1272,10 @@ def build_cache():
                 wk['쇼핑몰']['total'] += amt; wk['쇼핑몰']['local'] += loc
                 wk[f"{lrg}_쇼핑몰"]['total'] += amt; wk[f"{lrg}_쇼핑몰"]['local'] += loc
                 if amt >= 1e8:
-                    contracts.append({"분야": "쇼핑몰", "기관": get_unit(cd) or '', "계약명": str(row.get('dlvrReqNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc)})
+                    _bno_s = str(row.get('cntrctCorpBizno','')).replace('-','').strip()
+                    _corp_s = str(row.get('corpNm','') or '').strip()
+                    _rgn_s = bizno_region.get(_bno_s, '')
+                    contracts.append({"분야": "쇼핑몰", "기관": get_unit(cd) or '', "계약명": str(row.get('dlvrReqNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp_s[:30], "지역": _rgn_s})
         except:
             pass
         return dict(wk), contracts
