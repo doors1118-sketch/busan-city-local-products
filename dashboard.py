@@ -548,6 +548,39 @@ if page == "📊 종합현황":
 <span style="color:#999; font-size:0.55rem;">※ 한국은행 2020년 지역산업연관표(2025년 발행) 부산 전산업 평균 계수 활용 추정치</span>
 </div>
 </div>''', unsafe_allow_html=True)
+                
+                # ── 수주율 변동 원인 분석 ──
+                _wk_data = data.get("13_주간데이터", {})
+                _wk_전체 = _wk_data.get("전체", {})
+                _wk_증감 = _wk_전체.get("수주율_증감", 0) if isinstance(_wk_전체, dict) else 0
+                _wk_기간 = _wk_data.get("이번주_기간", "")
+                _leak_top = _wk_data.get("이번주_주요유출", [])
+                _local_top = _wk_data.get("이번주_주요수주", [])
+                
+                if _leak_top or _local_top:
+                    # 하락 원인 (유출 Top 5)
+                    if _leak_top:
+                        _leak_icon = "📉" if _wk_증감 < 0 else "⚠️"
+                        _leak_title = f"이번주({_wk_기간}) 주요 유출계약" if _wk_기간 else "이번주 주요 유출계약"
+                        _lk_hdr = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><span style="font-size:0.78rem; font-weight:700; color:#fff;">{_leak_icon} {_leak_title}</span><span style="font-size:0.65rem; color:rgba(255,255,255,0.7);">수주율 하락 요인</span></div>'
+                        _lk_rows = ""
+                        for _li, _lk in enumerate(_leak_top):
+                            _rbg = "#fafbfe" if _li % 2 == 1 else "#fff"
+                            _fc = {"공사":"#6576ff","용역":"#1ee0ac","물품":"#f4bd0e","쇼핑몰":"#ff63a5"}.get(_lk.get("분야",""), "#999")
+                            _lk_rows += f'<div style="display:flex; align-items:center; padding:7px 14px; border-bottom:1px solid #f0f1f5; background:{_rbg};"><div style="flex:0.5;"><span style="background:{_fc}; color:#fff; padding:1px 6px; border-radius:8px; font-size:0.55rem; font-weight:600;">{_lk.get("분야","")}</span></div><div style="flex:1.2; font-size:0.68rem; font-weight:600; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lk.get("기관","")}</div><div style="flex:2; font-size:0.65rem; color:#526484; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lk.get("계약명","")[:30]}</div><div style="flex:0.8; text-align:right; font-size:0.7rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(_lk.get("유출액",0))}</div></div>'
+                        st.markdown(f'<div style="background:#fff; border:1px solid #f0f1f5; border-radius:6px; overflow:hidden; margin-top:8px;">{_lk_hdr}{_lk_rows}</div>', unsafe_allow_html=True)
+                    
+                    # 상승 원인 (수주 Top 5)
+                    if _local_top:
+                        _loc_icon = "📈" if _wk_증감 >= 0 else "✅"
+                        _loc_title = f"이번주({_wk_기간}) 주요 지역수주" if _wk_기간 else "이번주 주요 지역수주"
+                        _lo_hdr = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:linear-gradient(135deg, #1ee0ac 0%, #59e8c4 100%); border-radius:6px 6px 0 0;"><span style="font-size:0.78rem; font-weight:700; color:#fff;">{_loc_icon} {_loc_title}</span><span style="font-size:0.65rem; color:rgba(255,255,255,0.7);">수주율 상승 요인</span></div>'
+                        _lo_rows = ""
+                        for _li, _lo in enumerate(_local_top):
+                            _rbg = "#fafbfe" if _li % 2 == 1 else "#fff"
+                            _fc = {"공사":"#6576ff","용역":"#1ee0ac","물품":"#f4bd0e","쇼핑몰":"#ff63a5"}.get(_lo.get("분야",""), "#999")
+                            _lo_rows += f'<div style="display:flex; align-items:center; padding:7px 14px; border-bottom:1px solid #f0f1f5; background:{_rbg};"><div style="flex:0.5;"><span style="background:{_fc}; color:#fff; padding:1px 6px; border-radius:8px; font-size:0.55rem; font-weight:600;">{_lo.get("분야","")}</span></div><div style="flex:1.2; font-size:0.68rem; font-weight:600; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lo.get("기관","")}</div><div style="flex:2; font-size:0.65rem; color:#526484; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lo.get("계약명","")[:30]}</div><div style="flex:0.8; text-align:right; font-size:0.7rem; font-weight:700; color:#1ee0ac; font-family:Nunito Sans,sans-serif;">{format_억(_lo.get("수주액",0))}</div></div>'
+                        st.markdown(f'<div style="background:#fff; border:1px solid #f0f1f5; border-radius:6px; overflow:hidden; margin-top:6px;">{_lo_hdr}{_lo_rows}</div>', unsafe_allow_html=True)
         
             with col_side:
                 # 상단: 수요기관 분류 (인디고 배경 + 하얀 텍스트)
