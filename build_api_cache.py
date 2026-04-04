@@ -23,13 +23,13 @@ DB_COMPANIES = 'busan_companies_master.db'
 CACHE_FILE = 'api_cache.json'
 
 MIN_AMT = {
-    '공사': 30e8,
-    '용역': 30e8,
+    '공사': 10e8,
+    '용역': 10e8,
     '물품': 10e8,
     '쇼핑몰': 10e8,
-    None: 30e8,
+    None: 10e8,
 }
-TOP_N = 10
+TOP_N = 20
 
 def pct(t,l): return round(l/t*100,1) if t>0 else 0
 
@@ -951,7 +951,7 @@ def build_cache():
                 "최소기준액": f"{min_amt/1e8:.0f}억원",
                 "해당기관수": len(scored),
                 "상위": list(reversed(scored[-TOP_N:])),
-                "하위": scored[:TOP_N]
+                "하위": [x for x in scored[:TOP_N] if x not in scored[-TOP_N:]]  # 상위와 중복 제거
             }
         return result
     
