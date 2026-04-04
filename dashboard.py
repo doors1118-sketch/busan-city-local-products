@@ -475,28 +475,31 @@ if page == "📊 종합현황":
                 # 7주간 수주율 추이 스파크라인 (실 데이터)
                 _wk_hist = _weekly.get("주간이력", [])
                 if _wk_hist:
-                    _hist_labels = [w.get("기간","").split("~")[0] for w in _wk_hist]
-                    _hist_rates = [w.get("전체_cum_rate", 0) for w in _wk_hist]
+                    _wk_show = _wk_hist[-5:]  # 최근 5주만
+                    _hist_labels = [w.get("기간","").split("~")[0] for w in _wk_show]
+                    _hist_rates = [w.get("전체_cum_rate", 0) for w in _wk_show]
                     fig_wave = go.Figure()
                     fig_wave.add_trace(go.Scatter(
                         x=_hist_labels, y=_hist_rates, mode='lines+markers+text',
                         fill='tozeroy',
                         line=dict(color='rgba(255,255,255,0.7)', width=2.5, shape='spline'),
                         fillcolor='rgba(255,255,255,0.08)',
-                        marker=dict(size=5, color='#fff'),
+                        marker=dict(size=6, color='#fff'),
                         text=[f"{r}%" for r in _hist_rates],
                         textposition='top center',
-                        textfont=dict(color='rgba(255,255,255,0.85)', size=9),
+                        textfont=dict(color='rgba(255,255,255,0.9)', size=10),
                     ))
+                    _y_min = min(_hist_rates) * 0.9 if _hist_rates else 0
+                    _y_max = max(_hist_rates) * 1.15 if _hist_rates else 100
                     fig_wave.update_layout(
                         plot_bgcolor='rgba(35,46,122,1)', paper_bgcolor='rgba(35,46,122,1)',
-                        margin=dict(t=25, b=25, l=30, r=30), height=110,
+                        margin=dict(t=28, b=22, l=10, r=10), height=110,
                         showlegend=False,
-                        xaxis=dict(showgrid=False, tickfont=dict(color='rgba(255,255,255,0.5)', size=8), tickangle=0),
-                        yaxis=dict(visible=False, range=[0, max(_hist_rates)*1.25] if _hist_rates else [0, 100]),
+                        xaxis=dict(showgrid=False, tickfont=dict(color='rgba(255,255,255,0.5)', size=9), tickangle=0),
+                        yaxis=dict(visible=False, range=[_y_min, _y_max]),
                     )
                     st.plotly_chart(fig_wave, use_container_width=True, config={"displayModeBar": False})
-                    st.markdown(f'<div style="text-align:center; font-size:0.6rem; color:rgba(255,255,255,0.5); margin-top:-10px;">누계 수주율 추이 (최근 7주)</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="text-align:center; font-size:0.6rem; color:rgba(255,255,255,0.5); margin-top:-10px;">누계 수주율 추이 (최근 5주)</div>', unsafe_allow_html=True)
                 
                 # 이번주 부가가치 / 고용 기여도 (키 이름으로 안전 접근)
                 econ_data = data.get("11_경제효과", {})
