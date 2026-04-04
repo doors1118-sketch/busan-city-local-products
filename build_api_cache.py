@@ -29,7 +29,7 @@ MIN_AMT = {
     '쇼핑몰': 10e8,
     None: 10e8,
 }
-TOP_N = 20
+TOP_N = 15
 
 def pct(t,l): return round(l/t*100,1) if t>0 else 0
 
