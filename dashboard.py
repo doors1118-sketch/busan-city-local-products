@@ -973,13 +973,14 @@ elif page == "🏆 기관별 순위":
             
             with col_top:
                 top_list = grp_data.get("상위", [])
-                header_html = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #6576ff 0%, #8a9bff 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔝 상위 10개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 높은 순</div></div>'
+                _top_n = len(top_list)
+                header_html = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #6576ff 0%, #8a9bff 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔝 상위 {_top_n}개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 높은 순</div></div>'
                 col_header = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
                 rows_html = ""
                 medal_icons = {1: "👑", 2: "🥈", 3: "🥉"}
                 top_bg = {1: "linear-gradient(135deg, #FFF8E1 0%, #FFECB3 50%, #FFE082 100%)", 2: "linear-gradient(135deg, #F5F5F5 0%, #E8EAF6 50%, #E0E0E0 100%)", 3: "linear-gradient(135deg, #FFF3E0 0%, #FFE0B2 50%, #FFCC80 100%)"}
                 top_border = {1: "4px solid #FFD700", 2: "4px solid #B0BEC5", 3: "4px solid #CD7F32"}
-                for i, item in enumerate(top_list[:10]):
+                for i, item in enumerate(top_list):
                     name = item.get("비교단위", "")
                     rate = item.get("수주율", 0)
                     발주 = item.get("발주액", 0)
@@ -1000,7 +1001,7 @@ elif page == "🏆 기관별 순위":
 </div>'''
                 
                 st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden;">{header_html}{col_header}{rows_html}</div>', unsafe_allow_html=True)
-                top_names = [item.get("비교단위", "") for item in top_list[:10] if item.get("비교단위")]
+                top_names = [item.get("비교단위", "") for item in top_list if item.get("비교단위")]
                 if top_names:
                     sel_top = st.selectbox("🔍 기관 상세 조회", ["선택하세요"] + top_names, key=f"rank_top_{grp_name}")
                     if sel_top and sel_top != "선택하세요":
@@ -1082,10 +1083,11 @@ elif page == "🏆 기관별 순위":
 
             with col_bot:
                 bot_list = grp_data.get("하위", [])
-                header_html_b = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔻 하위 10개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 낮은 순</div></div>'
+                _bot_n = len(bot_list)
+                header_html_b = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><div style="font-size:0.95rem; font-weight:700; color:#fff;">🔻 하위 {_bot_n}개 기관</div><div style="font-size:0.72rem; font-weight:600; color:rgba(255,255,255,0.7);">수주율 낮은 순</div></div>'
                 col_header_b = f'<div style="display:flex; align-items:center; padding:10px 20px; border-bottom:1px solid {COLORS["card_border"]}; background:#f8f9fc;"><div style="flex:0.5; {th_s}">순위</div><div style="flex:3; {th_s}">수요기관명</div><div style="flex:1.5; {th_s} text-align:right;">총 발주액</div><div style="flex:1.5; {th_s} text-align:right;">지역업체 수주액</div><div style="flex:1.2; {th_s} text-align:right;">수주율</div></div>'
                 rows_html_b = ""
-                for i, item in enumerate(bot_list[:10]):
+                for i, item in enumerate(bot_list):
                     name = item.get("비교단위", "")
                     rate = item.get("수주율", 0)
                     발주 = item.get("발주액", 0)
@@ -1103,7 +1105,7 @@ elif page == "🏆 기관별 순위":
 </div>'''
                 
                 st.markdown(f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden;">{header_html_b}{col_header_b}{rows_html_b}</div>', unsafe_allow_html=True)
-                bot_names = [item.get("비교단위", "") for item in bot_list[:10] if item.get("비교단위")]
+                bot_names = [item.get("비교단위", "") for item in bot_list if item.get("비교단위")]
                 if bot_names:
                     sel_bot = st.selectbox("🔍 기관 상세 조회", ["선택하세요"] + bot_names, key=f"rank_bot_{grp_name}")
                     if sel_bot and sel_bot != "선택하세요":
