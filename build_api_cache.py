@@ -1396,11 +1396,11 @@ def build_cache():
             "수주율_증감": round(tw_rate - lw_rate, 1),
         }
     
-    # 수주율 변동 원인 분석 (이번주/지난주 Top 5)
-    leak_top = sorted(this_week_contracts, key=lambda x: x['유출액'], reverse=True)[:5]
-    local_top = sorted(this_week_contracts, key=lambda x: x['수주액'], reverse=True)[:5]
-    leak_top_lw = sorted(last_week_contracts, key=lambda x: x['유출액'], reverse=True)[:5]
-    local_top_lw = sorted(last_week_contracts, key=lambda x: x['수주액'], reverse=True)[:5]
+    # 수주율 변동 원인 분석 (이번주/지난주 Top 10)
+    leak_top = sorted(this_week_contracts, key=lambda x: x['유출액'], reverse=True)[:10]
+    local_top = sorted(this_week_contracts, key=lambda x: x['수주액'], reverse=True)[:10]
+    leak_top_lw = sorted(last_week_contracts, key=lambda x: x['유출액'], reverse=True)[:10]
+    local_top_lw = sorted(last_week_contracts, key=lambda x: x['수주액'], reverse=True)[:10]
     weekly_cache["이번주_주요유출"] = leak_top
     weekly_cache["이번주_주요수주"] = local_top
     weekly_cache["지난주_주요유출"] = leak_top_lw

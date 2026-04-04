@@ -593,9 +593,9 @@ if page == "📊 종합현황":
                     _chg_icon = "📉" if _cum_chg < 0 else ("📈" if _cum_chg > 0 else "➡️")
                     _chg_txt = f"누계 수주율 {_cum_prev}% → {_cum_now}% ({abs(_cum_chg):.1f}%p {'하락' if _cum_chg < 0 else '상승'})" if _cum_chg != 0 else "누계 수주율 변동 없음"
                     with st.expander(f"{_chg_icon} 이번주({_wk_기간}) 수주율 변동 원인 분석 — {_chg_txt}", expanded=False):
-                        # 하락 원인 (유출 Top 5)
-                        if _leak_top:
-                            _leak_title = "주요 유출계약 (수주율 하락 요인)"
+                        # 하락일 때: 유출계약만 표시
+                        if _cum_chg < 0 and _leak_top:
+                            _leak_title = f"주요 유출계약 Top {len(_leak_top)} (누계 수주율 하락 요인)"
                             _lk_hdr = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:linear-gradient(135deg, #e85347 0%, #ff7b6b 100%); border-radius:6px 6px 0 0;"><span style="font-size:0.78rem; font-weight:700; color:#fff;">📉 {_leak_title}</span></div>'
                             _lk_col = f'<div style="display:flex; padding:5px 14px; border-bottom:1px solid #f0f1f5; background:#f8f9fc;"><div style="flex:0.4; font-size:0.6rem; color:#8094ae; font-weight:600;">분야</div><div style="flex:1; font-size:0.6rem; color:#8094ae; font-weight:600;">기관</div><div style="flex:1.8; font-size:0.6rem; color:#8094ae; font-weight:600;">계약명</div><div style="flex:1; font-size:0.6rem; color:#8094ae; font-weight:600;">수주업체</div><div style="flex:0.5; font-size:0.6rem; color:#8094ae; font-weight:600;">지역</div><div style="flex:0.6; text-align:right; font-size:0.6rem; color:#8094ae; font-weight:600;">유출액</div></div>'
                             _lk_rows = ""
@@ -607,9 +607,9 @@ if page == "📊 종합현황":
                                 _lk_rows += f'<div style="display:flex; align-items:center; padding:7px 14px; border-bottom:1px solid #f0f1f5; background:{_rbg};"><div style="flex:0.4;"><span style="background:{_fc}; color:#fff; padding:1px 6px; border-radius:8px; font-size:0.55rem; font-weight:600;">{_lk.get("분야","")}</span></div><div style="flex:1; font-size:0.68rem; font-weight:600; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lk.get("기관","")}</div><div style="flex:1.8; font-size:0.65rem; color:#526484; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lk.get("계약명","")[:25]}</div><div style="flex:1; font-size:0.65rem; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_corp_nm}</div><div style="flex:0.5; font-size:0.65rem; color:#8094ae;">{_rgn}</div><div style="flex:0.6; text-align:right; font-size:0.7rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(_lk.get("유출액",0))}</div></div>'
                             st.markdown(f'<div style="background:#fff; border:1px solid #f0f1f5; border-radius:6px; overflow:hidden;">{_lk_hdr}{_lk_col}{_lk_rows}</div>', unsafe_allow_html=True)
                         
-                        # 상승 원인 (수주 Top 5)
-                        if _local_top:
-                            _loc_title = "주요 지역수주 (수주율 상승 요인)"
+                        # 상승일 때: 수주계약만 표시
+                        elif _cum_chg >= 0 and _local_top:
+                            _loc_title = f"주요 지역수주 Top {len(_local_top)} (누계 수주율 상승 요인)"
                             _lo_hdr = f'<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:linear-gradient(135deg, #1ee0ac 0%, #59e8c4 100%); border-radius:6px 6px 0 0;"><span style="font-size:0.78rem; font-weight:700; color:#fff;">📈 {_loc_title}</span></div>'
                             _lo_col = f'<div style="display:flex; padding:5px 14px; border-bottom:1px solid #f0f1f5; background:#f8f9fc;"><div style="flex:0.4; font-size:0.6rem; color:#8094ae; font-weight:600;">분야</div><div style="flex:1; font-size:0.6rem; color:#8094ae; font-weight:600;">기관</div><div style="flex:1.8; font-size:0.6rem; color:#8094ae; font-weight:600;">계약명</div><div style="flex:1; font-size:0.6rem; color:#8094ae; font-weight:600;">수주업체</div><div style="flex:0.5; font-size:0.6rem; color:#8094ae; font-weight:600;">지역</div><div style="flex:0.6; text-align:right; font-size:0.6rem; color:#8094ae; font-weight:600;">수주액</div></div>'
                             _lo_rows = ""
