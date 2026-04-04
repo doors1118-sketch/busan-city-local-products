@@ -571,14 +571,22 @@ if page == "📊 종합현황":
                 # ── 수주율 변동 원인 분석 ──
                 _wk_data = data.get("13_주간데이터", {})
                 _wk_전체 = _wk_data.get("전체", {})
-                _wk_증감 = _wk_전체.get("수주율_증감", 0) if isinstance(_wk_전체, dict) else 0
                 _wk_기간 = _wk_data.get("이번주_기간", "")
                 _leak_top = _wk_data.get("이번주_주요유출", [])
                 _local_top = _wk_data.get("이번주_주요수주", [])
                 
+                # 누계 수주율 변동 (주간이력에서 역산)
+                _wk_hist = _wk_data.get("주간이력", [])
+                if len(_wk_hist) >= 2:
+                    _cum_now = _wk_hist[-1].get("전체_cum_rate", 0)
+                    _cum_prev = _wk_hist[-2].get("전체_cum_rate", 0)
+                    _cum_chg = round(_cum_now - _cum_prev, 1)
+                else:
+                    _cum_now = _cum_prev = _cum_chg = 0
+                
                 if _leak_top or _local_top:
-                    _chg_icon = "📉" if _wk_증감 < 0 else ("📈" if _wk_증감 > 0 else "➡️")
-                    _chg_txt = f"이번주 vs 지난주 수주율 {abs(_wk_증감):.1f}%p {'하락' if _wk_증감 < 0 else '상승'}" if _wk_증감 != 0 else "이번주 vs 지난주 수주율 변동 없음"
+                    _chg_icon = "📉" if _cum_chg < 0 else ("📈" if _cum_chg > 0 else "➡️")
+                    _chg_txt = f"누계 수주율 {_cum_prev}% → {_cum_now}% ({abs(_cum_chg):.1f}%p {'하락' if _cum_chg < 0 else '상승'})" if _cum_chg != 0 else "누계 수주율 변동 없음"
                     with st.expander(f"{_chg_icon} 이번주({_wk_기간}) 수주율 변동 원인 분석 — {_chg_txt}", expanded=False):
                         # 하락 원인 (유출 Top 5)
                         if _leak_top:
