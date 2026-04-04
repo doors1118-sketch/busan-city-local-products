@@ -488,6 +488,7 @@ if page == "📊 종합현황":
                         text=[f"{r}%" for r in _hist_rates],
                         textposition='top center',
                         textfont=dict(color='rgba(255,255,255,0.9)', size=10),
+                        cliponaxis=False,
                     ))
                     _y_min = min(_hist_rates) * 0.9 if _hist_rates else 0
                     _y_max = max(_hist_rates) * 1.15 if _hist_rates else 100
