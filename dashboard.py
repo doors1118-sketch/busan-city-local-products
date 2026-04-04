@@ -1372,16 +1372,30 @@ elif page == "🔴 유출계약 분석":
                     item_info = matched[0]
                     names = item_info.get("부산업체명", [])
                     if names:
-                        chips = " ".join([f'<span style="display:inline-block; padding:4px 10px; margin:3px; border-radius:4px; background:#e8eaff; color:#6576ff; font-size:0.78rem; font-weight:600;">{n}</span>' for n in names])
+                        # names는 dict 리스트 또는 문자열 리스트 (하위호환)
+                        display_names = [n.get("업체명", n) if isinstance(n, dict) else n for n in names]
+                        chips = " ".join([f'<span style="display:inline-block; padding:4px 10px; margin:3px; border-radius:4px; background:#e8eaff; color:#6576ff; font-size:0.78rem; font-weight:600;">{n}</span>' for n in display_names])
                         st.markdown(f'<div style="padding:12px; background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-radius:6px;">{chips}</div>', unsafe_allow_html=True)
                         
-                        # Excel 다운로드
+                        # Excel 다운로드 (상세 정보 포함)
                         import io
-                        df_suppliers = pd.DataFrame({
-                            "순번": range(1, len(names) + 1),
-                            "부산 공급업체명": names,
-                            "품목": [selected] * len(names),
-                        })
+                        if names and isinstance(names[0], dict):
+                            df_suppliers = pd.DataFrame([{
+                                "순번": i + 1,
+                                "업체명": n.get("업체명", ""),
+                                "대표자": n.get("대표자", ""),
+                                "주소": n.get("주소", ""),
+                                "대표품명": n.get("대표품명", ""),
+                                "대표업종": n.get("대표업종", ""),
+                                "본사/지사": n.get("본사구분", ""),
+                                "개업일": n.get("개업일", ""),
+                            } for i, n in enumerate(names)])
+                        else:
+                            df_suppliers = pd.DataFrame({
+                                "순번": range(1, len(names) + 1),
+                                "부산 공급업체명": display_names,
+                                "품목": [selected] * len(names),
+                            })
                         # 요약 시트용 데이터
                         df_summary = pd.DataFrame([{
                             "품목명": selected,

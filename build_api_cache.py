@@ -61,15 +61,37 @@ def build_cache():
         WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
         GROUP BY rprsntDtlPrdnm
     """, conn_cp).set_index('rprsntDtlPrdnm')['cnt'].to_dict()
-    # 대표세부품명별 부산 업체명 리스트 (유출품목 업체 검색용, 상위 20개)
+    # 대표세부품명별 부산 업체 상세 리스트 (유출품목 업체 검색용)
     supplier_names_df = pd.read_sql("""
-        SELECT rprsntDtlPrdnm, corpNm FROM company_master
+        SELECT rprsntDtlPrdnm, corpNm, ceoNm, adrs, dtlAdrs,
+               rprsntDtlPrdnm as prdnm, rprsntIndstrytyNm,
+               hdoffceDivNm, opbizDt
+        FROM company_master
         WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
         AND corpNm IS NOT NULL AND corpNm != ''
     """, conn_cp)
     supplier_names_map = {}
     for prd, grp in supplier_names_df.groupby('rprsntDtlPrdnm'):
-        supplier_names_map[prd] = grp['corpNm'].drop_duplicates().tolist()
+        seen = set()
+        details = []
+        for _, r in grp.iterrows():
+            nm = str(r['corpNm']).strip()
+            if nm in seen:
+                continue
+            seen.add(nm)
+            addr = str(r.get('adrs', '') or '').strip()
+            dtl = str(r.get('dtlAdrs', '') or '').strip()
+            full_addr = f"{addr} {dtl}".strip() if addr else dtl
+            details.append({
+                "업체명": nm,
+                "대표자": str(r.get('ceoNm', '') or '').strip(),
+                "주소": full_addr,
+                "대표품명": str(r.get('prdnm', '') or '').strip(),
+                "대표업종": str(r.get('rprsntIndstrytyNm', '') or '').strip(),
+                "본사구분": str(r.get('hdoffceDivNm', '') or '').strip(),
+                "개업일": str(r.get('opbizDt', '') or '').strip(),
+            })
+        supplier_names_map[prd] = details
     conn_cp.close()
     
     # 쇼핑몰 품목분류→세부품명 매핑 (상위분류로 검색 시 세부분류 업체까지 합산)
@@ -95,16 +117,20 @@ def build_cache():
         return 0
     
     def get_supplier_names(item_nm):
-        """품목명으로 부산 공급업체명 리스트 조회"""
-        names = supplier_names_map.get(item_nm, [])
-        if names:
-            return names
+        """품목명으로 부산 공급업체 상세 리스트 조회 (dict 리스트)"""
+        details = supplier_names_map.get(item_nm, [])
+        if details:
+            return details
         children = cat_children.get(item_nm, set())
         if children:
-            all_names = []
+            all_details = []
+            seen = set()
             for child in children:
-                all_names.extend(supplier_names_map.get(child, []))
-            return list(dict.fromkeys(all_names))  # 중복 제거, 순서 유지
+                for d in supplier_names_map.get(child, []):
+                    if d["업체명"] not in seen:
+                        seen.add(d["업체명"])
+                        all_details.append(d)
+            return all_details
         return []
     
     conn = sqlite3.connect(DB_PROCUREMENT)
