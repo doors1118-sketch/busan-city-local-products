@@ -1012,7 +1012,7 @@ elif page == "🏆 기관별 순위":
                                 발주_d = det.get("총발주액", 0)
                                 수주_d = det.get("총수주액", 0)
                                 분야별_d = det.get("분야별", {})
-                                그룹_d = det.get("그룹", "")
+                                그룹_d = str(det.get("그룹", ""))
                                 법_d = "지방계약법" if "부산" in 그룹_d else "국가계약법"
                                 sub_ps = [f"{sn}({format_억(sv.get('발주액',0))})" for sn in ["공사","용역","물품","쇼핑몰"] for sv in [분야별_d.get(sn,{})] if sv.get("발주액",0)>0]
                                 sub_i = " · ".join(sub_ps)
@@ -1115,7 +1115,7 @@ elif page == "🏆 기관별 순위":
                                 발주_d = det.get("총발주액", 0)
                                 수주_d = det.get("총수주액", 0)
                                 분야별_d = det.get("분야별", {})
-                                그룹_d = det.get("그룹", "")
+                                그룹_d = str(det.get("그룹", ""))
                                 법_d = "지방계약법" if "부산" in 그룹_d else "국가계약법"
                                 sub_ps = [f"{sn}({format_억(sv.get('발주액',0))})" for sn in ["공사","용역","물품","쇼핑몰"] for sv in [분야별_d.get(sn,{})] if sv.get("발주액",0)>0]
                                 sub_i = " · ".join(sub_ps)
@@ -1207,7 +1207,7 @@ elif page == "🔍 기관별 실적 검색":
                 수주_t = details.get("총수주액", 0)
                 외지율 = round(100 - rate, 1) if rate else 0
                 외지액 = 발주_t - 수주_t if 발주_t > 수주_t else 0
-                그룹 = details.get("그룹", "")
+                그룹 = str(details.get("그룹", ""))
                 법적용 = "지방계약법" if "부산" in 그룹 else "국가계약법"
                 분야별 = details.get("분야별", {})
                 
@@ -2100,7 +2100,7 @@ elif page == "📝 수의계약":
                                         rc_s = rate_color(r_s)
                                         발주_s = det_s.get("총발주액", 0)
                                         수주_s = det_s.get("총수주액", 0)
-                                        그룹_s = det_s.get("그룹", "")
+                                        그룹_s = str(det_s.get("그룹", ""))
                                         법_s = "지방계약법" if "부산" in 그룹_s else "국가계약법"
                                         분야별_s = det_s.get("분야별", {})
                                         sub_ps = [f"{sn}({format_억(sv.get('발주액',0))})" for sn in ["공사","용역","물품","쇼핑몰"] for sv in [분야별_s.get(sn,{})] if sv.get("발주액",0)>0]
@@ -2191,7 +2191,7 @@ elif page == "📝 수의계약":
                     rc = rate_color(rate)
                     발주_t = details.get("총발주액", 0)
                     수주_t = details.get("총수주액", 0)
-                    그룹 = details.get("그룹", "")
+                    그룹 = str(details.get("그룹", ""))
                     법적용 = "지방계약법" if "부산" in 그룹 else "국가계약법"
                     분야별 = details.get("분야별", {})
                     
