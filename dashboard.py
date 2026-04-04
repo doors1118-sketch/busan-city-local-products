@@ -490,7 +490,7 @@ if page == "📊 종합현황":
                     ))
                     fig_wave.update_layout(
                         plot_bgcolor='rgba(35,46,122,1)', paper_bgcolor='rgba(35,46,122,1)',
-                        margin=dict(t=25, b=25, l=8, r=8), height=110,
+                        margin=dict(t=25, b=25, l=30, r=30), height=110,
                         showlegend=False,
                         xaxis=dict(showgrid=False, tickfont=dict(color='rgba(255,255,255,0.5)', size=8), tickangle=0),
                         yaxis=dict(visible=False, range=[0, max(_hist_rates)*1.25] if _hist_rates else [0, 100]),
