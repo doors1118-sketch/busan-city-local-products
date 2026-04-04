@@ -460,6 +460,64 @@ def build_cache():
         except: pass
     print(f"    bizno→지역 매핑: {len(bizno_region):,}건 (낙찰 {n_award:,} + 마스터/계약 {len(bizno_region)-n_award:,})")
     
+    # 4) 사업자번호 앞 3자리(세무서 코드)로 지역 추정 (fallback)
+    def _bizno_to_region(bno):
+        """사업자번호 앞 3자리 세무서 코드 → 지역 추정"""
+        if not bno or len(bno) < 3: return ''
+        try:
+            prefix = int(bno[:3])
+        except: return ''
+        # 세무서 코드 → 시도 매핑
+        if 101 <= prefix <= 199: return '서울'
+        if 200 <= prefix <= 299:
+            if 201 <= prefix <= 220: return '인천'
+            return '경기'
+        if 300 <= prefix <= 399:
+            if 301 <= prefix <= 310: return '대전'
+            if 311 <= prefix <= 315: return '세종'
+            if 316 <= prefix <= 340: return '충남'
+            if 341 <= prefix <= 360: return '충북'
+            return '강원'
+        if 400 <= prefix <= 499:
+            if 401 <= prefix <= 420: return '광주'
+            if 421 <= prefix <= 450: return '전남'
+            return '전북'
+        if 500 <= prefix <= 599:
+            if 501 <= prefix <= 520: return '대구'
+            return '경북'
+        if 600 <= prefix <= 699:
+            if 601 <= prefix <= 610: return '부산'
+            if 611 <= prefix <= 615: return '울산'
+            if 616 <= prefix <= 650: return '경남'
+            return '제주'
+        return ''
+    
+    # corpList에서 모든 bizno 수집 (10필드짜리도 포함) 후 fallback 적용
+    n_before = len(bizno_region)
+    for tbl in ['cnstwk_cntrct', 'servc_cntrct', 'thng_cntrct']:
+        try:
+            for row_c in conn.execute(f"SELECT corpList FROM [{tbl}] WHERE corpList IS NOT NULL AND corpList != ''").fetchall():
+                for chunk in str(row_c[0]).split('[')[1:]:
+                    parts = chunk.split(']')[0].split('^')
+                    if len(parts) >= 10:
+                        bno = str(parts[9]).replace('-','').strip()
+                        if bno and bno not in bizno_region:
+                            rgn = _bizno_to_region(bno)
+                            if rgn:
+                                bizno_region[bno] = rgn
+        except: pass
+    # shopping_cntrct도 보강
+    try:
+        for row_s in conn.execute("SELECT cntrctCorpBizno FROM shopping_cntrct WHERE cntrctCorpBizno IS NOT NULL").fetchall():
+            bno = str(row_s[0]).replace('-','').strip()
+            if bno and bno not in bizno_region:
+                rgn = _bizno_to_region(bno)
+                if rgn:
+                    bizno_region[bno] = rgn
+    except: pass
+    n_fallback = len(bizno_region) - n_before
+    print(f"    사업자번호 추정 보강: +{n_fallback:,}건 → 총 {len(bizno_region):,}건")
+    
     leak_contracts = []
     
     # 공사: 이미 필터된 df_filtered 재사용
