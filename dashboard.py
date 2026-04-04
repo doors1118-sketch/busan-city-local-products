@@ -476,7 +476,7 @@ if page == "📊 종합현황":
                 _wk_hist = _weekly.get("주간이력", [])
                 if _wk_hist:
                     _hist_labels = [w.get("기간","").split("~")[0] for w in _wk_hist]
-                    _hist_rates = [w.get("전체_rate", 0) for w in _wk_hist]
+                    _hist_rates = [w.get("전체_cum_rate", 0) for w in _wk_hist]
                     fig_wave = go.Figure()
                     fig_wave.add_trace(go.Scatter(
                         x=_hist_labels, y=_hist_rates, mode='lines+markers+text',
@@ -496,7 +496,7 @@ if page == "📊 종합현황":
                         yaxis=dict(visible=False, range=[0, max(_hist_rates)*1.25] if _hist_rates else [0, 100]),
                     )
                     st.plotly_chart(fig_wave, use_container_width=True, config={"displayModeBar": False})
-                    st.markdown(f'<div style="text-align:center; font-size:0.6rem; color:rgba(255,255,255,0.5); margin-top:-10px;">주간 수주율 추이 (최근 7주)</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="text-align:center; font-size:0.6rem; color:rgba(255,255,255,0.5); margin-top:-10px;">누계 수주율 추이 (최근 7주)</div>', unsafe_allow_html=True)
                 
                 # 이번주 부가가치 / 고용 기여도 (키 이름으로 안전 접근)
                 econ_data = data.get("11_경제효과", {})

@@ -1326,7 +1326,9 @@ def build_cache():
     # ── 7주간 주별 수주율 히스토리 ──
     print(f"  [주간 히스토리] 7주간 수주율 계산 중...")
     weekly_history = []
-    for wk_offset in range(6, -1, -1):  # 6주전 → 이번주 (오래된 순)
+    # 주별 데이터를 먼저 수집 (오래된 순)
+    weekly_raw = []
+    for wk_offset in range(6, -1, -1):  # 6주전 → 이번주
         wk_mon = this_monday - timedelta(days=7 * wk_offset)
         wk_sun = wk_mon + timedelta(days=6)
         if wk_offset == 0:
@@ -1335,13 +1337,44 @@ def build_cache():
             wk_data = last_week_data
         else:
             wk_data, _ = calc_weekly(wk_mon, wk_sun)
+        weekly_raw.append((wk_mon, wk_sun, wk_data))
+    
+    # 누계 수주율 역산: 현재 누계에서 최근주부터 빼면서 각 주차 시점의 누계를 구함
+    cum_totals = {}
+    for dim_key in ['전체', '공사', '용역', '물품', '쇼핑몰']:
+        if dim_key == '전체':
+            cum_totals[dim_key] = {'total': cache["1_전체"]["발주액"], 'local': cache["1_전체"]["수주액"]}
+        else:
+            sd = cache.get("2_분야별", {}).get(dim_key, {})
+            cum_totals[dim_key] = {'total': sd.get("발주액", 0), 'local': sd.get("수주액", 0)}
+    
+    # 각 주차 끝 시점의 누계를 역산 (이번주 → 6주전, 역순으로)
+    cum_snapshots = [None] * 7
+    for i in range(6, -1, -1):  # 이번주(6)부터 거꾸로
+        wk_mon, wk_sun, wk_data = weekly_raw[i]
+        snap = {}
+        for dim_key in ['전체', '공사', '용역', '물품', '쇼핑몰']:
+            ct = cum_totals[dim_key]
+            snap[f"{dim_key}_cum_rate"] = round(ct['local'] / ct['total'] * 100, 1) if ct['total'] > 0 else 0
+        cum_snapshots[i] = snap
+        # 이 주의 계약을 빼서 이전 주 누계로
+        if i > 0:
+            for dim_key in ['전체', '공사', '용역', '물품', '쇼핑몰']:
+                wd = wk_data.get(dim_key, {'total': 0, 'local': 0})
+                cum_totals[dim_key]['total'] -= wd['total']
+                cum_totals[dim_key]['local'] -= wd['local']
+    
+    for i, (wk_mon, wk_sun, wk_data) in enumerate(weekly_raw):
         wk_entry = {"기간": f"{wk_mon.strftime('%m/%d')}~{wk_sun.strftime('%m/%d')}"}
         for dim_key in ['전체', '공사', '용역', '물품', '쇼핑몰']:
             wd = wk_data.get(dim_key, {'total': 0, 'local': 0})
             wk_entry[f"{dim_key}_rate"] = round(wd['local'] / wd['total'] * 100, 1) if wd['total'] > 0 else 0
             wk_entry[f"{dim_key}_total"] = round(wd['total'])
+        # 누계 수주율 추가
+        if cum_snapshots[i]:
+            wk_entry.update(cum_snapshots[i])
         weekly_history.append(wk_entry)
-        print(f"    {wk_entry['기간']}: 전체 {wk_entry['전체_rate']}%")
+        print(f"    {wk_entry['기간']}: 주간 {wk_entry['전체_rate']}% / 누계 {wk_entry.get('전체_cum_rate',0)}%")
     
     weekly_cache = {
         "이번주_기간": f"{this_monday.strftime('%m/%d')}~{this_sunday.strftime('%m/%d')}",
