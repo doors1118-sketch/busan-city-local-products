@@ -403,6 +403,17 @@ def build_cache():
     
     # bizno→지역 매핑 구축 (낙찰자 주소에서 추출)
     bizno_region = {}
+    def _extract_city(addr):
+        """주소에서 시/도 추출 (예: 부산광역시→부산, 서울특별시→서울)"""
+        if not addr: return ''
+        city = addr.split()[0]
+        if '광역시' in city: return city.replace('광역시','')
+        if '특별시' in city: return city.replace('특별시','')
+        if '특별자치' in city: return city.split('특별자치')[0]
+        if len(city) > 2 and city.endswith(('도','시')): return city[:-1]
+        return city
+    
+    # 1) 낙찰정보 테이블
     for award_tbl in ['busan_award_cnstwk', 'busan_award_servc', 'busan_award_thng']:
         try:
             cur = conn.cursor()
@@ -411,16 +422,40 @@ def build_cache():
                 bno = str(bno_row[0]).replace('-','').strip()
                 addr = str(bno_row[1]).strip()
                 if bno and addr:
-                    # 주소에서 시/도 추출 (예: 부산광역시→부산, 서울특별시→서울)
-                    city = addr.split()[0] if addr else ''
-                    if '광역시' in city: city = city.replace('광역시','')
-                    elif '특별시' in city: city = city.replace('특별시','')
-                    elif '특별자치' in city: city = city.split('특별자치')[0]
-                    elif len(city) > 2 and city.endswith(('도','시')): city = city[:-1]
+                    city = _extract_city(addr)
                     if city and bno not in bizno_region:
                         bizno_region[bno] = city
         except: pass
-    print(f"    bizno→지역 매핑: {len(bizno_region):,}건")
+    n_award = len(bizno_region)
+    
+    # 2) 부산업체 마스터DB (rgnNm 또는 adrs에서 추출)
+    try:
+        conn_cp2 = sqlite3.connect(DB_COMPANIES)
+        for r in conn_cp2.execute("SELECT bizno, rgnNm, adrs FROM company_master WHERE bizno IS NOT NULL").fetchall():
+            bno = str(r[0]).replace('-','').strip()
+            if bno and bno not in bizno_region:
+                rgn = str(r[1] or '').strip()
+                city = _extract_city(rgn) if rgn else _extract_city(str(r[2] or ''))
+                if city:
+                    bizno_region[bno] = city
+        conn_cp2.close()
+    except: pass
+    
+    # 3) 계약 corpList에서 주소 추출 보충
+    for tbl in ['cnstwk_cntrct', 'servc_cntrct', 'thng_cntrct']:
+        try:
+            for row_c in conn.execute(f"SELECT corpList FROM [{tbl}] WHERE corpList IS NOT NULL AND corpList != ''").fetchall():
+                for chunk in str(row_c[0]).split('[')[1:]:
+                    parts = chunk.split(']')[0].split('^')
+                    if len(parts) >= 12:
+                        bno = str(parts[9]).replace('-','').strip()
+                        if bno and bno not in bizno_region:
+                            addr = str(parts[11]).strip() if len(parts) > 11 else ''
+                            city = _extract_city(addr)
+                            if city:
+                                bizno_region[bno] = city
+        except: pass
+    print(f"    bizno→지역 매핑: {len(bizno_region):,}건 (낙찰 {n_award:,} + 마스터/계약 {len(bizno_region)-n_award:,})")
     
     leak_contracts = []
     
