@@ -559,8 +559,8 @@ if page == "📊 종합현황":
                 
                 if _leak_top or _local_top:
                     _chg_icon = "📉" if _wk_증감 < 0 else ("📈" if _wk_증감 > 0 else "➡️")
-                    _chg_txt = f"수주율 {abs(_wk_증감):+.1f}%p" if _wk_증감 != 0 else "수주율 변동 없음"
-                    with st.expander(f"{_chg_icon} 이번주({_wk_기간}) 수주율 변동 원인 분석 ({_chg_txt})", expanded=False):
+                    _chg_txt = f"이번주 vs 지난주 수주율 {abs(_wk_증감):.1f}%p {'하락' if _wk_증감 < 0 else '상승'}" if _wk_증감 != 0 else "이번주 vs 지난주 수주율 변동 없음"
+                    with st.expander(f"{_chg_icon} 이번주({_wk_기간}) 수주율 변동 원인 분석 — {_chg_txt}", expanded=False):
                         # 하락 원인 (유출 Top 5)
                         if _leak_top:
                             _leak_title = "주요 유출계약 (수주율 하락 요인)"
