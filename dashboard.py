@@ -806,22 +806,26 @@ if page == "📊 종합현황":
                         ("물품", 부산_분야.get("물품", {}), "#1ee0ac"),
                         ("쇼핑몰", 부산_분야.get("쇼핑몰", 부산_분야.get("종합쇼핑몰", {})), "#f4bd0e"),
                     ]
-                    # 누계비교 데이터로 전주대비 계산 (부산 그룹×분야)
-                    _cum_all = _weekly.get("누계비교", {})
+                    # 누계 수주율 변동 (주간이력 기반, 그룹×분야)
+                    _wk_hist_b = _weekly.get("주간이력", [])
+                    _grp_prefix = "부산광역시 및 소속기관_"
                     trends_r = []
                     trend_c = []
+                    spark_data = []
                     for _sn in ['공사','용역','물품','쇼핑몰']:
-                        _sc = _cum_all.get(f"부산광역시 및 소속기관_{_sn}", _cum_all.get(_sn, {}))
-                        _chg = _sc.get('증감', 0)
+                        _cum_key = f"{_grp_prefix}{_sn}_cum_rate"
+                        if len(_wk_hist_b) >= 2:
+                            _s_now = _wk_hist_b[-1].get(_cum_key, 0)
+                            _s_prev = _wk_hist_b[-2].get(_cum_key, 0)
+                            _chg = round(_s_now - _s_prev, 1)
+                        else:
+                            _chg = 0
                         _arr = '↑' if _chg >= 0 else '↓'
                         trends_r.append(f"{abs(_chg):.1f}%p {_arr}")
                         trend_c.append(COLORS['success'] if _chg >= 0 else COLORS['danger'])
-                    spark_data = [
-                        [65, 72, 68, 74, 70, 73, 72],
-                        [55, 50, 53, 48, 52, 50, 52],
-                        [58, 62, 55, 60, 57, 61, 59],
-                        [40, 35, 38, 32, 37, 34, 37],
-                    ]
+                        # 실제 주간이력으로 스파크라인 데이터
+                        _rates = [w.get(_cum_key, 0) for w in _wk_hist_b] if _wk_hist_b else [0]*7
+                        spark_data.append(_rates)
                     
                     def make_svg_wave(pts, color):
                         w, h = 80, 28
@@ -934,18 +938,21 @@ if page == "📊 종합현황":
                     ]
                     gov_trends = []
                     gov_tc = []
+                    gov_spark = []
+                    _grp_prefix_g = "정부 및 국가공공기관_"
                     for _sn in ['공사','용역','물품','쇼핑몰']:
-                        _sc = _cum_all.get(f"정부 및 국가공공기관_{_sn}", _cum_all.get(_sn, {}))
-                        _chg = _sc.get('증감', 0)
+                        _cum_key_g = f"{_grp_prefix_g}{_sn}_cum_rate"
+                        if len(_wk_hist_b) >= 2:
+                            _s_now_g = _wk_hist_b[-1].get(_cum_key_g, 0)
+                            _s_prev_g = _wk_hist_b[-2].get(_cum_key_g, 0)
+                            _chg = round(_s_now_g - _s_prev_g, 1)
+                        else:
+                            _chg = 0
                         _arr = '↑' if _chg >= 0 else '↓'
                         gov_trends.append(f"{abs(_chg):.1f}%p {_arr}")
                         gov_tc.append(COLORS['success'] if _chg >= 0 else COLORS['danger'])
-                    gov_spark = [
-                        [60, 65, 58, 63, 61, 64, 62],
-                        [22, 18, 20, 16, 19, 17, 20],
-                        [60, 64, 58, 63, 60, 65, 61],
-                        [28, 22, 25, 20, 24, 21, 24],
-                    ]
+                        _rates_g = [w.get(_cum_key_g, 0) for w in _wk_hist_b] if _wk_hist_b else [0]*7
+                        gov_spark.append(_rates_g)
                     
                     def make_svg_wave_g(pts, color):
                         w, h = 80, 28

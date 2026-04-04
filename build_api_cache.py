@@ -1431,21 +1431,33 @@ def build_cache():
             sd = cache.get("2_분야별", {}).get(dim_key, {})
             cum_totals[dim_key] = {'total': sd.get("발주액", 0), 'local': sd.get("수주액", 0)}
     
+    # 그룹×분야 누계도 역산
+    grp_sector_keys = []
+    for _grp in ['부산광역시 및 소속기관', '정부 및 국가공공기관']:
+        for _sec in ['공사', '용역', '물품', '쇼핑몰']:
+            _gsk = f"{_grp}_{_sec}"
+            grp_sector_keys.append(_gsk)
+            if _gsk == '전체': continue
+            gd = cache.get("4_그룹별_분야별", {}).get(_grp, {}).get(_sec, {})
+            cum_totals[_gsk] = {'total': gd.get("발주액", 0), 'local': gd.get("수주액", 0)}
+    
     # 각 주차 끝 시점의 누계를 역산 (이번주 → 6주전, 역순으로)
+    all_dim_keys = ['전체', '공사', '용역', '물품', '쇼핑몰'] + grp_sector_keys
     cum_snapshots = [None] * 7
     for i in range(6, -1, -1):  # 이번주(6)부터 거꾸로
         wk_mon, wk_sun, wk_data = weekly_raw[i]
         snap = {}
-        for dim_key in ['전체', '공사', '용역', '물품', '쇼핑몰']:
-            ct = cum_totals[dim_key]
+        for dim_key in all_dim_keys:
+            ct = cum_totals.get(dim_key, {'total': 0, 'local': 0})
             snap[f"{dim_key}_cum_rate"] = round(ct['local'] / ct['total'] * 100, 1) if ct['total'] > 0 else 0
         cum_snapshots[i] = snap
         # 이 주의 계약을 빼서 이전 주 누계로
         if i > 0:
-            for dim_key in ['전체', '공사', '용역', '물품', '쇼핑몰']:
+            for dim_key in all_dim_keys:
                 wd = wk_data.get(dim_key, {'total': 0, 'local': 0})
-                cum_totals[dim_key]['total'] -= wd['total']
-                cum_totals[dim_key]['local'] -= wd['local']
+                if dim_key in cum_totals:
+                    cum_totals[dim_key]['total'] -= wd['total']
+                    cum_totals[dim_key]['local'] -= wd['local']
     
     for i, (wk_mon, wk_sun, wk_data) in enumerate(weekly_raw):
         wk_entry = {"기간": f"{wk_mon.strftime('%m/%d')}~{wk_sun.strftime('%m/%d')}"}
