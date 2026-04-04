@@ -603,7 +603,7 @@ if page == "📊 종합현황":
                                 _rbg = "#fafbfe" if _li % 2 == 1 else "#fff"
                                 _fc = {"공사":"#6576ff","용역":"#1ee0ac","물품":"#f4bd0e","쇼핑몰":"#ff63a5"}.get(_lk.get("분야",""), "#999")
                                 _corp_nm = _lk.get("수주업체","") or "-"
-                                _rgn = _lk.get("지역","") or "-"
+                                _rgn = _lk.get("지역","") or "미확인"
                                 _lk_rows += f'<div style="display:flex; align-items:center; padding:7px 14px; border-bottom:1px solid #f0f1f5; background:{_rbg};"><div style="flex:0.4;"><span style="background:{_fc}; color:#fff; padding:1px 6px; border-radius:8px; font-size:0.55rem; font-weight:600;">{_lk.get("분야","")}</span></div><div style="flex:1; font-size:0.68rem; font-weight:600; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lk.get("기관","")}</div><div style="flex:1.8; font-size:0.65rem; color:#526484; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lk.get("계약명","")[:25]}</div><div style="flex:1; font-size:0.65rem; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_corp_nm}</div><div style="flex:0.5; font-size:0.65rem; color:#8094ae;">{_rgn}</div><div style="flex:0.6; text-align:right; font-size:0.7rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(_lk.get("유출액",0))}</div></div>'
                             st.markdown(f'<div style="background:#fff; border:1px solid #f0f1f5; border-radius:6px; overflow:hidden;">{_lk_hdr}{_lk_col}{_lk_rows}</div>', unsafe_allow_html=True)
                         
@@ -617,7 +617,7 @@ if page == "📊 종합현황":
                                 _rbg = "#fafbfe" if _li % 2 == 1 else "#fff"
                                 _fc = {"공사":"#6576ff","용역":"#1ee0ac","물품":"#f4bd0e","쇼핑몰":"#ff63a5"}.get(_lo.get("분야",""), "#999")
                                 _corp_nm = _lo.get("수주업체","") or "-"
-                                _rgn = _lo.get("지역","") or "-"
+                                _rgn = _lo.get("지역","") or "미확인"
                                 _lo_rows += f'<div style="display:flex; align-items:center; padding:7px 14px; border-bottom:1px solid #f0f1f5; background:{_rbg};"><div style="flex:0.4;"><span style="background:{_fc}; color:#fff; padding:1px 6px; border-radius:8px; font-size:0.55rem; font-weight:600;">{_lo.get("분야","")}</span></div><div style="flex:1; font-size:0.68rem; font-weight:600; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lo.get("기관","")}</div><div style="flex:1.8; font-size:0.65rem; color:#526484; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_lo.get("계약명","")[:25]}</div><div style="flex:1; font-size:0.65rem; color:#364a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_corp_nm}</div><div style="flex:0.5; font-size:0.65rem; color:#8094ae;">{_rgn}</div><div style="flex:0.6; text-align:right; font-size:0.7rem; font-weight:700; color:#1ee0ac; font-family:Nunito Sans,sans-serif;">{format_억(_lo.get("수주액",0))}</div></div>'
                             st.markdown(f'<div style="background:#fff; border:1px solid #f0f1f5; border-radius:6px; overflow:hidden; margin-top:8px;">{_lo_hdr}{_lo_col}{_lo_rows}</div>', unsafe_allow_html=True)
         
