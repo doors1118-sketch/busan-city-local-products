@@ -490,10 +490,10 @@ if page == "📊 종합현황":
                     ))
                     fig_wave.update_layout(
                         plot_bgcolor='rgba(35,46,122,1)', paper_bgcolor='rgba(35,46,122,1)',
-                        margin=dict(t=18, b=20, l=5, r=5), height=85,
+                        margin=dict(t=25, b=25, l=8, r=8), height=110,
                         showlegend=False,
                         xaxis=dict(showgrid=False, tickfont=dict(color='rgba(255,255,255,0.5)', size=8), tickangle=0),
-                        yaxis=dict(visible=False),
+                        yaxis=dict(visible=False, range=[0, max(_hist_rates)*1.25] if _hist_rates else [0, 100]),
                     )
                     st.plotly_chart(fig_wave, use_container_width=True, config={"displayModeBar": False})
                     st.markdown(f'<div style="text-align:center; font-size:0.6rem; color:rgba(255,255,255,0.5); margin-top:-10px;">주간 수주율 추이 (최근 7주)</div>', unsafe_allow_html=True)
