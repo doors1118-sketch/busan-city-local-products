@@ -43,18 +43,18 @@ if [ "$1" = "fix" ]; then
     
     # cron 재등록
     echo ">> cron 재등록..."
-    (crontab -l 2>/dev/null | grep -v daily_pipeline_sync; echo "0 3 * * * cd /opt/busan && python3 daily_pipeline_sync.py >> /opt/busan/pipeline.log 2>&1") | crontab -
+    (crontab -l 2>/dev/null | grep -v daily_pipeline_sync; echo "0 3 * * * cd /opt/busan && /opt/busan/venv/bin/python3 daily_pipeline_sync.py >> /opt/busan/pipeline.log 2>&1") | crontab -
     echo "   cron 등록 완료:"
     crontab -l
 
     # 파이프라인 수동 실행
     echo ""
     echo ">> 파이프라인 수동 실행 (시간 소요)..."
-    cd /opt/busan && python3 daily_pipeline_sync.py >> /opt/busan/pipeline.log 2>&1
+    cd /opt/busan && /opt/busan/venv/bin/python3 daily_pipeline_sync.py >> /opt/busan/pipeline.log 2>&1
     
     echo ""
     echo ">> 캐시 갱신..."
-    cd /opt/busan && python3 build_api_cache.py
+    cd /opt/busan && /opt/busan/venv/bin/python3 build_api_cache.py
     
     echo ""
     echo ">> API 서버 재시작..."
