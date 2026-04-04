@@ -476,7 +476,14 @@ if page == "📊 종합현황":
                 _wk_hist = _weekly.get("주간이력", [])
                 if _wk_hist:
                     _wk_show = _wk_hist[-5:]  # 최근 5주만
-                    _hist_labels = [w.get("기간","").split("~")[0] for w in _wk_show]
+                    # 앞 4개: 종료일(일요일), 마지막: 오늘 날짜
+                    from datetime import datetime as _dt
+                    _hist_labels = []
+                    for _wi, _w in enumerate(_wk_show):
+                        if _wi < len(_wk_show) - 1:
+                            _hist_labels.append(_w.get("기간","").split("~")[1])  # 종료일
+                        else:
+                            _hist_labels.append(_dt.now().strftime("%m/%d"))  # 오늘
                     _hist_rates = [w.get("전체_cum_rate", 0) for w in _wk_show]
                     fig_wave = go.Figure()
                     fig_wave.add_trace(go.Scatter(
