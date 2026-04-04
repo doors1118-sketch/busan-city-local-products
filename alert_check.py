@@ -125,6 +125,65 @@ def send_gmail(subject, body, config):
         print(f"  ⚠️ 이메일 발송 오류: {e}")
 
 
+def send_ncp_sms(message, config):
+    """네이버 클라우드 SENS API로 SMS 발송"""
+    sms_cfg = config.get('ncp_sms', {})
+    if not sms_cfg.get('enabled'):
+        return
+    
+    access_key = sms_cfg.get('access_key', '')
+    secret_key = sms_cfg.get('secret_key', '')
+    service_id = sms_cfg.get('service_id', '')
+    from_number = sms_cfg.get('from_number', '')
+    recipients = sms_cfg.get('recipients', [])
+    
+    if not all([access_key, secret_key, service_id, from_number, recipients]):
+        print("  ⚠️ NCP SMS 설정 불완전")
+        return
+    
+    # LMS (장문) 사용 (80byte 초과 시)
+    msg_bytes = message.encode('utf-8')
+    msg_type = 'LMS' if len(msg_bytes) > 80 else 'SMS'
+    
+    # 서명 생성
+    timestamp = str(int(time.time() * 1000))
+    uri = f'/sms/v2/services/{service_id}/messages'
+    
+    sign_str = f"POST {uri}\n{timestamp}\n{access_key}"
+    signature = base64.b64encode(
+        hmac.new(secret_key.encode('utf-8'), sign_str.encode('utf-8'), hashlib.sha256).digest()
+    ).decode('utf-8')
+    
+    # 메시지 본문
+    body = {
+        "type": msg_type,
+        "from": from_number,
+        "content": message,
+        "messages": [{"to": r.replace('-','')} for r in recipients],
+    }
+    if msg_type == 'LMS':
+        body["subject"] = "[부산 조달 경보]"
+    
+    try:
+        url = f"https://sens.apigw.ntruss.com{uri}"
+        data = json.dumps(body).encode('utf-8')
+        req = urllib.request.Request(url, data=data, method='POST')
+        req.add_header('Content-Type', 'application/json; charset=utf-8')
+        req.add_header('x-ncp-apigw-timestamp', timestamp)
+        req.add_header('x-ncp-iam-access-key', access_key)
+        req.add_header('x-ncp-apigw-signature-v2', signature)
+        
+        with urllib.request.urlopen(req, timeout=10) as res:
+            result = json.loads(res.read().decode('utf-8'))
+            status = result.get('statusCode', '')
+            if status == '202':
+                print(f"  📱 SMS 발송 완료 → {', '.join(recipients)} ({msg_type})")
+            else:
+                print(f"  ⚠️ SMS 발송 실패: {result}")
+    except Exception as e:
+        print(f"  ⚠️ SMS 발송 오류: {e}")
+
+
 def send_notifications(alerts, suspects, violations, config):
     """경보 발생 시 텔레그램 + 이메일 발송"""
     if not alerts:
@@ -163,6 +222,17 @@ def send_notifications(alerts, suspects, violations, config):
             body_lines.append(f'<li>{v["외지업체"]} {v["외지지분"]}% ({v["계약금액"]:.1f}억) — {v["수요기관"]}</li>')
         body_lines.append('</ul>')
     send_gmail(subject, '\n'.join(body_lines), config)
+
+    # SMS (핵심만 간결하게)
+    sms_lines = [f'[부산 조달 경보] {today}']
+    sms_lines.append(f'경보 {critical}건 / 주의 {warning}건')
+    for level, msg in alerts[:5]:
+        # 이모지/HTML 제거하고 핵심만
+        clean = msg.replace('🚨 ', '').replace('⚠️  ', '').replace('⚠️ ', '')
+        sms_lines.append(clean[:60])
+    if suspects:
+        sms_lines.append(f'\n보호제도 미적용 의심: {len(suspects)}건')
+    send_ncp_sms('\n'.join(sms_lines), config)
 
 
 def load_busan_city_agencies():
