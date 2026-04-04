@@ -489,12 +489,12 @@ if page == "📊 종합현황":
                     fig_wave.add_trace(go.Scatter(
                         x=_hist_labels, y=_hist_rates, mode='lines+markers+text',
                         fill='tozeroy',
-                        line=dict(color='rgba(255,255,255,0.7)', width=2.5, shape='spline'),
-                        fillcolor='rgba(255,255,255,0.08)',
-                        marker=dict(size=6, color='#fff'),
+                        line=dict(color='#00e5ff', width=3, shape='spline'),
+                        fillcolor='rgba(0,229,255,0.12)',
+                        marker=dict(size=7, color='#00e5ff', line=dict(color='#fff', width=1.5)),
                         text=[f"{r}%" for r in _hist_rates],
                         textposition='top center',
-                        textfont=dict(color='rgba(255,255,255,0.9)', size=10),
+                        textfont=dict(color='rgba(255,255,255,0.95)', size=10, family='Nunito Sans, sans-serif'),
                         cliponaxis=False,
                     ))
                     _y_min = min(_hist_rates) * 0.9 if _hist_rates else 0
