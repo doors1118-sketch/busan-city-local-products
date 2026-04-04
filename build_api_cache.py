@@ -29,7 +29,10 @@ MIN_AMT = {
     '쇼핑몰': 10e8,
     None: 10e8,
 }
-TOP_N = 15
+TOP_N = {
+    '부산광역시 및 소속기관': 20,
+    '정부 및 국가공공기관': 15,
+}
 
 def pct(t,l): return round(l/t*100,1) if t>0 else 0
 
@@ -947,11 +950,13 @@ def build_cache():
                 {"비교단위":u, "발주액":round(d['total']), "수주액":round(d['local']), "수주율":pct(d['total'],d['local'])}
                 for u,d in filtered
             ], key=lambda x: x['수주율'])
+            top_n = TOP_N.get(g, 15)
             result[g] = {
                 "최소기준액": f"{min_amt/1e8:.0f}억원",
                 "해당기관수": len(scored),
-                "상위": list(reversed(scored[-TOP_N:])),
-                "하위": [x for x in scored[:TOP_N] if x not in scored[-TOP_N:]]  # 상위와 중복 제거
+                "표출수": top_n,
+                "상위": list(reversed(scored[-top_n:])),
+                "하위": [x for x in scored[:top_n] if x not in scored[-top_n:]]  # 상위와 중복 제거
             }
         return result
     

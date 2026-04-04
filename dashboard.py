@@ -934,7 +934,7 @@ elif page == "🏆 기관별 순위":
     data_rank = fetch_api("/api/ranking")
     if data_rank:
         st.caption(f"📅 생성: {data_rank.get('generated_at', '')}")
-        st.markdown(f'<div style="font-size:0.78rem; color:{COLORS["text_light"]}; margin-top:-8px; margin-bottom:12px;">※ 발주액 50억 이상 기관 대상으로 적용</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:0.78rem; color:{COLORS["text_light"]}; margin-top:-8px; margin-bottom:12px;">※ 발주액 10억 이상 기관 대상으로 적용 (부산시 상·하위 20위, 정부 15위)</div>', unsafe_allow_html=True)
 
         sector_opt = st.selectbox("📂 분야 선택", ["전체", "공사", "용역", "물품", "쇼핑몰"], key="rank_sector")
 
