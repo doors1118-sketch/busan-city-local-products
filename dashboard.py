@@ -696,7 +696,6 @@ if page == "📊 종합현황":
 <div style="font-size:0.75rem; font-weight:700; color:{tc};">{trends[idx]}</div>
 <div style="font-size:0.6rem; color:{COLORS['text_light']}; margin-top:1px;">vs. 전주 누계</div>
 <div style="display:flex; align-items:flex-end; gap:2px; height:40px; margin-top:8px;">{bars}</div>
-<div style="font-size:0.5rem; color:{COLORS['text_light']}; margin-top:2px;">누계 수주율 {latest_rate}%</div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
