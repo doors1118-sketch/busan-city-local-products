@@ -635,15 +635,20 @@ if page == "📊 종합현황":
                     ("종합쇼핑몰계약액", amt_쇼핑, 분야_items[3][1] if len(분야_items) > 3 else {}),
                 ]
                 dot_colors = ["#6576ff", "#1ee0ac", "#e85347", "#f4bd0e"]
-                # 주간 비교 데이터 (이번주 vs 지난주 실제 수주율)
+                # 분야별 누계 수주율 변동 (지난주 누계 vs 이번주 누계)
+                _wk_hist_s = _weekly.get("주간이력", [])
                 _sector_keys = ['공사', '용역', '물품', '쇼핑몰']
+                _sector_cum_keys = ['공사_cum_rate', '용역_cum_rate', '물품_cum_rate', '쇼핑몰_cum_rate']
                 trends = []
                 trend_colors = []
-                for _sk in _sector_keys:
-                    _sk_data = _weekly.get(_sk, {})
-                    _tw_r = _sk_data.get('이번주_수주율', 0)
-                    _lw_r = _sk_data.get('지난주_수주율', 0)
-                    _schg = round(_tw_r - _lw_r, 1)
+                for _sci, _sk in enumerate(_sector_keys):
+                    if len(_wk_hist_s) >= 2:
+                        _cum_k = _sector_cum_keys[_sci]
+                        _s_now = _wk_hist_s[-1].get(_cum_k, 0)
+                        _s_prev = _wk_hist_s[-2].get(_cum_k, 0)
+                        _schg = round(_s_now - _s_prev, 1)
+                    else:
+                        _schg = 0
                     _arr = '↑' if _schg >= 0 else '↓'
                     trends.append(f"{_arr} {abs(_schg):.1f}%p")
                     trend_colors.append(COLORS['success'] if _schg >= 0 else COLORS['danger'])
@@ -689,7 +694,7 @@ if page == "📊 종합현황":
 <div style="text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
 <span style="width:8px; height:8px; border-radius:50%; background:{dc}; display:inline-block; margin-bottom:6px;"></span>
 <div style="font-size:0.75rem; font-weight:700; color:{tc};">{trends[idx]}</div>
-<div style="font-size:0.6rem; color:{COLORS['text_light']}; margin-top:1px;">vs. 지난주</div>
+<div style="font-size:0.6rem; color:{COLORS['text_light']}; margin-top:1px;">vs. 전주 누계</div>
 <div style="display:flex; align-items:flex-end; gap:2px; height:40px; margin-top:8px;">{bars}</div>
 <div style="font-size:0.5rem; color:{COLORS['text_light']}; margin-top:2px;">이번주 수주율 {latest_rate}%</div>
 </div>
