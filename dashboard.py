@@ -611,13 +611,15 @@ if page == "📊 종합현황":
                     ("종합쇼핑몰계약액", amt_쇼핑, 분야_items[3][1] if len(분야_items) > 3 else {}),
                 ]
                 dot_colors = ["#6576ff", "#1ee0ac", "#e85347", "#f4bd0e"]
-                # 누계비교 데이터 기반 증감 값
-                _cum_sectors = _weekly.get("누계비교", {})
+                # 주간 비교 데이터 (이번주 vs 지난주 실제 수주율)
                 _sector_keys = ['공사', '용역', '물품', '쇼핑몰']
                 trends = []
                 trend_colors = []
                 for _sk in _sector_keys:
-                    _schg = _cum_sectors.get(_sk, {}).get('증감', 0)
+                    _sk_data = _weekly.get(_sk, {})
+                    _tw_r = _sk_data.get('이번주_수주율', 0)
+                    _lw_r = _sk_data.get('지난주_수주율', 0)
+                    _schg = round(_tw_r - _lw_r, 1)
                     _arr = '↑' if _schg >= 0 else '↓'
                     trends.append(f"{_arr} {abs(_schg):.1f}%p")
                     trend_colors.append(COLORS['success'] if _schg >= 0 else COLORS['danger'])
