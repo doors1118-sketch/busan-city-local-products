@@ -463,10 +463,15 @@ if page == "📊 종합현황":
         
             with col_hero:
                 sc = COLORS["success"]
-                # 주간 수주율 증감 (누계기준: 7일 평균 누계 수주율 vs 현재)
+                # 주간 누계 수주율 변동 (지난주 누계 vs 이번주 누계)
                 _weekly = data.get("13_주간데이터", {})
-                _cum = _weekly.get("누계비교", {}).get("전체", {})
-                _wk_change = _cum.get("증감", 0)
+                _wk_hist_h = _weekly.get("주간이력", [])
+                if len(_wk_hist_h) >= 2:
+                    _cum_now_h = _wk_hist_h[-1].get("전체_cum_rate", 0)
+                    _cum_prev_h = _wk_hist_h[-2].get("전체_cum_rate", 0)
+                    _wk_change = round(_cum_now_h - _cum_prev_h, 1)
+                else:
+                    _wk_change = 0
                 _wk_arrow = "↑" if _wk_change >= 0 else "↓"
                 _wk_color = COLORS["success"] if _wk_change >= 0 else COLORS["danger"]
                 _wk_label = f"{_wk_arrow} {abs(_wk_change):.1f}%p"
