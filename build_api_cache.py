@@ -58,6 +58,31 @@ def build_cache():
     biznos = load_expanded_biznos(conn_cp, _conn_prot)
     _conn_prot.close()
     
+    # 주소 기반 부산 업체 보강 (낙찰 주소 + corpList 주소)
+    n_biznos_base = len(biznos)
+    # 1) 낙찰 테이블: 실제 주소에 "부산" 포함 → 부산 업체
+    for _award_tbl in ['busan_award_cnstwk', 'busan_award_servc', 'busan_award_thng']:
+        try:
+            for _ar in conn.execute(f"SELECT bidwinnrBizno, bidwinnrAdrs FROM {_award_tbl} WHERE bidwinnrAdrs LIKE '%부산%'").fetchall():
+                _bno = str(_ar[0]).replace('-','').strip()
+                if _bno and len(_bno) >= 10:
+                    biznos.add(_bno)
+        except: pass
+    # 2) corpList 주소(12필드 이상): 주소에 "부산" 포함 → 부산 업체
+    for _cl_tbl in ['cnstwk_cntrct', 'servc_cntrct', 'thng_cntrct']:
+        try:
+            for (_cl,) in conn.execute(f"SELECT corpList FROM [{_cl_tbl}] WHERE corpList IS NOT NULL AND corpList != ''").fetchall():
+                for _ch in str(_cl).split('[')[1:]:
+                    _ps = _ch.split(']')[0].split('^')
+                    if len(_ps) >= 12:
+                        _bno = str(_ps[9]).replace('-','').strip()
+                        _addr = str(_ps[11]).strip()
+                        if _bno and len(_bno) >= 10 and '부산' in _addr:
+                            biznos.add(_bno)
+        except: pass
+    n_addr_added = len(biznos) - n_biznos_base
+    print(f"  부산업체(biznos): 마스터+지점 {n_biznos_base:,} + 주소보강 {n_addr_added:,} = {len(biznos):,}")
+    
 
     supplier_map = pd.read_sql("""
         SELECT rprsntDtlPrdnm, COUNT(*) as cnt FROM company_master
