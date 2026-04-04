@@ -652,16 +652,16 @@ if page == "📊 종합현황":
                     _arr = '↑' if _schg >= 0 else '↓'
                     trends.append(f"{_arr} {abs(_schg):.1f}%p")
                     trend_colors.append(COLORS['success'] if _schg >= 0 else COLORS['danger'])
-                # 7주간 실 데이터 바 차트 생성
+                # 7주간 누계 수주율 바 차트 생성
                 _wk_hist = _weekly.get("주간이력", [])
-                _sector_rate_keys = ['공사_rate', '용역_rate', '물품_rate', '쇼핑몰_rate']
+                _sector_cum_bar_keys = ['공사_cum_rate', '용역_cum_rate', '물품_cum_rate', '쇼핑몰_cum_rate']
                 bar_sets = []
                 bar_labels = []
-                for _srk in _sector_rate_keys:
+                for _srk in _sector_cum_bar_keys:
                     rates = [w.get(_srk, 0) for w in _wk_hist] if _wk_hist else [0]*7
                     bar_sets.append(rates)
                 if _wk_hist:
-                    bar_labels = [w.get("기간","").split("~")[0] for w in _wk_hist]
+                    bar_labels = [w.get("기간","").split("~")[1] for w in _wk_hist]
                 
                 def _mini_card(idx):
                     name, amt, detail = 분야_데이터[idx]
@@ -696,7 +696,7 @@ if page == "📊 종합현황":
 <div style="font-size:0.75rem; font-weight:700; color:{tc};">{trends[idx]}</div>
 <div style="font-size:0.6rem; color:{COLORS['text_light']}; margin-top:1px;">vs. 전주 누계</div>
 <div style="display:flex; align-items:flex-end; gap:2px; height:40px; margin-top:8px;">{bars}</div>
-<div style="font-size:0.5rem; color:{COLORS['text_light']}; margin-top:2px;">이번주 수주율 {latest_rate}%</div>
+<div style="font-size:0.5rem; color:{COLORS['text_light']}; margin-top:2px;">누계 수주율 {latest_rate}%</div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
