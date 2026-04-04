@@ -1434,10 +1434,13 @@ def build_cache():
     # 그룹×분야 누계도 역산
     grp_sector_keys = []
     for _grp in ['부산광역시 및 소속기관', '정부 및 국가공공기관']:
+        # 그룹 단위 누계
+        grp_sector_keys.append(_grp)
+        gd_grp = cache.get("3_그룹별", {}).get(_grp, {})
+        cum_totals[_grp] = {'total': gd_grp.get("발주액", 0), 'local': gd_grp.get("수주액", 0)}
         for _sec in ['공사', '용역', '물품', '쇼핑몰']:
             _gsk = f"{_grp}_{_sec}"
             grp_sector_keys.append(_gsk)
-            if _gsk == '전체': continue
             gd = cache.get("4_그룹별_분야별", {}).get(_grp, {}).get(_sec, {})
             cum_totals[_gsk] = {'total': gd.get("발주액", 0), 'local': gd.get("수주액", 0)}
     
