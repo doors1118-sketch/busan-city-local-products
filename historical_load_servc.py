@@ -109,6 +109,16 @@ def main():
             if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
                 df[col] = df[col].astype(str)
                 
+        # 부산 수요기관 필터 적용
+        agency_conn = sqlite3.connect('busan_agencies_master.db')
+        busan_codes = set(str(r[0]).strip() for r in agency_conn.execute("SELECT dminsttCd FROM agency_master").fetchall())
+        agency_conn.close()
+        
+        n_before = len(df)
+        if 'dminsttCd' in df.columns:
+            df = df[df['dminsttCd'].astype(str).str.strip().isin(busan_codes)]
+        print(f"   - [용역] 전국 {n_before:,} → 부산 {len(df):,}건 필터 적용")
+        
         df.to_sql('servc_cntrct', conn, if_exists='replace', index=False)
         print(f"   - [용역] 총 {len(df):,}건 적재 성공.")
         conn.close()

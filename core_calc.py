@@ -511,8 +511,12 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
     lrg = agency['cate_lrg']
 
     # 타지역 계약 필터
+    # 현장지역이 '부산'으로 확인된 건은 키워드/전화번호 필터 skip (오탐 방지)
+    site_rgn = str(row.get('cnstrtsiteRgnNm', '') or '').strip()
+    site_confirmed_busan = '부산' in site_rgn if site_rgn else False
+    
     non_busan = is_non_busan_contract(row, lrg)
-    if use_location_filter and not is_shopping and non_busan:
+    if use_location_filter and not is_shopping and non_busan and not site_confirmed_busan:
         bypassed = False
         ntce_no = str(row.get('ntceNo', '')).replace('-', '').strip()
         # 전화번호만으로 잡힌 건은 award bypass 허용 (키워드 매칭은 확실한 타지역이라 bypass 불가)
