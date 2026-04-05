@@ -3172,7 +3172,11 @@ elif page == "📜 면허업종 검색":
                                 color_discrete_sequence=[COLORS['primary']],
                             )
                             fig_bar.update_layout(
-                                **plotly_layout_base(height=220),
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                font=dict(color=COLORS["text_body"], family="Nunito Sans, Pretendard"),
+                                showlegend=False,
+                                height=220,
                                 xaxis_title="", yaxis_title="",
                                 xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
                                 margin=dict(t=10, b=60, l=30, r=10),
