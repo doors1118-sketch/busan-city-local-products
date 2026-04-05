@@ -51,6 +51,7 @@ def build_cache():
     inst_unit = dict(zip(master['dminsttCd'], master['compare_unit']))
     inst_grp = dict(zip(master['dminsttCd'], master['cate_lrg']))
     inst_mid = dict(zip(master['dminsttCd'], master['cate_mid']))
+    inst_sml = dict(zip(master['dminsttCd'], master['cate_sml']))
     
     conn_cp = sqlite3.connect(DB_COMPANIES)
     from core_calc import load_expanded_biznos
@@ -995,10 +996,14 @@ def build_cache():
     groups = ['부산광역시 및 소속기관', '정부 및 국가공공기관']
     
     unit_to_grp = {}
+    unit_to_mid = {}
+    unit_to_sml = {}
     for cd, grp in inst_grp.items():
         unit = get_unit(cd)
         if unit and grp != '민간 및 기타기관' and unit != '공익단체':
             unit_to_grp[unit] = grp
+            unit_to_mid[unit] = inst_mid.get(cd, '')
+            unit_to_sml[unit] = inst_sml.get(cd, '')
     
     gt = sum(d['total'] for s in sectors for d in all_data[s].values())
     gl = sum(d['local'] for s in sectors for d in all_data[s].values())
@@ -1047,6 +1052,38 @@ def build_cache():
             }
         return result
     
+    # ========== 소그룹 랭킹 (자치구군 / 출자출연기관) ==========
+    SUB_GROUPS = {
+        "자치구군": lambda mid, sml: mid == '자치구군',
+        "출자출연기관": lambda mid, sml: sml in ('부산광역시 출연기관','부산광역시 출자기관','부산광역시 공기업','부산광역시 공단'),
+    }
+    
+    def sub_rankings():
+        result = {}
+        for sg_name, sg_filter in SUB_GROUPS.items():
+            agg = defaultdict(lambda:{'total':0,'local':0})
+            for s in sectors:
+                for unit, d in unit_data[s].items():
+                    mid = unit_to_mid.get(unit, '')
+                    sml = unit_to_sml.get(unit, '')
+                    if sg_filter(mid, sml):
+                        agg[unit]['total'] += d['total']
+                        agg[unit]['local'] += d['local']
+            scored = sorted([
+                {"비교단위":u, "발주액":round(d['total']), "수주액":round(d['local']), "수주율":pct(d['total'],d['local'])}
+                for u,d in agg.items() if d['total'] > 0
+            ], key=lambda x: x['수주율'], reverse=True)
+            total_amt = sum(d['total'] for d in agg.values())
+            total_loc = sum(d['local'] for d in agg.values())
+            result[sg_name] = {
+                "기관수": len(scored),
+                "발주액": round(total_amt),
+                "수주액": round(total_loc),
+                "수주율": pct(total_amt, total_loc),
+                "순위": scored,
+            }
+        return result
+    
     BUSAN_DISTRICTS = {"중구", "서구", "동구", "영도구", "부산진구", "동래구", "남구", "북구", "해운대구", "사하구", "금정구", "강서구", "연제구", "수영구", "사상구", "기장군"}
     shop_districts = {"발주액": 0, "수주액": 0, "수주율": 0}
     if '쇼핑몰' in unit_data:
@@ -1075,6 +1112,7 @@ def build_cache():
         "4_그룹별_분야별": grp_sec,
         "5_기관랭킹_전체": rankings(),
         "5_기관랭킹_분야별": {s: rankings(s) for s in sectors},
+        "5_기관랭킹_소그룹": sub_rankings(),
         "6_유출품목_쇼핑몰": leakage_shopping,
         "7_유출계약_주요": leakage_contracts,
         "8_보호제도_현황": protection_summary,

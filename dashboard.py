@@ -371,7 +371,7 @@ with st.sidebar:
     
     page = st.radio(
         "nav",
-        ["📊 종합현황", "🏆 기관별 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🛒 종합쇼핑몰", "🏢 지역업체 정보", "📜 면허업종 검색"],
+        ["📊 종합현황", "🏆 기관별 순위", "🏠 자치구·출자출연 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🛒 종합쇼핑몰", "🏢 지역업체 정보", "📜 면허업종 검색"],
         label_visibility="collapsed",
     )
     
@@ -392,6 +392,7 @@ with st.sidebar:
 page_titles = {
     "📊 종합현황": "종합현황",
     "🏆 기관별 순위": "기관별 지역업체 수주율 순위",
+    "🏠 자치구·출자출연 순위": "자치구군 및 출자출연기관 수주율 순위",
     "🔍 기관별 실적 검색": "기관별 수주현황 검색",
     "🔴 유출계약 분석": "지역외 유출계약 분석",
     "🛡️ 지역업체 보호제도": "지역업체 보호제도(지역제한경쟁 및 의무공동수급 적용여부)",
@@ -3059,6 +3060,76 @@ elif page == "🏢 지역업체 정보":
         make_search_donut(col_d1, "물품 분류별", 물품_total, 물품_items, "search_물품")
         make_search_donut(col_d2, "공사 업종별", 공사_total, 공사_업종, "search_공사")
         make_search_donut(col_d3, "용역 업종별", 용역_total, 용역_업종, "search_용역")
+
+# ════════════════════════════════════════════
+# PAGE: 자치구·출자출연 순위
+# ════════════════════════════════════════════
+elif page == "🏠 자치구·출자출연 순위":
+    data = fetch_api("/api/summary")
+    if data:
+        sub_grp = data.get("5_기관랭킹_소그룹", {})
+
+        for sg_key, sg_title, sg_icon, sg_color in [
+            ("자치구군", "자치구군 수주율 순위", "🏠", "#6576ff"),
+            ("출자출연기관", "출자·출연·공기업 수주율 순위", "🏛️", "#8B5CF6"),
+        ]:
+            sg_data = sub_grp.get(sg_key, {})
+            sg_list = sg_data.get("순위", [])
+            sg_cnt = sg_data.get("기관수", 0)
+            sg_amt = sg_data.get("발주액", 0)
+            sg_loc = sg_data.get("수주액", 0)
+            sg_rate = sg_data.get("수주율", 0)
+
+            with st.container(border=True):
+                # 헤더
+                rc = rate_color(sg_rate)
+                st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:16px 0 8px;">
+<div>
+<h2 style="margin:0; font-size:1.3rem; font-weight:700; color:{COLORS['text_dark']};">{sg_icon} {sg_title}</h2>
+<span style="font-size:0.72rem; color:{COLORS['text_light']};">{sg_cnt}개 기관 | 총발주액 {format_억(sg_amt)} | 수주액 {format_억(sg_loc)}</span>
+</div>
+<div style="text-align:right;">
+<div style="font-size:2rem; font-weight:800; color:{rc}; font-family:Nunito Sans,sans-serif;">{sg_rate}%</div>
+<div style="font-size:0.7rem; color:{COLORS['text_light']};">평균 수주율</div>
+</div>
+</div>''', unsafe_allow_html=True)
+
+                if sg_list:
+                    # 순위 테이블 HTML
+                    header = f'''<div style="display:flex; padding:8px 14px; background:#f8f9fc; border-bottom:2px solid {COLORS['card_border']}; font-size:0.7rem; font-weight:700; color:{COLORS['text_light']};">
+<div style="flex:0.4; text-align:center;">순위</div>
+<div style="flex:2;">기관명</div>
+<div style="flex:1; text-align:right;">발주액</div>
+<div style="flex:1; text-align:right;">수주액</div>
+<div style="flex:0.8; text-align:right;">수주율</div>
+<div style="flex:1.5;"></div>
+</div>'''
+                    rows_html = ""
+                    max_rate = max(x['수주율'] for x in sg_list) if sg_list else 100
+                    for i, item in enumerate(sg_list):
+                        rank = i + 1
+                        rate = item['수주율']
+                        bar_w = round(rate / max(max_rate, 1) * 100)
+                        rc_item = rate_color(rate)
+                        bg = "#fafbfe" if i % 2 == 1 else "#fff"
+                        medal = {
+                            1: '🥇', 2: '🥈', 3: '🥉'
+                        }.get(rank, f'<span style="color:{COLORS["text_light"]};">{rank}</span>')
+                        rows_html += f'''<div style="display:flex; align-items:center; padding:10px 14px; border-bottom:1px solid {COLORS['card_border']}; background:{bg};">
+<div style="flex:0.4; text-align:center; font-size:1rem;">{medal}</div>
+<div style="flex:2; font-size:0.85rem; font-weight:600; color:{COLORS['text_dark']};">{item['비교단위']}</div>
+<div style="flex:1; text-align:right; font-size:0.82rem; color:{COLORS['text_body']}; font-family:Nunito Sans,sans-serif;">{format_억(item['발주액'])}</div>
+<div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(item['수주액'])}</div>
+<div style="flex:0.8; text-align:right; font-size:0.9rem; font-weight:800; color:{rc_item}; font-family:Nunito Sans,sans-serif;">{rate}%</div>
+<div style="flex:1.5; padding-left:12px;"><div style="height:8px; border-radius:4px; background:{COLORS['card_border']};">
+<div style="width:{bar_w}%; height:100%; border-radius:4px; background:{rc_item};"></div>
+</div></div>
+</div>'''
+                    st.markdown(f'<div style="border:1px solid {COLORS["card_border"]}; border-radius:6px; overflow:hidden;">{header}{rows_html}</div>', unsafe_allow_html=True)
+                else:
+                    st.info("데이터가 없습니다.")
+
+            st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════
