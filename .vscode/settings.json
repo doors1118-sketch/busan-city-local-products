@@ -1,1 +1,18 @@
-{}
+﻿{
+    "files.watcherExclude": {
+        "**/venv/**": true,
+        "**/__pycache__/**": true,
+        "**/*.db": true,
+        "**/*.sqlite3": true,
+        "**/node_modules/**": true,
+        "**/.git/**": true
+    },
+    "python.analysis.exclude": ["**"],
+    "python.analysis.indexing": false,
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "[python]": {
+        "editor.formatOnSave": false,
+        "editor.codeActionsOnSave": {}
+    },
+    "python.languageServer": "None"
+}
