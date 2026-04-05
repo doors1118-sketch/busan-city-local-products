@@ -1905,9 +1905,8 @@ elif page == "📝 수의계약":
     data_pvt = fetch_api("/api/private-contract")
     # 유출 데이터는 /api/summary에서 직접 가져오기 (encoding 문제 우회)
     _summary_pvt = fetch_api("/api/summary")
-    _summary_vals = list(_summary_pvt.values()) if _summary_pvt else []
-    _유출_계약 = _summary_vals[12] if len(_summary_vals) > 12 and isinstance(_summary_vals[12], list) else []
-    _유출_기관 = _summary_vals[13] if len(_summary_vals) > 13 and isinstance(_summary_vals[13], list) else []
+    _유출_계약 = _summary_pvt.get("9_수의계약_유출", []) if _summary_pvt else []
+    _유출_기관 = _summary_pvt.get("9_수의계약_유출_기관별", []) if _summary_pvt else []
     if data_pvt:
         st.caption(f"📅 생성: {data_pvt.get('generated_at', '')}")
 
