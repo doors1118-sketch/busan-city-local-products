@@ -1062,6 +1062,7 @@ def build_cache():
         result = {}
         for sg_name, sg_filter in SUB_GROUPS.items():
             agg = defaultdict(lambda:{'total':0,'local':0})
+            agg_sec = defaultdict(lambda:{s:{'total':0,'local':0} for s in sectors})
             for s in sectors:
                 for unit, d in unit_data[s].items():
                     mid = unit_to_mid.get(unit, '')
@@ -1069,8 +1070,17 @@ def build_cache():
                     if sg_filter(mid, sml):
                         agg[unit]['total'] += d['total']
                         agg[unit]['local'] += d['local']
+                        agg_sec[unit][s]['total'] += d['total']
+                        agg_sec[unit][s]['local'] += d['local']
             scored = sorted([
-                {"비교단위":u, "발주액":round(d['total']), "수주액":round(d['local']), "수주율":pct(d['total'],d['local'])}
+                {
+                    "비교단위":u, "발주액":round(d['total']), "수주액":round(d['local']),
+                    "수주율":pct(d['total'],d['local']),
+                    "공사":pct(agg_sec[u]['공사']['total'],agg_sec[u]['공사']['local']),
+                    "용역":pct(agg_sec[u]['용역']['total'],agg_sec[u]['용역']['local']),
+                    "물품":pct(agg_sec[u]['물품']['total'],agg_sec[u]['물품']['local']),
+                    "쇼핑몰":pct(agg_sec[u]['쇼핑몰']['total'],agg_sec[u]['쇼핑몰']['local']),
+                }
                 for u,d in agg.items() if d['total'] > 0
             ], key=lambda x: x['수주율'], reverse=True)
             total_amt = sum(d['total'] for d in agg.values())

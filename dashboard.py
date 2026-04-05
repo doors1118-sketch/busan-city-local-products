@@ -3097,12 +3097,16 @@ elif page == "🏠 구군·출자출연 순위":
                 if sg_list:
                     # 순위 테이블 HTML
                     header = f'''<div style="display:flex; padding:8px 14px; background:#f8f9fc; border-bottom:2px solid {COLORS['card_border']}; font-size:0.7rem; font-weight:700; color:{COLORS['text_light']};">
-<div style="flex:0.4; text-align:center;">순위</div>
-<div style="flex:2;">기관명</div>
-<div style="flex:1; text-align:right;">발주액</div>
-<div style="flex:1; text-align:right;">수주액</div>
-<div style="flex:0.8; text-align:right;">수주율</div>
-<div style="flex:1.5;"></div>
+<div style="flex:0.35; text-align:center;">순위</div>
+<div style="flex:1.8;">기관명</div>
+<div style="flex:0.9; text-align:right;">발주액</div>
+<div style="flex:0.9; text-align:right;">수주액</div>
+<div style="flex:0.7; text-align:right;">종합</div>
+<div style="flex:0.55; text-align:right;">공사</div>
+<div style="flex:0.55; text-align:right;">용역</div>
+<div style="flex:0.55; text-align:right;">물품</div>
+<div style="flex:0.55; text-align:right;">쇼핑</div>
+<div style="flex:1.2;"></div>
 </div>'''
                     rows_html = ""
                     max_rate = max(x['수주율'] for x in sg_list) if sg_list else 100
@@ -3115,13 +3119,17 @@ elif page == "🏠 구군·출자출연 순위":
                         medal = {
                             1: '🥇', 2: '🥈', 3: '🥉'
                         }.get(rank, f'<span style="color:{COLORS["text_light"]};">{rank}</span>')
+                        def _sec_cell(v):
+                            c = rate_color(v)
+                            return f'<div style="flex:0.55; text-align:right; font-size:0.75rem; color:{c}; font-family:Nunito Sans,sans-serif;">{v}%</div>' if v > 0 else f'<div style="flex:0.55; text-align:right; font-size:0.75rem; color:{COLORS["text_light"]};">-</div>'
                         rows_html += f'''<div style="display:flex; align-items:center; padding:10px 14px; border-bottom:1px solid {COLORS['card_border']}; background:{bg};">
-<div style="flex:0.4; text-align:center; font-size:1rem;">{medal}</div>
-<div style="flex:2; font-size:0.85rem; font-weight:600; color:{COLORS['text_dark']};">{item['비교단위']}</div>
-<div style="flex:1; text-align:right; font-size:0.82rem; color:{COLORS['text_body']}; font-family:Nunito Sans,sans-serif;">{format_억(item['발주액'])}</div>
-<div style="flex:1; text-align:right; font-size:0.82rem; font-weight:700; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(item['수주액'])}</div>
-<div style="flex:0.8; text-align:right; font-size:0.9rem; font-weight:800; color:{rc_item}; font-family:Nunito Sans,sans-serif;">{rate}%</div>
-<div style="flex:1.5; padding-left:12px;"><div style="height:8px; border-radius:4px; background:{COLORS['card_border']};">
+<div style="flex:0.35; text-align:center; font-size:1rem;">{medal}</div>
+<div style="flex:1.8; font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']};">{item['비교단위']}</div>
+<div style="flex:0.9; text-align:right; font-size:0.78rem; color:{COLORS['text_body']}; font-family:Nunito Sans,sans-serif;">{format_억(item['발주액'])}</div>
+<div style="flex:0.9; text-align:right; font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(item['수주액'])}</div>
+<div style="flex:0.7; text-align:right; font-size:0.85rem; font-weight:800; color:{rc_item}; font-family:Nunito Sans,sans-serif;">{rate}%</div>
+{_sec_cell(item.get('공사',0))}{_sec_cell(item.get('용역',0))}{_sec_cell(item.get('물품',0))}{_sec_cell(item.get('쇼핑몰',0))}
+<div style="flex:1.2; padding-left:8px;"><div style="height:8px; border-radius:4px; background:{COLORS['card_border']};">
 <div style="width:{bar_w}%; height:100%; border-radius:4px; background:{rc_item};"></div>
 </div></div>
 </div>'''
