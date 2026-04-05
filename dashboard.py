@@ -2138,9 +2138,13 @@ elif page == "📝 수의계약":
                             # 최대 금액 (progress bar 비율 계산용)
                             ag_items = []
                             for item in 유출_기관:
-                                iv = list(item.values()) if isinstance(item, dict) else []
-                                if len(iv) >= 4:
-                                    ag_items.append({"name": iv[0], "amt": iv[1], "cnt": iv[2], "grp": iv[3]})
+                                if isinstance(item, dict):
+                                    ag_items.append({
+                                        "name": item.get("기관", ""),
+                                        "amt": item.get("유출액", 0),
+                                        "cnt": item.get("건수", 0),
+                                        "grp": item.get("그룹", "")
+                                    })
                             
                             max_amt = float(ag_items[0]["amt"]) if ag_items else 1
                             bar_colors = ["#6576ff", "#1ee0ac", "#f4bd0e", "#e85347", "#9cabff",
