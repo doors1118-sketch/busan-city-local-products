@@ -206,6 +206,7 @@ def build_cache():
         lrg = inst_grp.get(cd)
         unit = get_unit(cd)
         if not lrg or not unit: continue
+        if lrg == '민간 및 기타기관' or unit == '공익단체': continue
         if lrg not in grp_r: grp_r[lrg] = {'total':0,'local':0}
         grp_r[lrg]['total'] += amt; grp_r[lrg]['local'] += loc
         ag_r[unit]['total'] += amt; ag_r[unit]['local'] += loc
@@ -248,6 +249,7 @@ def build_cache():
             lrg = inst_grp.get(cd)
             unit = get_unit(cd)
             if not lrg or not unit: continue
+            if lrg == '민간 및 기타기관' or unit == '공익단체': continue
             if lrg not in grp_r: grp_r[lrg] = {'total':0,'local':0}
             grp_r[lrg]['total'] += amt; grp_r[lrg]['local'] += loc
             ag_r[unit]['total'] += amt; ag_r[unit]['local'] += loc
@@ -368,6 +370,7 @@ def build_cache():
         if not lrg or not unit: continue
         unit = str(unit).strip()
         if not unit or unit == 'nan': continue
+        if lrg == '민간 및 기타기관' or unit == '공익단체': continue
         if lrg not in grp_r: grp_r[lrg] = {'total':0,'local':0}
         grp_r[lrg]['total'] += amt; grp_r[lrg]['local'] += loc
         ag_r[unit]['total'] += amt; ag_r[unit]['local'] += loc
@@ -994,7 +997,8 @@ def build_cache():
     unit_to_grp = {}
     for cd, grp in inst_grp.items():
         unit = get_unit(cd)
-        if unit: unit_to_grp[unit] = grp
+        if unit and grp != '민간 및 기타기관' and unit != '공익단체':
+            unit_to_grp[unit] = grp
     
     gt = sum(d['total'] for s in sectors for d in all_data[s].values())
     gl = sum(d['local'] for s in sectors for d in all_data[s].values())
