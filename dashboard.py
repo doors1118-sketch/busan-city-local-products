@@ -3065,37 +3065,32 @@ elif page == "🏢 지역업체 정보":
 # PAGE: 면허업종 검색
 # ════════════════════════════════════════════
 elif page == "📜 면허업종 검색":
-    DB_LICENSE = os.path.join(os.path.dirname(__file__), "procurement_license.db")
-    if not os.path.exists(DB_LICENSE):
-        st.error("procurement_license.db 파일이 없습니다.")
+    DB_COMP = os.path.join(os.path.dirname(__file__), "busan_companies_master.db")
+    if not os.path.exists(DB_COMP):
+        st.error("busan_companies_master.db 파일이 없습니다.")
     else:
-        conn_lic = sqlite3.connect(DB_LICENSE)
+        conn_lic = sqlite3.connect(DB_COMP)
 
         # ── 통계 요약 ──
-        total_companies = conn_lic.execute("SELECT COUNT(DISTINCT bizno) FROM license_master").fetchone()[0]
-        total_licenses = conn_lic.execute("SELECT COUNT(DISTINCT license) FROM license_master").fetchone()[0]
-        total_rows = conn_lic.execute("SELECT COUNT(*) FROM license_master").fetchone()[0]
-        n_woman = conn_lic.execute("SELECT COUNT(DISTINCT bizno) FROM license_master WHERE isWoman='Y'").fetchone()[0]
-        n_disabled = conn_lic.execute("SELECT COUNT(DISTINCT bizno) FROM license_master WHERE isDisabled='Y'").fetchone()[0]
-        n_social = conn_lic.execute("SELECT COUNT(DISTINCT bizno) FROM license_master WHERE isSocial='Y'").fetchone()[0]
+        total_companies = conn_lic.execute("SELECT COUNT(DISTINCT bizno) FROM company_industry").fetchone()[0]
+        total_licenses = conn_lic.execute("SELECT COUNT(DISTINCT indstrytyNm) FROM company_industry").fetchone()[0]
+        total_rows = conn_lic.execute("SELECT COUNT(*) FROM company_industry").fetchone()[0]
+        total_master = conn_lic.execute("SELECT COUNT(*) FROM company_master").fetchone()[0]
 
         # KPI 카드
         with st.container(border=True):
-            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1, k2, k3, k4 = st.columns(4)
             with k1:
-                st.markdown(kpi_card("등록업체", f"{total_companies:,}", "고유 사업자", bg_gradient=["#232e7a","#3b4ab8"]), unsafe_allow_html=True)
+                st.markdown(kpi_card("등록업체", f"{total_master:,}", "부산 조달업체", bg_gradient=["#232e7a","#3b4ab8"]), unsafe_allow_html=True)
             with k2:
-                st.markdown(kpi_card("면허업종", f"{total_licenses:,}", "업종 종류", bg_gradient=["#1c5d3a","#1ee0ac"]), unsafe_allow_html=True)
+                st.markdown(kpi_card("업종보유업체", f"{total_companies:,}", "업종등록 업체", bg_gradient=["#1c5d3a","#1ee0ac"]), unsafe_allow_html=True)
             with k3:
-                st.markdown(kpi_card("등록건수", f"{total_rows:,}", "업체×업종", bg_gradient=["#5a3e1b","#f4bd0e"]), unsafe_allow_html=True)
+                st.markdown(kpi_card("면허업종", f"{total_licenses:,}", "업종 종류", bg_gradient=["#5a3e1b","#f4bd0e"]), unsafe_allow_html=True)
             with k4:
-                st.markdown(kpi_card("여성기업", f"{n_woman:,}", f"{round(n_woman/total_companies*100,1)}%", bg_gradient=["#7b2d5f","#e85390"]), unsafe_allow_html=True)
-            with k5:
-                st.markdown(kpi_card("장애인기업", f"{n_disabled:,}", f"{round(n_disabled/total_companies*100,1)}%", bg_gradient=["#2d4a7b","#09c2de"]), unsafe_allow_html=True)
-            with k6:
-                st.markdown(kpi_card("사회적기업", f"{n_social:,}", f"{round(n_social/total_companies*100,1)}%", bg_gradient=["#5b2d7b","#8B5CF6"]), unsafe_allow_html=True)
+                st.markdown(kpi_card("등록건수", f"{total_rows:,}", "업체×업종", bg_gradient=["#5b2d7b","#8B5CF6"]), unsafe_allow_html=True)
 
         st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
+        st.caption("💡 조달청 API에서 매일 자동 갱신되는 데이터입니다.")
 
         # ── 면허업종 검색 ──
         with st.container(border=True):
@@ -3103,16 +3098,11 @@ elif page == "📜 면허업종 검색":
 
             # 면허업종 목록 (업체수 내림차순)
             license_df = pd.read_sql(
-                "SELECT license, COUNT(*) as cnt FROM license_master GROUP BY license ORDER BY cnt DESC",
+                "SELECT indstrytyNm as license, COUNT(*) as cnt FROM company_industry GROUP BY indstrytyNm ORDER BY cnt DESC",
                 conn_lic
             )
-            license_list = license_df['license'].tolist()
 
-            col_search, col_filter = st.columns([3, 1])
-            with col_search:
-                search_q = st.text_input("면허업종 검색", placeholder="업종명을 입력하세요 (예: 전기공사, 소프트웨어, 건축...)", label_visibility="collapsed", key="lic_search")
-            with col_filter:
-                corp_type_filter = st.selectbox("기업유형", ["전체", "중소기업", "중견기업", "대기업", "비영리법인등기타"], key="lic_corp_filter")
+            search_q = st.text_input("면허업종 검색", placeholder="업종명을 입력하세요 (예: 전기공사, 소프트웨어, 건축...)", label_visibility="collapsed", key="lic_search")
 
             # 검색어로 업종 필터링
             if search_q:
@@ -3137,12 +3127,16 @@ elif page == "📜 면허업종 검색":
                 selected_license = selected_opt.rsplit("  (", 1)[0] if selected_opt else None
 
                 if selected_license:
-                    # 해당 업종 업체 조회
-                    type_where = f" AND corpType='{corp_type_filter}'" if corp_type_filter != "전체" else ""
-                    companies = pd.read_sql(
-                        f"SELECT corpNm, bizno, region, hdoffce, corpType, license, isMain, regDate, isWoman, isDisabled, isSocial, constructAmt FROM license_master WHERE license=? {type_where} ORDER BY constructAmt DESC, corpNm",
-                        conn_lic, params=(selected_license,)
-                    )
+                    # 해당 업종 업체 조회 (company_industry JOIN company_master)
+                    companies = pd.read_sql("""
+                        SELECT c.corpNm, c.bizno, c.rgnNm, c.hdoffceDivNm, c.corpBsnsDivNm,
+                               c.ceoNm, c.adrs, c.opbizDt, c.rgstDt,
+                               i.indstrytyNm, i.rprsntIndstrytyYn
+                        FROM company_industry i
+                        JOIN company_master c ON i.bizno = c.bizno
+                        WHERE i.indstrytyNm = ?
+                        ORDER BY c.corpNm
+                    """, conn_lic, params=(selected_license,))
 
                     st.markdown(f'<div style="margin-top:12px;"></div>', unsafe_allow_html=True)
 
@@ -3150,9 +3144,9 @@ elif page == "📜 면허업종 검색":
                     col_info, col_dist = st.columns([1, 2])
                     with col_info:
                         n_comp = len(companies)
-                        n_main = (companies['hdoffce'] == '본사').sum()
+                        n_main = (companies['hdoffceDivNm'] == '본사').sum()
                         n_branch = n_comp - n_main
-                        avg_amt = companies[companies['constructAmt'] > 0]['constructAmt'].mean() if (companies['constructAmt'] > 0).any() else 0
+                        n_repr = (companies['rprsntIndstrytyYn'] == 'Y').sum()
                         st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:6px; padding:18px;">
 <div style="font-size:0.85rem; font-weight:700; color:{COLORS['primary']}; margin-bottom:12px;">{selected_license}</div>
 <div style="font-size:2rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif; margin-bottom:4px;">{n_comp:,}개</div>
@@ -3160,15 +3154,15 @@ elif page == "📜 면허업종 검색":
 <div style="display:flex; gap:16px;">
 <div><div style="font-size:0.68rem; color:{COLORS['text_light']};">본사</div><div style="font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">{n_main:,}</div></div>
 <div><div style="font-size:0.68rem; color:{COLORS['text_light']};">지사</div><div style="font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">{n_branch:,}</div></div>
-<div><div style="font-size:0.68rem; color:{COLORS['text_light']};">평균시공능력</div><div style="font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">{format_억(avg_amt)}</div></div>
+<div><div style="font-size:0.68rem; color:{COLORS['text_light']};">대표업종</div><div style="font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">{n_repr:,}</div></div>
 </div>
 </div>''', unsafe_allow_html=True)
 
                     with col_dist:
-                        dist_df = companies.groupby('region').size().reset_index(name='cnt').sort_values('cnt', ascending=False)
+                        dist_df = companies.groupby('rgnNm').size().reset_index(name='cnt').sort_values('cnt', ascending=False)
                         if len(dist_df) > 0:
                             fig_bar = px.bar(
-                                dist_df.head(16), x='region', y='cnt',
+                                dist_df.head(16), x='rgnNm', y='cnt',
                                 color_discrete_sequence=[COLORS['primary']],
                             )
                             fig_bar.update_layout(
@@ -3186,17 +3180,18 @@ elif page == "📜 면허업종 검색":
 
                     # 업체 테이블
                     st.markdown(f'<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
-                    display_df = companies[['corpNm','region','hdoffce','corpType','regDate','isWoman','isDisabled','isSocial','constructAmt']].copy()
-                    display_df.columns = ['업체명','소재지','본사구분','기업유형','등록일','여성','장애인','사회적','시공능력평가금액']
-                    display_df['시공능력평가금액'] = display_df['시공능력평가금액'].apply(lambda x: format_억(x) if x > 0 else '-')
+                    display_df = companies[['corpNm','ceoNm','rgnNm','hdoffceDivNm','corpBsnsDivNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
+                    display_df.columns = ['업체명','대표자','소재지','본사구분','업체구분','개업일','등록일','대표업종']
+                    display_df['대표업종'] = display_df['대표업종'].apply(lambda x: '✅' if x == 'Y' else '')
+                    display_df['개업일'] = display_df['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
                     display_df['등록일'] = display_df['등록일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
 
                     st.dataframe(display_df, use_container_width=True, height=400, hide_index=True)
 
                     # Excel 다운로드
                     import io
-                    dl_df = companies[['corpNm','bizno','region','hdoffce','corpType','license','regDate','isWoman','isDisabled','isSocial','constructAmt']].copy()
-                    dl_df.columns = ['업체명','사업자번호','소재지','본사구분','기업유형','면허업종','등록일','여성기업','장애인기업','사회적기업','시공능력평가금액']
+                    dl_df = companies[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','indstrytyNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
+                    dl_df.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','면허업종','개업일','등록일','대표업종여부']
                     buf = io.BytesIO()
                     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                         dl_df.to_excel(writer, index=False, sheet_name='업체목록')
@@ -3209,3 +3204,4 @@ elif page == "📜 면허업종 검색":
                     )
 
         conn_lic.close()
+
