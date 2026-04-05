@@ -46,7 +46,7 @@ def root():
 def get_summary():
     """종합 수주율 (전체/분야별/그룹별/그룹별×분야별)"""
     cache = load_cache()
-    return {k: v for k, v in cache.items() if not k.startswith("5_") or k == "5_기관랭킹_소그룹"}
+    return {k: v for k, v in cache.items() if not k.startswith("5_")}
 
 @app.get("/api/ranking", tags=["대시보드"])
 def get_ranking():

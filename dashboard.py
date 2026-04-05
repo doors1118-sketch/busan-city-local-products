@@ -3068,9 +3068,9 @@ elif page == "🏢 지역업체 정보":
 # PAGE: 자치구·출자출연 순위
 # ════════════════════════════════════════════
 elif page == "🏠 구군·출자출연 순위":
-    data = fetch_api("/api/summary")
+    data = fetch_api("/api/ranking")
     if data:
-        sub_grp = data.get("5_기관랭킹_소그룹", {})
+        sub_grp = data.get("소그룹", {})
 
         for sg_key, sg_title, sg_icon, sg_color in [
             ("자치구군", "자치구군 수주율 순위", "🏠", "#6576ff"),
