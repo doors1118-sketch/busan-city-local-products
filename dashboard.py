@@ -3121,10 +3121,12 @@ elif page == "🏠 구군·출자출연 순위":
                         v_s = item.get('용역', 0)
                         v_t = item.get('물품', 0)
                         v_m = item.get('쇼핑몰', 0)
-                        rc_c = rate_color(v_c)
-                        rc_s = rate_color(v_s)
-                        rc_t = rate_color(v_t)
-                        rc_m = rate_color(v_m)
+                        def _sc(v):
+                            if v >= 70: return '#0fad8c'
+                            elif v >= 50: return '#c99600'
+                            elif v > 0: return '#d04440'
+                            else: return COLORS['text_light']
+                        cell_style = 'text-align:right; font-size:0.78rem; font-weight:700; font-family:Nunito Sans,sans-serif;'
                         cell_c = f'{v_c}%' if v_c > 0 else '-'
                         cell_s = f'{v_s}%' if v_s > 0 else '-'
                         cell_t = f'{v_t}%' if v_t > 0 else '-'
@@ -3135,10 +3137,10 @@ elif page == "🏠 구군·출자출연 순위":
 <div style="flex:0.9; text-align:right; font-size:0.78rem; color:{COLORS['text_body']}; font-family:Nunito Sans,sans-serif;">{format_억(item['발주액'])}</div>
 <div style="flex:0.9; text-align:right; font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']}; font-family:Nunito Sans,sans-serif;">{format_억(item['수주액'])}</div>
 <div style="flex:0.7; text-align:right; font-size:0.85rem; font-weight:800; color:{rc_item}; font-family:Nunito Sans,sans-serif;">{rate}%</div>
-<div style="flex:0.55; text-align:right; font-size:0.75rem; color:{rc_c}; font-family:Nunito Sans,sans-serif;">{cell_c}</div>
-<div style="flex:0.55; text-align:right; font-size:0.75rem; color:{rc_s}; font-family:Nunito Sans,sans-serif;">{cell_s}</div>
-<div style="flex:0.55; text-align:right; font-size:0.75rem; color:{rc_t}; font-family:Nunito Sans,sans-serif;">{cell_t}</div>
-<div style="flex:0.55; text-align:right; font-size:0.75rem; color:{rc_m}; font-family:Nunito Sans,sans-serif;">{cell_m}</div>
+<div style="flex:0.55; {cell_style} color:{_sc(v_c)};">{cell_c}</div>
+<div style="flex:0.55; {cell_style} color:{_sc(v_s)};">{cell_s}</div>
+<div style="flex:0.55; {cell_style} color:{_sc(v_t)};">{cell_t}</div>
+<div style="flex:0.55; {cell_style} color:{_sc(v_m)};">{cell_m}</div>
 <div style="flex:1.2; padding-left:8px;"><div style="height:8px; border-radius:4px; background:{COLORS['card_border']};">
 <div style="width:{bar_w}%; height:100%; border-radius:4px; background:{rc_item};"></div>
 </div></div>
