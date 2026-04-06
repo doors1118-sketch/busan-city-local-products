@@ -887,6 +887,23 @@ def sync_one_day(target_date):
                     df['_cd_clean'] = df['dminsttCd'].astype(str).str.strip()
                     df = df[df['_cd_clean'].isin(busan_codes)].drop(columns=['_cd_clean'])
                 table_name = TABLE_MAP[cat]
+                
+                # 중복 데이터 적재 방어 (Upsert 방식)
+                if not df.empty:
+                    cur = conn.cursor()
+                    if table_name == 'shopping_cntrct':
+                        if 'dlvrReqNo' in df.columns and 'prdctSno' in df.columns and 'dlvrReqChgOrd' in df.columns:
+                            df = df.drop_duplicates(subset=['dlvrReqNo', 'prdctSno', 'dlvrReqChgOrd'], keep='last')
+                            keys = list(zip(df['dlvrReqNo'].astype(str), df['prdctSno'].astype(str), df['dlvrReqChgOrd'].astype(str)))
+                            cur.executemany(f"DELETE FROM {table_name} WHERE dlvrReqNo=? AND prdctSno=? AND dlvrReqChgOrd=?", keys)
+                    else:
+                        if 'dcsnCntrctNo' in df.columns:
+                            df = df.drop_duplicates(subset=['dcsnCntrctNo'], keep='last')
+                            keys = [(str(x),) for x in df['dcsnCntrctNo'].tolist() if pd.notna(x) and str(x).strip() != '']
+                            if keys:
+                                cur.executemany(f"DELETE FROM {table_name} WHERE dcsnCntrctNo=?", keys)
+                    conn.commit()
+
                 df.to_sql(table_name, conn, if_exists='append', index=False)
                 print(f"   - {cat} (전국 {n_before:,} → 부산 {len(df):,}) -> '{table_name}'")
         # [Step 3.5] 수요기관코드 파싱
@@ -1026,13 +1043,8 @@ def main():
             shutil.copy2('api_cache_prev.json', 'api_cache.json')
             print(f"   [롤백] api_cache_prev.json → api_cache.json 복원 완료")
 
-    # [Step 5] 경보 체크 (이전 캐시 vs 현재 캐시 비교)
-    print("\n--------------------------------------------------")
-    try:
-        from alert_check import run_alert_check
-        run_alert_check()
-    except Exception as e:
-        print(f"   [오류] 경보 체크 실패: {e}")
+    # [Step 5] 경보 체크 → 크론 (평일 09:00)에서 별도 실행
+    # alert_check.py는 crontab `0 9 * * 1-5`로 독립 실행됨
 
     # [Step 6] DB 백업 (NCP Object Storage, 7일 보관)
     print("\n--------------------------------------------------")
