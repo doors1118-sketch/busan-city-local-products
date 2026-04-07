@@ -998,12 +998,18 @@ def build_cache():
     unit_to_grp = {}
     unit_to_mid = {}
     unit_to_sml = {}
+    출자출연_sml_set = {'부산광역시 출연기관', '부산광역시 출자기관', '부산광역시 공기업', '부산광역시 공단'}
     for cd, grp in inst_grp.items():
         unit = get_unit(cd)
         if unit and grp != '민간 및 기타기관' and unit != '공익단체':
             unit_to_grp[unit] = grp
-            unit_to_mid[unit] = inst_mid.get(cd, '')
-            unit_to_sml[unit] = inst_sml.get(cd, '')
+            cur_mid = inst_mid.get(cd, '')
+            cur_sml = inst_sml.get(cd, '')
+            # 출자출연/자치구군 sml이 이미 설정된 경우 덮어쓰지 않음
+            if unit not in unit_to_sml or cur_sml in 출자출연_sml_set:
+                unit_to_sml[unit] = cur_sml
+            if unit not in unit_to_mid or cur_mid == '자치구군':
+                unit_to_mid[unit] = cur_mid
     
     gt = sum(d['total'] for s in sectors for d in all_data[s].values())
     gl = sum(d['local'] for s in sectors for d in all_data[s].values())
