@@ -3545,6 +3545,47 @@ elif page == "📈 종합분석":
                     )
                     st.plotly_chart(fig_hero, use_container_width=True, config={'displayModeBar': False})
 
+                # 월간 수주율 막대 그래프
+                전체_월간h = 월간_그룹.get('전체', [])
+                if 전체_월간h:
+                    import datetime
+                    today_str = datetime.date.today().strftime('%m.%d')
+                    m_labels = []
+                    for i, m in enumerate(months):
+                        if i == len(months) - 1:
+                            m_labels.append(f"{int(m)}.1~{today_str}")
+                        else:
+                            m_labels.append(f"{int(m)}월")
+                    m_rates = [d['수주율'] for d in 전체_월간h]
+                    m_발주s = [d['발주액']/1e8 for d in 전체_월간h]
+                    m_수주s = [d['수주액']/1e8 for d in 전체_월간h]
+                    bar_colors = ['rgba(0,229,255,0.25)'] * len(m_rates)
+                    if len(bar_colors) > 0:
+                        bar_colors[-1] = 'rgba(0,229,255,0.5)'
+                    fig_mb = go.Figure()
+                    fig_mb.add_trace(go.Bar(
+                        x=m_labels, y=m_rates,
+                        marker_color=bar_colors,
+                        text=[f"{r}%" for r in m_rates],
+                        textposition='inside',
+                        textfont=dict(size=10, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
+                        customdata=list(zip(m_발주s, m_수주s)),
+                        hovertemplate='<b style="font-size:13px">%{x}</b><br><br>'
+                                      '<b>발주액</b>  %{customdata[0]:,.0f}억<br>'
+                                      '<b style="color:#1ee0ac">수주액</b>  <span style="color:#1ee0ac">%{customdata[1]:,.0f}억</span>'
+                                      '<extra></extra>',
+                        cliponaxis=False,
+                    ))
+                    fig_mb.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
+                        height=80, margin=dict(t=2, b=20, l=45, r=60),
+                        yaxis=dict(visible=False, range=[0, 100]),
+                        xaxis=dict(tickfont=dict(size=8, color='rgba(255,255,255,0.45)'), showgrid=False),
+                        showlegend=False, bargap=0.3,
+                        hoverlabel=dict(bgcolor='#232e7a', font_size=12, font_family='Nunito Sans'),
+                    )
+                    st.plotly_chart(fig_mb, use_container_width=True, config={'displayModeBar': False})
+
                 # 월별 변동 원인 (차트 아래 공백 활용)
                 변동분석_h = trend_data.get('변동분석', {})
                 if 변동분석_h:
