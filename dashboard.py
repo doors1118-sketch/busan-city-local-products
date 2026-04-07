@@ -3495,18 +3495,17 @@ elif page == "📈 종합분석":
                     _d_label = ""
                     _d_color = "rgba(255,255,255,0.5)"
 
-                st.markdown(f"""<div style="background:linear-gradient(135deg,#232e7a 0%,#3b4ab8 100%); border-radius:8px; padding:20px 24px;">
-<div style="font-size:0.88rem; font-weight:700; color:rgba(255,255,255,0.85); margin-bottom:12px;">부산시 전체 수주율 월간 변동</div>
-<div style="font-size:0.72rem; color:rgba(255,255,255,0.5);">현재 지역업체 수주율</div>
-<div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:2px;">
-<div>
-<div style="font-size:2.4rem; font-weight:800; color:#fff; font-family:Nunito Sans; letter-spacing:-0.02em;">{latest_rate}%</div>
-<div style="font-size:0.72rem; color:rgba(255,255,255,0.5); margin-top:6px;">발주액 <span style="color:rgba(255,255,255,0.8); font-weight:700;">{latest_발주/1e8:,.0f}억</span></div>
-<div style="font-size:0.72rem; color:rgba(255,255,255,0.5);">지역업체 수주액 <span style="color:#1ee0ac; font-weight:700;">{latest_수주/1e8:,.0f}억</span></div>
+                st.markdown(f"""<div style="background:linear-gradient(135deg,#232e7a 0%,#3b4ab8 100%); border-radius:8px; padding:14px 24px 10px;">
+<div style="font-size:0.85rem; font-weight:700; color:rgba(255,255,255,0.85); margin-bottom:6px;">부산시 전체 수주율 월간 변동</div>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+<div style="display:flex; align-items:baseline; gap:6px;">
+<span style="font-size:0.72rem; color:rgba(255,255,255,0.5);">현재</span>
+<span style="font-size:2.2rem; font-weight:800; color:#fff; font-family:Nunito Sans; letter-spacing:-0.02em;">{latest_rate}%</span>
+<span style="font-size:0.68rem; color:{_d_color};">({_d_label}, vs.전월)</span>
 </div>
-<div style="text-align:right;">
-<span style="font-size:0.85rem; font-weight:700; color:{_d_color};">{_d_label}</span><br>
-<span style="font-size:0.65rem; color:rgba(255,255,255,0.4);">vs. 전월</span>
+<div style="text-align:right; font-size:0.7rem; line-height:1.5;">
+<div style="color:rgba(255,255,255,0.5);">발주액 <span style="color:rgba(255,255,255,0.8); font-weight:700;">{latest_발주/1e8:,.0f}억</span></div>
+<div style="color:rgba(255,255,255,0.5);">수주액 <span style="color:#1ee0ac; font-weight:700;">{latest_수주/1e8:,.0f}억</span></div>
 </div>
 </div>
 </div>""", unsafe_allow_html=True)
