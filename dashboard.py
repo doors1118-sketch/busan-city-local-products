@@ -3525,9 +3525,9 @@ elif page == "📈 종합분석":
                         marker=dict(size=6, color='#00e5ff'),
                         text=[f"{r}%" for r in rates],
                         textposition='top center',
-                        textfont=dict(size=9, color='rgba(255,255,255,0.7)'),
+                        textfont=dict(size=12, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
                         customdata=list(zip(수주액s, 발주액s)),
-                        hovertemplate='<b style="font-size:14px">%{x} 수주율 %{y}%</b><br><br>'
+                        hovertemplate='<b style="font-size:15px">%{x} 수주율 누계 %{y}%</b><br><br>'
                                       '<b>총 계약 누계액</b>  %{customdata[1]:,.0f}억<br>'
                                       '<b style="color:#1ee0ac">지역업체 수주 누계액</b>  <span style="color:#1ee0ac">%{customdata[0]:,.0f}억</span>'
                                       '<extra></extra>',
