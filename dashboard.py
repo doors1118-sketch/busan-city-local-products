@@ -3875,6 +3875,42 @@ elif page == "📈 종합분석":
 </div>
 <div style="font-size:0.65rem; color:{COLORS['text_light']};">{vi_sub.get('이전율',0)}% → {vi_sub.get('현재율',0)}%</div>''', unsafe_allow_html=True)
 
+                        # 분야별 변동 카드
+                        분야변동_data = trend_data.get('분야변동', {})
+                        sec_badge_colors = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
+                        sec_html = ''
+                        for sec_name in ['공사', '용역', '물품', '쇼핑몰']:
+                            sec_d = 분야변동_data.get(sec_name, {}).get(sk_sub, {})
+                            sd = sec_d.get('변동', 0)
+                            sc = '#1ee0ac' if sd >= 0 else '#e85347'
+                            sa = '↑' if sd >= 0 else '↓'
+                            bc = sec_badge_colors[sec_name]
+                            sec_html += f'<div style="display:inline-flex; align-items:center; gap:6px; padding:5px 12px; margin:3px 6px 3px 0; border-radius:6px; background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]};">'
+                            sec_html += f'<span style="font-size:0.75rem; font-weight:700; color:{bc};">{sec_name}</span>'
+                            sec_html += f'<span style="font-size:0.8rem; font-weight:800; color:{sc};">{sa}{abs(sd):.1f}%p</span>'
+                            sec_html += f'<span style="font-size:0.68rem; color:{COLORS["text_light"]};">{sec_d.get("이전율",0)}→{sec_d.get("현재율",0)}%</span>'
+                            sec_html += '</div>'
+                        st.markdown(f'<div style="padding:6px 0;">{sec_html}</div>', unsafe_allow_html=True)
+
+                        # 주요 수주/유출 계약
+                        list_html = ''
+                        for sec_name in ['공사', '용역', '물품', '쇼핑몰']:
+                            sec_d = 분야변동_data.get(sec_name, {}).get(sk_sub, {})
+                            sd = sec_d.get('변동', 0)
+                            sec_cts = sec_d.get('주요계약', [])
+                            bc = sec_badge_colors[sec_name]
+                            for ct in sec_cts[:3]:
+                                av = ct.get('유출액', ct.get('수주액', 0))
+                                amt_color = '#e85347' if sd < 0 else '#1ee0ac'
+                                list_html += f'<div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid {COLORS["card_border"]};">'
+                                list_html += f'<span style="font-size:0.65rem; font-weight:700; color:#fff; background:{bc}; padding:2px 6px; border-radius:3px; white-space:nowrap;">{sec_name}</span>'
+                                list_html += f'<span style="font-size:0.72rem; color:{COLORS["text_dark"]}; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{ct.get("계약명","")}</span>'
+                                list_html += f'<span style="font-size:0.65rem; color:{COLORS["text_light"]}; white-space:nowrap;">{ct.get("기관","")}</span>'
+                                list_html += f'<span style="font-size:0.72rem; font-weight:700; color:{amt_color}; font-family:Nunito Sans; white-space:nowrap;">{av/1e8:,.1f}억</span>'
+                                list_html += '</div>'
+                        if list_html:
+                            title_text = '주요 유출 원인 계약' if vv_sub < 0 else '주요 수주 계약'
+                            st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:6px 0 2px;">📋 {title_text}</div>{list_html}', unsafe_allow_html=True)
 
                 with col_s:
                     sg_분야c = 누계_소분야.get(h_key, {})
