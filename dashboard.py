@@ -248,6 +248,20 @@ def format_억(amt):
     else:
         return f"{amt:,.0f}원"
 
+def _xl_rows(data_list):
+    """엑셀 다운로드용: 발주액/수주액을 억원 단위로 변환"""
+    out = []
+    for d in data_list:
+        row = dict(d)
+        if '발주액' in row and isinstance(row['발주액'], (int, float)) and abs(row['발주액']) >= 1e6:
+            row['발주액(억원)'] = round(row['발주액'] / 1e8, 1)
+            del row['발주액']
+        if '수주액' in row and isinstance(row['수주액'], (int, float)) and abs(row['수주액']) >= 1e6:
+            row['수주액(억원)'] = round(row['수주액'] / 1e8, 1)
+            del row['수주액']
+        out.append(row)
+    return out
+
 
 def format_조(amt):
     if amt is None or amt == 0:
@@ -3600,21 +3614,21 @@ elif page == "📈 종합분석":
                                 # 전체 누적
                                 전체d_xl = 누계_그룹.get('전체', [])
                                 if 전체d_xl:
-                                    pd.DataFrame(전체d_xl).to_excel(writer, sheet_name='전체_누계', index=False)
+                                    pd.DataFrame(_xl_rows(전체d_xl)).to_excel(writer, sheet_name='전체_누계', index=False)
                                 전체m_xl = 월간_그룹.get('전체', [])
                                 if 전체m_xl:
-                                    pd.DataFrame(전체m_xl).to_excel(writer, sheet_name='전체_월간', index=False)
+                                    pd.DataFrame(_xl_rows(전체m_xl)).to_excel(writer, sheet_name='전체_월간', index=False)
                                 for grp in ['부산시', '국가']:
                                     gd = 누계_그룹.get(grp, [])
                                     if gd:
-                                        pd.DataFrame(gd).to_excel(writer, sheet_name=f'{grp}_누계', index=False)
+                                        pd.DataFrame(_xl_rows(gd)).to_excel(writer, sheet_name=f'{grp}_누계', index=False)
                                 for sec in ['공사', '용역', '물품', '쇼핑몰']:
                                     sd_c = 누계_분야.get(sec, [])
                                     sd_m = 월간_분야.get(sec, [])
                                     if sd_c:
-                                        pd.DataFrame(sd_c).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
+                                        pd.DataFrame(_xl_rows(sd_c)).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
                                     if sd_m:
-                                        pd.DataFrame(sd_m).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
+                                        pd.DataFrame(_xl_rows(sd_m)).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
                             st.download_button('📥 종합분석 다운로드', xl_buf.getvalue(), file_name=f'종합분석_{year}.xlsx',
                                                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                                                use_container_width=True)
@@ -3848,16 +3862,16 @@ elif page == "📈 종합분석":
                         xl_buf_sub = io.BytesIO()
                         with pd.ExcelWriter(xl_buf_sub, engine='openpyxl') as writer:
                             if h_c:
-                                pd.DataFrame(h_c).to_excel(writer, sheet_name=f'{h_title}_누계', index=False)
+                                pd.DataFrame(_xl_rows(h_c)).to_excel(writer, sheet_name=f'{h_title}_누계', index=False)
                             if h_m:
-                                pd.DataFrame(h_m).to_excel(writer, sheet_name=f'{h_title}_월간', index=False)
+                                pd.DataFrame(_xl_rows(h_m)).to_excel(writer, sheet_name=f'{h_title}_월간', index=False)
                             for sec in ['공사', '용역', '물품', '쇼핑몰']:
                                 sd = 누계_소분야.get(h_key, {}).get(sec, [])
                                 if sd:
-                                    pd.DataFrame(sd).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
+                                    pd.DataFrame(_xl_rows(sd)).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
                                 sd2 = 월간_소분야.get(h_key, {}).get(sec, [])
                                 if sd2:
-                                    pd.DataFrame(sd2).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
+                                    pd.DataFrame(_xl_rows(sd2)).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
                         st.download_button(f'📥 종합분석 다운로드', xl_buf_sub.getvalue(),
                                            file_name=f'{h_title}_종합분석_{year}.xlsx',
                                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -4069,14 +4083,14 @@ elif page == "📈 종합분석":
                                         import io
                                         xl_buf = io.BytesIO()
                                         with pd.ExcelWriter(xl_buf, engine='openpyxl') as writer:
-                                            pd.DataFrame(ag_누계).to_excel(writer, sheet_name='누계', index=False)
+                                            pd.DataFrame(_xl_rows(ag_누계)).to_excel(writer, sheet_name='누계', index=False)
                                             if ag_월간:
-                                                pd.DataFrame(ag_월간).to_excel(writer, sheet_name='월간', index=False)
+                                                pd.DataFrame(_xl_rows(ag_월간)).to_excel(writer, sheet_name='월간', index=False)
                                             for _sec in ['공사', '용역', '물품', '쇼핑몰']:
                                                 _sd = 분야_누계.get(_sec, [])
-                                                if _sd: pd.DataFrame(_sd).to_excel(writer, sheet_name=f'{_sec}_누계', index=False)
+                                                if _sd: pd.DataFrame(_xl_rows(_sd)).to_excel(writer, sheet_name=f'{_sec}_누계', index=False)
                                                 _sd2 = 분야_월간.get(_sec, [])
-                                                if _sd2: pd.DataFrame(_sd2).to_excel(writer, sheet_name=f'{_sec}_월간', index=False)
+                                                if _sd2: pd.DataFrame(_xl_rows(_sd2)).to_excel(writer, sheet_name=f'{_sec}_월간', index=False)
                                         st.download_button(f'📥 종합분석 다운로드', xl_buf.getvalue(),
                                                            file_name=f'{selected_ag}_종합분석_{year}.xlsx',
                                                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -4174,4 +4188,5 @@ elif page == "📈 종합분석":
                 st.caption('2글자 이상 입력해주세요.')
     else:
         st.warning('월별 추이 데이터를 불러올 수 없습니다. 캐시를 먼저 생성해주세요.')
+
 
