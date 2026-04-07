@@ -3556,7 +3556,8 @@ elif page == "📈 종합분석":
                             marker_color=bar_colors,
                             text=[f"{r}%" for r in m_rates],
                             textposition='inside',
-                            textfont=dict(size=9, color='rgba(255,255,255,0.7)', family='Nunito Sans'),
+                            insidetextanchor='middle',
+                            textfont=dict(size=9, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
                             customdata=list(zip(m_발주s, m_수주s, x_labels)),
                             hovertemplate='<b style="font-size:13px">%{customdata[2]} 월간</b><br><br>'
                                           '<b>발주액</b>  %{customdata[0]:,.0f}억<br>'
