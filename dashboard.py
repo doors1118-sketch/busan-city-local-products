@@ -3736,7 +3736,7 @@ elif page == "📈 종합분석":
                                     yaxis=dict(visible=False, range=[0, 100]),
                                     xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
                                     showlegend=False, bargap=0.35,
-                                    hoverlabel=dict(bgcolor='#fff', font_size=10),
+                                    hoverlabel=dict(bgcolor='#fff', font_size=14),
                                 )
                                 st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False})
 
