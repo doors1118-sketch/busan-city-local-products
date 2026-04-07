@@ -47,6 +47,23 @@ def build_monthly():
     inst_unit = dict(zip(master['dminsttCd'], master['compare_unit']))
     inst_grp = dict(zip(master['dminsttCd'], master['cate_lrg']))
     inst_mid = dict(zip(master['dminsttCd'], master['cate_mid']))
+    inst_sml = dict(zip(master['dminsttCd'], master['cate_sml'].fillna('')))
+
+    # 4그룹 매핑 함수
+    출자출연_sml = {'부산광역시 출연기관', '부산광역시 출자기관', '부산광역시 공기업', '부산광역시 공단'}
+    def get_sub_group(cd):
+        sml = str(inst_sml.get(cd, ''))
+        mid = str(inst_mid.get(cd, ''))
+        if sml in 출자출연_sml:
+            return '출자출연기관'
+        if mid == '자치구군':
+            return '자치구군'
+        if mid in ('중앙행정기관', '국가공공기관', '고등교육기관'):
+            return '정부및국가공공기관'
+        lrg = str(inst_grp.get(cd, ''))
+        if lrg == '부산광역시 및 소속기관':
+            return '부산광역시및산하기관'
+        return None
 
     conn_cp = sqlite3.connect(DB_COMPANIES)
     _conn_pr = sqlite3.connect(DB_PROCUREMENT)
@@ -217,6 +234,8 @@ def build_monthly():
     월별_기관 = defaultdict(lambda: defaultdict(lambda: {'total': 0, 'local': 0}))
     # 기관×분야
     월별_기관_분야 = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {'total': 0, 'local': 0})))
+    # 소그룹별 (4그룹)
+    월별_소그룹 = defaultdict(lambda: defaultdict(lambda: {'total': 0, 'local': 0}))
     # 변동 원인용: 기관별 개별 계약
     월별_계약 = defaultdict(list)  # month → [(sector, unit, amt, loc, leakage, nm), ...]
 
@@ -239,6 +258,11 @@ def build_monthly():
         # 기관×분야
         월별_기관_분야[unit][sector][month]['total'] += amt
         월별_기관_분야[unit][sector][month]['local'] += loc
+        # 소그룹별 (4그룹)
+        sub_g = get_sub_group(cd)
+        if sub_g:
+            월별_소그룹[sub_g][month]['total'] += amt
+            월별_소그룹[sub_g][month]['local'] += loc
         # 유출 계약 기록
         if leakage > 0:
             월별_계약[month].append((sector, unit, amt, loc, leakage, nm))
@@ -298,6 +322,16 @@ def build_monthly():
     for label in ['전체', '부산시', '국가']:
         월간_그룹[label] = calc_monthly(월별_그룹[label], all_months)
     output['월간_그룹'] = 월간_그룹
+
+    # 소그룹(4그룹) 누계/월간
+    소그룹_labels = ['부산광역시및산하기관', '정부및국가공공기관', '자치구군', '출자출연기관']
+    소그룹_누계 = {}
+    소그룹_월간 = {}
+    for label in 소그룹_labels:
+        소그룹_누계[label] = calc_cumulative(월별_소그룹[label], all_months)
+        소그룹_월간[label] = calc_monthly(월별_소그룹[label], all_months)
+    output['누계_소그룹'] = 소그룹_누계
+    output['월간_소그룹'] = 소그룹_월간
 
     # 4. 분야별 월간 평균
     월간_분야 = {}
