@@ -341,6 +341,40 @@ def build_monthly():
             prev_t, prev_l = cur_t, cur_l
     output['변동분석'] = 변동분석
 
+    # 5-2. 분야별 변동 분석
+    분야변동 = {}
+    for sector in ['공사', '용역', '물품', '쇼핑몰']:
+        prev_t, prev_l = 0, 0
+        for i, m in enumerate(all_months):
+            d = 월별_분야[sector].get(m, {'total': 0, 'local': 0})
+            cur_t = prev_t + d['total']
+            cur_l = prev_l + d['local']
+            if i > 0:
+                prev_rate = pct(prev_t, prev_l)
+                cur_rate = pct(cur_t, cur_l)
+                delta = round(cur_rate - prev_rate, 1)
+                key = f"{all_months[i-1]}→{m}"
+                # 해당 분야의 해당 월 계약에서 TOP 3
+                sec_contracts = [(s, u, a, l, a-l, n) for s, mo, cd, u, lrg, a, l, n in records if mo == m and s == sector]
+                if delta < 0:
+                    top3 = sorted(sec_contracts, key=lambda x: x[4], reverse=True)[:3]
+                    items3 = [{'분야': c[0], '기관': c[1], '계약명': c[5],
+                               '발주액': round(c[2]), '유출액': round(c[4])} for c in top3]
+                else:
+                    top3 = sorted(sec_contracts, key=lambda x: x[3], reverse=True)[:3]
+                    items3 = [{'분야': c[0], '기관': c[1], '계약명': c[5],
+                               '발주액': round(c[2]), '수주액': round(c[3])} for c in top3]
+                if sector not in 분야변동:
+                    분야변동[sector] = {}
+                분야변동[sector][key] = {
+                    '이전율': prev_rate, '현재율': cur_rate,
+                    '변동': delta,
+                    '방향': '감소' if delta < 0 else '증가' if delta > 0 else '유지',
+                    '주요계약': items3,
+                }
+            prev_t, prev_l = cur_t, cur_l
+    output['분야변동'] = 분야변동
+
     # 6. 기관별 데이터 (검색용)
     기관목록 = sorted(월별_기관.keys())
     기관별 = {}
