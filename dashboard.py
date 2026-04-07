@@ -3529,8 +3529,8 @@ elif page == "📈 종합분석":
                         textfont=dict(size=9, color='rgba(255,255,255,0.7)'),
                         customdata=list(zip(수주액s, 발주액s)),
                         hovertemplate='<b style="font-size:14px">%{x} 수주율 %{y}%</b><br><br>'
-                                      '<b>지역업체 수주액</b>  %{customdata[0]:,.0f}억<br>'
-                                      '<b>총 계약액</b>  %{customdata[1]:,.0f}억'
+                                      '<b>총 계약액</b>  %{customdata[1]:,.0f}억<br>'
+                                      '<b style="color:#1ee0ac">지역업체 수주액</b>  <span style="color:#1ee0ac">%{customdata[0]:,.0f}억</span>'
                                       '<extra></extra>',
                         cliponaxis=False,
                     ))
