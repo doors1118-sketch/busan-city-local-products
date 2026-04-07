@@ -2831,11 +2831,10 @@ elif page == "🏢 지역업체 정보":
         # ── 물품 / 공사 / 용역 분류별 도넛차트 ──
         st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
         
-        # 데이터 준비 (positional access)
-        현황_vals = list(현황_comp.values()) if 현황_comp else []
-        물품_분류 = 현황_vals[6] if len(현황_vals) > 6 and isinstance(현황_vals[6], list) else []
-        공사_업종 = 현황_vals[7] if len(현황_vals) > 7 and isinstance(현황_vals[7], list) else []
-        용역_업종 = 현황_vals[8] if len(현황_vals) > 8 and isinstance(현황_vals[8], list) else []
+        # 데이터 준비 (키 이름 기반)
+        물품_분류 = 현황_comp.get("물품_대분류", [])
+        공사_업종 = 현황_comp.get("공사_업종", [])
+        용역_업종 = 현황_comp.get("용역_업종", [])
         
         donut_colors = ["#6576ff", "#1ee0ac", "#f4bd0e", "#e85347", "#9cabff", "#816bff"]
         
@@ -3053,16 +3052,73 @@ elif page == "🏢 지역업체 정보":
         # 물품 분류 데이터 변환 (분류명 + 업체수)
         물품_items = []
         for it in 물품_분류:
-            iv = list(it.values())
-            물품_items.append({"분류": iv[1] if len(iv) > 1 else "?", "업체수": iv[2] if len(iv) > 2 else 0})
+            물품_items.append({"분류": it.get("분류명", "?"), "업체수": it.get("업체수", 0)})
         
-        물품_total = 현황_comp.get("물품", list(현황_comp.values())[1] if len(현황_comp) > 1 else 0)
-        공사_total = 현황_comp.get("공사", list(현황_comp.values())[3] if len(현황_comp) > 3 else 0)
-        용역_total = 현황_comp.get("용역", list(현황_comp.values())[2] if len(현황_comp) > 2 else 0)
+        물품_total = 현황_comp.get("물품", 0)
+        공사_total = 현황_comp.get("공사", 0)
+        용역_total = 현황_comp.get("용역", 0)
         
         make_search_donut(col_d1, "물품 분류별", 물품_total, 물품_items, "search_물품")
         make_search_donut(col_d2, "공사 업종별", 공사_total, 공사_업종, "search_공사")
         make_search_donut(col_d3, "용역 업종별", 용역_total, 용역_업종, "search_용역")
+
+        # ── 제조업체 검색 섹션 ──
+        st.markdown('<div style="margin-top:28px;"></div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            제조_cnt = 현황_comp.get("제조", 0)
+            st.markdown(f'''<div style="padding:16px 0 8px;">
+<h3 style="margin:0; font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">🏭 제조업체 검색</h3>
+<span style="font-size:0.72rem; color:{COLORS['text_light']};">부산 소재 제조업체 {제조_cnt:,}개 · 업체명/업종/대표품명으로 검색</span>
+</div>''', unsafe_allow_html=True)
+
+            mfg_query = st.text_input("검색어 입력", key="mfg_search", placeholder="업체명, 업종, 대표품명 검색...", label_visibility="collapsed")
+
+            if mfg_query and len(mfg_query) >= 2:
+                try:
+                    import io
+                    DB_MFG = os.path.join(os.path.dirname(__file__), "busan_companies_master.db")
+                    conn_mfg = sqlite3.connect(DB_MFG)
+                    mfg_df = pd.read_sql("""
+                        SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
+                               c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
+                               c.opbizDt, c.rgstDt,
+                               GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                        FROM company_master c
+                        LEFT JOIN company_industry i ON c.bizno = i.bizno
+                        WHERE c.mnfctDivNm = '제조'
+                          AND (c.corpNm LIKE ? OR c.rprsntDtlPrdnm LIKE ? OR i.indstrytyNm LIKE ?)
+                        GROUP BY c.bizno
+                        ORDER BY c.corpNm
+                        LIMIT 500
+                    """, conn_mfg, params=(f'%{mfg_query}%', f'%{mfg_query}%', f'%{mfg_query}%'))
+                    conn_mfg.close()
+
+                    if len(mfg_df) > 0:
+                        st.caption(f"🔎 '{mfg_query}' 검색결과: {len(mfg_df):,}건")
+                        show_df = mfg_df[['corpNm','ceoNm','rgnNm','hdoffceDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
+                        show_df.columns = ['업체명','대표자','소재지','본사구분','대표품명','면허업종','개업일']
+                        show_df['개업일'] = show_df['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
+                        st.dataframe(show_df, use_container_width=True, height=350, hide_index=True)
+
+                        # Excel 다운로드
+                        dl_mfg = mfg_df[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
+                        dl_mfg.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
+                        buf_mfg = io.BytesIO()
+                        with pd.ExcelWriter(buf_mfg, engine='openpyxl') as writer:
+                            dl_mfg.to_excel(writer, index=False, sheet_name='제조업체')
+                        st.download_button(
+                            label=f"📥 제조업체 다운로드 ({len(mfg_df)}건, Excel)",
+                            data=buf_mfg.getvalue(),
+                            file_name=f"제조업체_{mfg_query}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_mfg"
+                        )
+                    else:
+                        st.info(f"'{mfg_query}'에 해당하는 제조업체가 없습니다.")
+                except Exception as e:
+                    st.error(f"조회 실패: {e}")
+            elif mfg_query:
+                st.caption("2글자 이상 입력해주세요.")
 
 # ════════════════════════════════════════════
 # PAGE: 자치구·출자출연 순위
@@ -3210,16 +3266,23 @@ elif page == "📜 면허업종 검색":
                 selected_license = selected_opt.rsplit("  (", 1)[0] if selected_opt else None
 
                 if selected_license:
+                    # 제조업체 필터
+                    only_mfg = st.checkbox("🏭 제조업체만 보기", key="only_mfg")
+
                     # 해당 업종 업체 조회 (company_industry JOIN company_master)
-                    companies = pd.read_sql("""
+                    sql = """
                         SELECT c.corpNm, c.bizno, c.rgnNm, c.hdoffceDivNm, c.corpBsnsDivNm,
-                               c.ceoNm, c.adrs, c.opbizDt, c.rgstDt,
+                               c.ceoNm, c.adrs, c.opbizDt, c.rgstDt, c.mnfctDivNm,
                                i.indstrytyNm, i.rprsntIndstrytyYn
                         FROM company_industry i
                         JOIN company_master c ON i.bizno = c.bizno
                         WHERE i.indstrytyNm = ?
-                        ORDER BY c.corpNm
-                    """, conn_lic, params=(selected_license,))
+                    """
+                    params = [selected_license]
+                    if only_mfg:
+                        sql += " AND c.mnfctDivNm = '제조'"
+                    sql += " ORDER BY c.corpNm"
+                    companies = pd.read_sql(sql, conn_lic, params=params)
 
                     st.markdown(f'<div style="margin-top:12px;"></div>', unsafe_allow_html=True)
 
@@ -3263,8 +3326,8 @@ elif page == "📜 면허업종 검색":
 
                     # 업체 테이블
                     st.markdown(f'<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
-                    display_df = companies[['corpNm','ceoNm','rgnNm','hdoffceDivNm','corpBsnsDivNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
-                    display_df.columns = ['업체명','대표자','소재지','본사구분','업체구분','개업일','등록일','대표업종']
+                    display_df = companies[['corpNm','ceoNm','rgnNm','hdoffceDivNm','corpBsnsDivNm','mnfctDivNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
+                    display_df.columns = ['업체명','대표자','소재지','본사구분','업체구분','제조구분','개업일','등록일','대표업종']
                     display_df['대표업종'] = display_df['대표업종'].apply(lambda x: '✅' if x == 'Y' else '')
                     display_df['개업일'] = display_df['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
                     display_df['등록일'] = display_df['등록일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
@@ -3273,8 +3336,8 @@ elif page == "📜 면허업종 검색":
 
                     # Excel 다운로드
                     import io
-                    dl_df = companies[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','indstrytyNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
-                    dl_df.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','면허업종','개업일','등록일','대표업종여부']
+                    dl_df = companies[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','mnfctDivNm','indstrytyNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
+                    dl_df.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','제조구분','면허업종','개업일','등록일','대표업종여부']
                     buf = io.BytesIO()
                     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                         dl_df.to_excel(writer, index=False, sheet_name='업체목록')
