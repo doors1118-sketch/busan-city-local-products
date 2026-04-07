@@ -49,21 +49,32 @@ def build_monthly():
     inst_mid = dict(zip(master['dminsttCd'], master['cate_mid']))
     inst_sml = dict(zip(master['dminsttCd'], master['cate_sml'].fillna('')))
 
-    # 4그룹 매핑 함수
+    # 4그룹 매핑: compare_unit 기준으로 통일 (build_api_cache.py와 정합성 확보)
     출자출연_sml = {'부산광역시 출연기관', '부산광역시 출자기관', '부산광역시 공기업', '부산광역시 공단'}
+
+    # compare_unit별 소그룹 사전 매핑
+    _unit_subgroup = {}
+    for _cd in master['dminsttCd']:
+        _unit = str(inst_unit.get(_cd, '')).strip()
+        if not _unit:
+            continue
+        _sml = str(inst_sml.get(_cd, ''))
+        _mid = str(inst_mid.get(_cd, ''))
+        _lrg = str(inst_grp.get(_cd, ''))
+        # 출자출연 우선 (한번이라도 매핑되면 유지)
+        if _sml in 출자출연_sml:
+            _unit_subgroup[_unit] = '출자출연기관'
+        elif _unit not in _unit_subgroup:
+            if _mid == '자치구군':
+                _unit_subgroup[_unit] = '자치구군'
+            elif _mid in ('중앙행정기관', '국가공공기관', '고등교육기관'):
+                _unit_subgroup[_unit] = '정부및국가공공기관'
+            elif _lrg == '부산광역시 및 소속기관':
+                _unit_subgroup[_unit] = '부산광역시및산하기관'
+
     def get_sub_group(cd):
-        sml = str(inst_sml.get(cd, ''))
-        mid = str(inst_mid.get(cd, ''))
-        if sml in 출자출연_sml:
-            return '출자출연기관'
-        if mid == '자치구군':
-            return '자치구군'
-        if mid in ('중앙행정기관', '국가공공기관', '고등교육기관'):
-            return '정부및국가공공기관'
-        lrg = str(inst_grp.get(cd, ''))
-        if lrg == '부산광역시 및 소속기관':
-            return '부산광역시및산하기관'
-        return None
+        unit = str(inst_unit.get(cd, '')).strip()
+        return _unit_subgroup.get(unit)
 
     conn_cp = sqlite3.connect(DB_COMPANIES)
     _conn_pr = sqlite3.connect(DB_PROCUREMENT)
