@@ -3615,7 +3615,7 @@ elif page == "📈 종합분석":
                                         pd.DataFrame(sd_c).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
                                     if sd_m:
                                         pd.DataFrame(sd_m).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
-                            st.download_button('📥 엑셀', xl_buf.getvalue(), file_name=f'종합분석_{year}.xlsx',
+                            st.download_button('📥 종합분석 다운로드', xl_buf.getvalue(), file_name=f'종합분석_{year}.xlsx',
                                                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                                                use_container_width=True)
                         sel_m = st.selectbox('월별 변동 원인', ['선택'] + mo_list, key='변동월h2', label_visibility='collapsed')
@@ -3707,9 +3707,9 @@ elif page == "📈 종합분석":
                                     fig_s.add_trace(go.Bar(
                                         x=s_labels, y=m_rates,
                                         marker_color=bar_colors,
-                                        text=[f"{rv}%" for rv in m_rates],
+                                        text=[f"<b>{rv}%</b>" for rv in m_rates],
                                         textposition='inside', insidetextanchor='middle',
-                                        textfont=dict(size=11, color='#364a63', family='Nunito Sans'),
+                                        textfont=dict(size=10, color=color, family='Nunito Sans'),
                                         customdata=list(zip(m_발주s, m_수주s)),
                                         hovertemplate='<b>%{x} 월간</b><br>발주액 %{customdata[0]:,.0f}억<br><b style="color:' + color + '">수주액 %{customdata[1]:,.0f}억</b><extra></extra>',
                                         name='월간',
@@ -3723,9 +3723,9 @@ elif page == "📈 종합분석":
                                     line=dict(color=color, width=2, shape='spline'),
                                     fillcolor=f'rgba({r},{g},{b},0.08)',
                                     marker=dict(size=5, color=color),
-                                    text=[f"{rv}%" for rv in c_rates],
+                                    text=[f"<b>{rv}%</b>" for rv in c_rates],
                                     textposition='top center',
-                                    textfont=dict(size=13, color='#364a63', family='Nunito Sans'),
+                                    textfont=dict(size=14, color='#364a63', family='Nunito Sans'),
                                     customdata=list(zip(c_수주s, c_발주s)),
                                     hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
                                     cliponaxis=False,
