@@ -3721,14 +3721,14 @@ elif page == "📈 종합분석":
                                     marker=dict(size=5, color=color),
                                     text=[f"{rv}%" for rv in c_rates],
                                     textposition='top center',
-                                    textfont=dict(size=11, color=color, family='Nunito Sans'),
+                                    textfont=dict(size=13, color='#364a63', family='Nunito Sans'),
                                     customdata=list(zip(c_수주s, c_발주s)),
                                     hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
                                     cliponaxis=False,
                                 ))
                                 fig_s.update_layout(
                                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                    height=190, margin=dict(t=20, b=18, l=0, r=0),
+                                    height=230, margin=dict(t=22, b=16, l=0, r=0),
                                     yaxis=dict(visible=False, range=[0, 100]),
                                     xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
                                     showlegend=False, bargap=0.35,
