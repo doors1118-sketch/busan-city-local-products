@@ -3545,6 +3545,45 @@ elif page == "📈 종합분석":
                     )
                     st.plotly_chart(fig_hero, use_container_width=True, config={'displayModeBar': False})
 
+                # 월별 변동 원인 (차트 아래 공백 활용)
+                변동분석_h = trend_data.get('변동분석', {})
+                if 변동분석_h:
+                    pk_list = list(변동분석_h.keys())
+                    mo_list = []
+                    mk_map = {}
+                    for pk in pk_list:
+                        ml = f"{int(pk.split('→')[1])}월"
+                        mo_list.append(ml)
+                        mk_map[ml] = pk
+                    if mo_list:
+                        sel_m = st.selectbox('🔍 월별 변동 원인', ['선택'] + mo_list, key='변동월h2', label_visibility='collapsed')
+                        if sel_m != '선택':
+                            sk = mk_map.get(sel_m, '')
+                            vi = 변동분석_h.get(sk, {})
+                            vv = vi.get('변동', 0)
+                            vc = '#1ee0ac' if vv >= 0 else '#e85347'
+                            va = '↑' if vv >= 0 else '↓'
+                            st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+<span style="font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']};">{sel_m} 변동</span>
+<span style="font-size:0.78rem; font-weight:700; color:{vc};">{va} {abs(vv):.1f}%p · {vi.get('방향','')}</span>
+</div>
+<div style="font-size:0.65rem; color:{COLORS['text_light']};">{vi.get('이전율',0)}% → {vi.get('현재율',0)}%</div>''', unsafe_allow_html=True)
+                            cts = vi.get('주요계약', [])
+                            if cts:
+                                hdr = '유출액' if vv < 0 else '수주액'
+                                rh = ''
+                                for ci, c in enumerate(cts[:3]):
+                                    av = c.get('유출액', c.get('수주액', 0))
+                                    rh += f'<tr><td style="padding:2px 4px; font-size:0.65rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
+                                    rh += f'<td style="padding:2px 4px; font-size:0.65rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
+                                    rh += f'<td style="padding:2px 4px; font-size:0.65rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:18]}</td>'
+                                    rh += f'<td style="padding:2px 4px; font-size:0.65rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{av/1e8:,.1f}억</td></tr>'
+                                st.markdown(f'''<table style="width:100%; border-collapse:collapse; margin-top:3px;">
+<thead><tr><th style="padding:2px 4px; font-size:0.6rem; text-align:left; color:{COLORS['text_light']};">순</th>
+<th style="padding:2px 4px; font-size:0.6rem; text-align:left; color:{COLORS['text_light']};">분야</th>
+<th style="padding:2px 4px; font-size:0.6rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
+<th style="padding:2px 4px; font-size:0.6rem; text-align:right; color:{COLORS['text_light']};">{hdr}</th>
+</tr></thead><tbody>{rh}</tbody></table>''', unsafe_allow_html=True)
 
             # ── 우측: 분야별 2×2 ──
             with col_side:
@@ -3597,76 +3636,6 @@ elif page == "📈 종합분석":
                                     showlegend=False, bargap=0.25,
                                 )
                                 st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False})
-
-        # ═══════════════════════════════════════
-        # 월별 변동 원인 (히어로카드 아래)
-        # ═══════════════════════════════════════
-        전체d_for_var = 누계_그룹.get('전체', [])
-        변동분석 = trend_data.get('변동분석', {})
-        if 변동분석:
-            st.markdown('<div style="margin-top:12px;"></div>', unsafe_allow_html=True)
-            with st.container(border=True):
-                period_keys = list(변동분석.keys())
-                month_options = []
-                month_key_map = {}
-                for pk in period_keys:
-                    target_month = pk.split('→')[1]
-                    lbl = f"{int(target_month)}월"
-                    month_options.append(lbl)
-                    month_key_map[lbl] = pk
-
-                if month_options:
-                    sel_m = st.selectbox('🔍 월별 변동 원인', ['선택하세요'] + month_options, key='변동월hero')
-                    if sel_m != '선택하세요':
-                        sel_key = month_key_map.get(sel_m, '')
-                        vinfo = 변동분석.get(sel_key, {})
-                        v_val = vinfo.get('변동', 0)
-                        v_arrow = '↑' if v_val >= 0 else '↓'
-                        v_color = '#1ee0ac' if v_val >= 0 else '#e85347'
-                        sel_month_idx = int(sel_key.split('→')[1]) - 1
-                        if sel_month_idx < len(전체d_for_var):
-                            m_info = 전체d_for_var[sel_month_idx]
-                            m_수주 = m_info.get('수주액', 0)
-                            m_발주 = m_info.get('발주액', 0)
-                            m_rate = m_info.get('수주율', 0)
-                        else:
-                            m_수주 = 0; m_발주 = 0; m_rate = 0
-
-                        st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0;">
-<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">{sel_m} 누계 변동</div>
-<div style="font-size:0.85rem; font-weight:700; color:{v_color};">{v_arrow} {abs(v_val):.1f}%p  ·  {vinfo.get('방향','')}</div>
-</div>
-<div style="font-size:0.7rem; color:{COLORS['text_light']}; margin-bottom:6px;">{vinfo.get('이전율',0)}% → {vinfo.get('현재율',0)}%</div>
-<div style="display:flex; gap:20px; align-items:baseline; padding:4px 0 6px; border-top:1px solid {COLORS['card_border']};">
-<div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">{sel_m} 지역업체 수주 누계액 (수주율)</div>
-<div style="font-size:1.3rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans;">{m_수주/1e8:,.0f}억 <span style="color:{v_color};">({m_rate}%)</span></div>
-</div>
-<div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">총 계약 누계액</div>
-<div style="font-size:1rem; font-weight:700; color:{COLORS['text_dark']}; font-family:Nunito Sans;">{m_발주/1e8:,.0f}억</div>
-</div>
-</div>''', unsafe_allow_html=True)
-
-                        contracts = vinfo.get('주요계약', [])
-                        if contracts:
-                            header = '유출액' if v_val < 0 else '수주액'
-                            rows_html = ''
-                            for ci, c in enumerate(contracts[:5]):
-                                amt_val = c.get('유출액', c.get('수주액', 0))
-                                rows_html += f'<tr><td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
-                                rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
-                                rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("기관","")}</td>'
-                                rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:25]}</td>'
-                                rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{amt_val/1e8:,.1f}억</td></tr>'
-                            st.markdown(f'''<table style="width:100%; border-collapse:collapse; margin-top:6px;">
-<thead><tr>
-<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">순</th>
-<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">분야</th>
-<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">기관</th>
-<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
-<th style="padding:4px 6px; font-size:0.65rem; text-align:right; color:{COLORS['text_light']};">{header}</th>
-</tr></thead><tbody>{rows_html}</tbody></table>''', unsafe_allow_html=True)
 
         # ═══════════════════════════════════════
         # 부산시 / 국가 카드 (2칸)
