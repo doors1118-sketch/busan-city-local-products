@@ -3068,57 +3068,136 @@ elif page == "🏢 지역업체 정보":
             제조_cnt = 현황_comp.get("제조", 0)
             st.markdown(f'''<div style="padding:16px 0 8px;">
 <h3 style="margin:0; font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">🏭 제조업체 검색</h3>
-<span style="font-size:0.72rem; color:{COLORS['text_light']};">부산 소재 제조업체 {제조_cnt:,}개 · 업체명/업종/대표품명으로 검색</span>
+<span style="font-size:0.72rem; color:{COLORS['text_light']};">부산 소재 제조업체 {제조_cnt:,}개 · 대표품명 또는 업종으로 검색</span>
 </div>''', unsafe_allow_html=True)
 
-            mfg_query = st.text_input("검색어 입력", key="mfg_search", placeholder="업체명, 업종, 대표품명 검색...", label_visibility="collapsed")
+            mfg_tab1, mfg_tab2 = st.tabs(["📦 대표품명으로 검색", "📋 면허업종으로 검색"])
 
-            if mfg_query and len(mfg_query) >= 2:
-                try:
-                    import io
-                    DB_MFG = os.path.join(os.path.dirname(__file__), "busan_companies_master.db")
-                    conn_mfg = sqlite3.connect(DB_MFG)
-                    mfg_df = pd.read_sql("""
-                        SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
-                               c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
-                               c.opbizDt, c.rgstDt,
-                               GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
-                        FROM company_master c
-                        LEFT JOIN company_industry i ON c.bizno = i.bizno
-                        WHERE c.mnfctDivNm = '제조'
-                          AND (c.corpNm LIKE ? OR c.rprsntDtlPrdnm LIKE ? OR i.indstrytyNm LIKE ?)
-                        GROUP BY c.bizno
-                        ORDER BY c.corpNm
-                        LIMIT 500
-                    """, conn_mfg, params=(f'%{mfg_query}%', f'%{mfg_query}%', f'%{mfg_query}%'))
-                    conn_mfg.close()
+            try:
+                import io
+                DB_MFG = os.path.join(os.path.dirname(__file__), "busan_companies_master.db")
+                conn_mfg = sqlite3.connect(DB_MFG)
 
-                    if len(mfg_df) > 0:
-                        st.caption(f"🔎 '{mfg_query}' 검색결과: {len(mfg_df):,}건")
-                        show_df = mfg_df[['corpNm','ceoNm','rgnNm','hdoffceDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
-                        show_df.columns = ['업체명','대표자','소재지','본사구분','대표품명','면허업종','개업일']
-                        show_df['개업일'] = show_df['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
-                        st.dataframe(show_df, use_container_width=True, height=350, hide_index=True)
+                # ── 탭1: 대표품명 선택 ──
+                with mfg_tab1:
+                    # 대표품명 목록 (2개 이상 업체)
+                    prd_df = pd.read_sql("""
+                        SELECT rprsntDtlPrdnm as prdnm, COUNT(*) as cnt
+                        FROM company_master
+                        WHERE mnfctDivNm='제조' AND rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+                        GROUP BY rprsntDtlPrdnm
+                        HAVING cnt >= 2
+                        ORDER BY cnt DESC
+                    """, conn_mfg)
 
-                        # Excel 다운로드
-                        dl_mfg = mfg_df[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
-                        dl_mfg.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
-                        buf_mfg = io.BytesIO()
-                        with pd.ExcelWriter(buf_mfg, engine='openpyxl') as writer:
-                            dl_mfg.to_excel(writer, index=False, sheet_name='제조업체')
-                        st.download_button(
-                            label=f"📥 제조업체 다운로드 ({len(mfg_df)}건, Excel)",
-                            data=buf_mfg.getvalue(),
-                            file_name=f"제조업체_{mfg_query}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="dl_mfg"
-                        )
+                    prd_search = st.text_input("품명 검색", key="mfg_prd_q", placeholder="대표품명 검색...", label_visibility="collapsed")
+                    if prd_search:
+                        prd_filtered = prd_df[prd_df['prdnm'].str.contains(prd_search, case=False, na=False)]
                     else:
-                        st.info(f"'{mfg_query}'에 해당하는 제조업체가 없습니다.")
-                except Exception as e:
-                    st.error(f"조회 실패: {e}")
-            elif mfg_query:
-                st.caption("2글자 이상 입력해주세요.")
+                        prd_filtered = prd_df.head(30)
+
+                    if len(prd_filtered) > 0:
+                        prd_options = [f"{row['prdnm']}  ({row['cnt']}개)" for _, row in prd_filtered.head(50).iterrows()]
+                        if prd_search:
+                            st.caption(f"🔎 '{prd_search}' 검색결과 {len(prd_filtered)}건")
+                        prd_selected = st.selectbox("대표품명 선택", prd_options, key="mfg_prd_sel", label_visibility="collapsed")
+                        prd_name = prd_selected.rsplit("  (", 1)[0] if prd_selected else None
+
+                        if prd_name:
+                            mfg_df = pd.read_sql("""
+                                SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
+                                       c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
+                                       c.opbizDt, c.rgstDt,
+                                       GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                                FROM company_master c
+                                LEFT JOIN company_industry i ON c.bizno = i.bizno
+                                WHERE c.mnfctDivNm = '제조' AND c.rprsntDtlPrdnm = ?
+                                GROUP BY c.bizno ORDER BY c.corpNm
+                            """, conn_mfg, params=(prd_name,))
+
+                            if len(mfg_df) > 0:
+                                st.caption(f"'{prd_name}' 제조업체: {len(mfg_df):,}건")
+                                show_df = mfg_df[['corpNm','ceoNm','rgnNm','hdoffceDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
+                                show_df.columns = ['업체명','대표자','소재지','본사구분','대표품명','면허업종','개업일']
+                                show_df['개업일'] = show_df['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
+                                st.dataframe(show_df, use_container_width=True, height=350, hide_index=True)
+
+                                dl_mfg = mfg_df[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
+                                dl_mfg.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
+                                buf_mfg = io.BytesIO()
+                                with pd.ExcelWriter(buf_mfg, engine='openpyxl') as writer:
+                                    dl_mfg.to_excel(writer, index=False, sheet_name='제조업체')
+                                st.download_button(
+                                    label=f"📥 다운로드 ({len(mfg_df)}건, Excel)",
+                                    data=buf_mfg.getvalue(),
+                                    file_name=f"제조업체_{prd_name}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="dl_mfg_prd"
+                                )
+                    elif prd_search:
+                        st.info(f"'{prd_search}'에 해당하는 대표품명이 없습니다.")
+
+                # ── 탭2: 업종 선택 ──
+                with mfg_tab2:
+                    ind_df = pd.read_sql("""
+                        SELECT i.indstrytyNm as indnm, COUNT(DISTINCT c.bizno) as cnt
+                        FROM company_industry i
+                        JOIN company_master c ON i.bizno = c.bizno
+                        WHERE c.mnfctDivNm='제조'
+                        GROUP BY i.indstrytyNm
+                        ORDER BY cnt DESC
+                    """, conn_mfg)
+
+                    ind_search = st.text_input("업종 검색", key="mfg_ind_q", placeholder="면허업종 검색...", label_visibility="collapsed")
+                    if ind_search:
+                        ind_filtered = ind_df[ind_df['indnm'].str.contains(ind_search, case=False, na=False)]
+                    else:
+                        ind_filtered = ind_df.head(30)
+
+                    if len(ind_filtered) > 0:
+                        ind_options = [f"{row['indnm']}  ({row['cnt']}개)" for _, row in ind_filtered.head(50).iterrows()]
+                        if ind_search:
+                            st.caption(f"🔎 '{ind_search}' 검색결과 {len(ind_filtered)}건")
+                        ind_selected = st.selectbox("업종 선택", ind_options, key="mfg_ind_sel", label_visibility="collapsed")
+                        ind_name = ind_selected.rsplit("  (", 1)[0] if ind_selected else None
+
+                        if ind_name:
+                            mfg_df2 = pd.read_sql("""
+                                SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
+                                       c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
+                                       c.opbizDt, c.rgstDt,
+                                       GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                                FROM company_master c
+                                JOIN company_industry i ON c.bizno = i.bizno
+                                WHERE c.mnfctDivNm = '제조' AND i.indstrytyNm = ?
+                                GROUP BY c.bizno ORDER BY c.corpNm
+                            """, conn_mfg, params=(ind_name,))
+
+                            if len(mfg_df2) > 0:
+                                st.caption(f"'{ind_name}' 제조업체: {len(mfg_df2):,}건")
+                                show_df2 = mfg_df2[['corpNm','ceoNm','rgnNm','hdoffceDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
+                                show_df2.columns = ['업체명','대표자','소재지','본사구분','대표품명','면허업종','개업일']
+                                show_df2['개업일'] = show_df2['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
+                                st.dataframe(show_df2, use_container_width=True, height=350, hide_index=True)
+
+                                dl_mfg2 = mfg_df2[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
+                                dl_mfg2.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
+                                buf_mfg2 = io.BytesIO()
+                                with pd.ExcelWriter(buf_mfg2, engine='openpyxl') as writer:
+                                    dl_mfg2.to_excel(writer, index=False, sheet_name='제조업체')
+                                st.download_button(
+                                    label=f"📥 다운로드 ({len(mfg_df2)}건, Excel)",
+                                    data=buf_mfg2.getvalue(),
+                                    file_name=f"제조업체_{ind_name}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="dl_mfg_ind"
+                                )
+                    elif ind_search:
+                        st.info(f"'{ind_search}'에 해당하는 업종이 없습니다.")
+
+                conn_mfg.close()
+            except Exception as e:
+                st.error(f"조회 실패: {e}")
 
 # ════════════════════════════════════════════
 # PAGE: 자치구·출자출연 순위
