@@ -3679,31 +3679,12 @@ elif page == "📈 종합분석":
                         data_m = 월간_분야.get(sector, [])
                         color = sec_colors[sector]
                         with col_obj:
-                            # 누계 데이터
-                            s_rate = data_c[-1]['수주율'] if data_c else 0
-                            s_발주 = data_c[-1]['발주액'] if data_c else 0
-                            s_수주 = data_c[-1]['수주액'] if data_c else 0
-                            if len(data_c) >= 2:
-                                s_delta = round(data_c[-1]['수주율'] - data_c[-2]['수주율'], 1)
-                                s_d_color = "#1ee0ac" if s_delta >= 0 else "#e85347"
-                                s_d_txt = f"{'↑' if s_delta>=0 else '↓'} {abs(s_delta):.1f}%p"
-                            else:
-                                s_d_txt = ""
-                                s_d_color = COLORS['text_light']
+                            # 제목만 표시
+                            st.markdown(f'<div style="font-size:0.78rem; font-weight:700; color:{COLORS["text_dark"]}; padding:2px 0;">{sector} 수주율 변동</div>', unsafe_allow_html=True)
 
-                            # 제목 + 누계 요약
-                            st.markdown(f"""<div style="padding:0 0 2px;">
-<div style="display:flex; justify-content:space-between; align-items:center;">
-<span style="font-size:0.75rem; font-weight:700; color:{COLORS['text_dark']};">{sector} 수주율 변동</span>
-<span style="font-size:0.68rem; font-weight:700; color:{s_d_color};">{s_d_txt}</span>
-</div>
-<div style="display:flex; justify-content:space-between; align-items:baseline; padding:1px 0;">
-<span style="font-size:0.95rem; font-weight:800; font-family:Nunito Sans; color:{color};">{s_rate}%</span>
-<span style="font-size:0.6rem; color:{COLORS['text_light']};">발주 {s_발주/1e8:,.0f}억 · 수주 {s_수주/1e8:,.0f}억</span>
-</div>
-</div>""", unsafe_allow_html=True)
-
-                            # 영역 차트(누계) + 바(월간) 동일 스타일
+                            # 영역 차트(누계) + 바(월간)
+                            data_c = 누계_분야.get(sector, [])
+                            data_m = 월간_분야.get(sector, [])
                             if data_c:
                                 fig_s = go.Figure()
                                 r, g, b = int(color[1:3],16), int(color[3:5],16), int(color[5:7],16)
@@ -3711,26 +3692,26 @@ elif page == "📈 종합분석":
                                 c_수주s = [d['수주액']/1e8 for d in data_c]
                                 c_발주s = [d['발주액']/1e8 for d in data_c]
 
-                                # 월간 바 (뒤에 깔기)
+                                # 월간 바
                                 if data_m:
                                     m_rates = [d['수주율'] for d in data_m]
                                     m_발주s = [d['발주액']/1e8 for d in data_m]
                                     m_수주s = [d['수주액']/1e8 for d in data_m]
-                                    bar_colors = [f'rgba({r},{g},{b},0.2)'] * len(m_rates)
+                                    bar_colors = [f'rgba({r},{g},{b},0.18)'] * len(m_rates)
                                     if bar_colors:
-                                        bar_colors[-1] = f'rgba({r},{g},{b},0.4)'
+                                        bar_colors[-1] = f'rgba({r},{g},{b},0.35)'
                                     fig_s.add_trace(go.Bar(
                                         x=month_labels, y=m_rates,
                                         marker_color=bar_colors,
                                         text=[f"{rv}%" for rv in m_rates],
                                         textposition='inside', insidetextanchor='middle',
-                                        textfont=dict(size=9, color=f'rgba({r},{g},{b},0.9)', family='Nunito Sans'),
+                                        textfont=dict(size=11, color='#364a63', family='Nunito Sans'),
                                         customdata=list(zip(m_발주s, m_수주s)),
                                         hovertemplate='<b>%{x} 월간</b><br>발주액 %{customdata[0]:,.0f}억<br><b style="color:' + color + '">수주액 %{customdata[1]:,.0f}억</b><extra></extra>',
                                         name='월간',
                                     ))
 
-                                # 누계 영역 차트 (위에 겹치기)
+                                # 누계 영역 차트
                                 fig_s.add_trace(go.Scatter(
                                     x=month_labels, y=c_rates,
                                     mode='lines+markers+text',
@@ -3740,14 +3721,14 @@ elif page == "📈 종합분석":
                                     marker=dict(size=5, color=color),
                                     text=[f"{rv}%" for rv in c_rates],
                                     textposition='top center',
-                                    textfont=dict(size=9, color=f'rgba({r},{g},{b},0.85)', family='Nunito Sans'),
+                                    textfont=dict(size=11, color=color, family='Nunito Sans'),
                                     customdata=list(zip(c_수주s, c_발주s)),
                                     hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
                                     cliponaxis=False,
                                 ))
                                 fig_s.update_layout(
                                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                    height=150, margin=dict(t=18, b=18, l=0, r=0),
+                                    height=190, margin=dict(t=20, b=18, l=0, r=0),
                                     yaxis=dict(visible=False, range=[0, 100]),
                                     xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
                                     showlegend=False, bargap=0.35,
