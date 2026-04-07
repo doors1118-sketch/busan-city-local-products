@@ -437,14 +437,49 @@ def build_monthly():
     output['분야변동'] = 분야변동
 
     # 6. 기관별 데이터 (검색용)
+    # 기관별 월별 주요 계약 추적
+    기관_월별_계약 = defaultdict(lambda: defaultdict(list))  # unit → month → [(sector, amt, loc, nm), ...]
+    for sector, month, cd, unit, lrg, amt, loc, nm in records:
+        if amt >= 1e7:  # 1000만원 이상만
+            기관_월별_계약[unit][month].append((sector, amt, loc, nm))
+
     기관목록 = sorted(월별_기관.keys())
     기관별 = {}
     for unit in 기관목록:
+        ag_cum = calc_cumulative(월별_기관[unit], all_months)
+        ag_mon = calc_monthly(월별_기관[unit], all_months)
+
+        # 기관별 변동분석
+        ag_변동 = {}
+        prev_t, prev_l = 0, 0
+        for i, m in enumerate(all_months):
+            d = 월별_기관[unit].get(m, {'total': 0, 'local': 0})
+            cur_t = prev_t + d['total']
+            cur_l = prev_l + d['local']
+            if i > 0:
+                prev_rate = pct(prev_t, prev_l)
+                cur_rate = pct(cur_t, cur_l)
+                변동 = round(cur_rate - prev_rate, 1)
+                contracts = 기관_월별_계약[unit].get(m, [])
+                if 변동 < 0:
+                    top = sorted(contracts, key=lambda x: x[1]-x[2], reverse=True)[:5]
+                    items = [{'분야': c[0], '계약명': c[3], '발주액': round(c[1]), '유출액': round(c[1]-c[2])} for c in top]
+                else:
+                    top = sorted(contracts, key=lambda x: x[2], reverse=True)[:5]
+                    items = [{'분야': c[0], '계약명': c[3], '발주액': round(c[1]), '수주액': round(c[2])} for c in top]
+                ag_변동[f"{all_months[i-1]}→{m}"] = {
+                    '이전율': prev_rate, '현재율': cur_rate, '변동': 변동,
+                    '방향': '감소' if 변동 < 0 else '증가' if 변동 > 0 else '유지',
+                    '주요계약': items,
+                }
+            prev_t, prev_l = cur_t, cur_l
+
         기관별[unit] = {
-            '누계': calc_cumulative(월별_기관[unit], all_months),
-            '월간': calc_monthly(월별_기관[unit], all_months),
+            '누계': ag_cum,
+            '월간': ag_mon,
             '분야별_누계': {},
             '분야별_월간': {},
+            '변동분석': ag_변동,
         }
         for sector in ['공사', '용역', '물품', '쇼핑몰']:
             s_data = 월별_기관_분야[unit].get(sector, {})

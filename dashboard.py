@@ -4135,6 +4135,31 @@ elif page == "📈 종합분석":
                                                 sh += '</div>'
                                             st.markdown(f'<div style="padding:6px 0;">{sh}</div>', unsafe_allow_html=True)
 
+                                            # 주요 계약 목록
+                                            ag_변동 = ag_info.get('변동분석', {})
+                                            prev_mm = f"{int(ag_누계[idx-1]['월']):02d}"
+                                            cur_mm = f"{int(ag_누계[idx]['월']):02d}"
+                                            vk = f"{prev_mm}→{cur_mm}"
+                                            vd = ag_변동.get(vk, {})
+                                            주요계약 = vd.get('주요계약', [])
+                                            if 주요계약:
+                                                is_down = ag_vv < 0
+                                                label = '주요 유출 계약' if is_down else '주요 수주 계약'
+                                                st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:6px 0 3px;">📋 {label}</div>', unsafe_allow_html=True)
+                                                for ci, ct in enumerate(주요계약):
+                                                    ct_amt = ct.get('발주액', 0)
+                                                    ct_val = ct.get('유출액', ct.get('수주액', 0))
+                                                    val_label = '유출' if is_down else '수주'
+                                                    val_color = '#e85347' if is_down else '#1ee0ac'
+                                                    st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center;
+                                                        padding:4px 10px; margin:2px 0; border-radius:5px; background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']};">
+<div><span style="font-size:0.68rem; padding:1px 5px; border-radius:3px; background:rgba(101,118,255,0.1); color:#6576ff; margin-right:6px;">{ct.get('분야','')}</span>
+<span style="font-size:0.72rem; color:{COLORS['text_dark']};">{ct.get('계약명','')[:30]}</span></div>
+<div style="text-align:right;">
+<span style="font-size:0.68rem; color:{COLORS['text_light']};">발주 {format_억(ct_amt)}</span>
+<span style="font-size:0.72rem; font-weight:700; color:{val_color}; margin-left:8px;">{val_label} {format_억(ct_val)}</span>
+</div></div>''', unsafe_allow_html=True)
+
                                 with col_as:
                                     # 2×2 분야별 차트
                                     for row_secs in [['공사', '용역'], ['물품', '쇼핑몰']]:
