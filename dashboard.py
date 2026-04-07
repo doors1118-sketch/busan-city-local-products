@@ -3971,13 +3971,13 @@ elif page == "📈 종합분석":
 
 
         # ═══════════════════════════════════════
-        # 개별 기관 검색
+        # 기관별 종합분석
         # ═══════════════════════════════════════
         st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown(f'''<div style="padding:4px 0 6px;">
-<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">🏛️ 기관별 월간 수주율 추이</div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">개별 기관의 월별 누계 및 단월 수주율 검색</div>
+<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">🏛️ 기관별 종합분석</div>
+<div style="font-size:0.68rem; color:{COLORS['text_light']};">개별 기관의 히어로 차트 · 분야별 수주율 · 월간 변동요인 분석</div>
 </div>''', unsafe_allow_html=True)
 
             agency_q = st.text_input('기관 검색', key='trend_agency_q', placeholder='기관명 입력...', label_visibility='collapsed')
@@ -3992,81 +3992,182 @@ elif page == "📈 종합분석":
                             ag_info = results[selected_ag]
                             ag_누계 = ag_info.get('누계', [])
                             ag_월간 = ag_info.get('월간', [])
-
-                            if ag_누계:
-                                col_ag1, col_ag2 = st.columns(2)
-                                with col_ag1:
-                                    st.markdown(f'<div style="font-size:0.82rem; font-weight:700; color:{COLORS["text_dark"]}; padding:6px 0;">누계 수주율</div>', unsafe_allow_html=True)
-                                    fig_ag1 = go.Figure()
-                                    rates = [d['수주율'] for d in ag_누계]
-                                    fig_ag1.add_trace(go.Scatter(
-                                        x=month_labels, y=rates,
-                                        mode='lines+markers+text',
-                                        line=dict(color='#6576ff', width=2.5),
-                                        fill='tozeroy', fillcolor='rgba(101,118,255,0.1)',
-                                        marker=dict(size=8),
-                                        text=[f"{r}%" for r in rates],
-                                        textposition='top center', textfont=dict(size=9),
-                                    ))
-                                    fig_ag1.update_layout(
-                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                        height=200, margin=dict(t=25, b=25, l=35, r=10),
-                                        yaxis=dict(gridcolor='rgba(0,0,0,0.05)', range=[0, 105]),
-                                        showlegend=False,
-                                    )
-                                    st.plotly_chart(fig_ag1, use_container_width=True, config={'displayModeBar': False})
-
-                                with col_ag2:
-                                    st.markdown(f'<div style="font-size:0.82rem; font-weight:700; color:{COLORS["text_dark"]}; padding:6px 0;">월간 수주율</div>', unsafe_allow_html=True)
-                                    fig_ag2 = go.Figure()
-                                    if ag_월간:
-                                        fig_ag2.add_trace(go.Bar(
-                                            x=month_labels, y=[d['수주율'] for d in ag_월간],
-                                            marker_color='rgba(30,224,172,0.5)',
-                                            text=[f"{d['수주율']}%" for d in ag_월간],
-                                            textposition='outside', textfont=dict(size=9),
-                                        ))
-                                    fig_ag2.update_layout(
-                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                        height=200, margin=dict(t=25, b=25, l=35, r=10),
-                                        yaxis=dict(gridcolor='rgba(0,0,0,0.05)', range=[0, 105]),
-                                        showlegend=False, bargap=0.3,
-                                    )
-                                    st.plotly_chart(fig_ag2, use_container_width=True, config={'displayModeBar': False})
-
                             분야_누계 = ag_info.get('분야별_누계', {})
-                            if 분야_누계:
-                                st.markdown(f'<div style="font-size:0.82rem; font-weight:700; color:{COLORS["text_dark"]}; padding:8px 0 2px;">분야별 누계</div>', unsafe_allow_html=True)
-                                fig_ag3 = go.Figure()
-                                for sector in ['공사', '용역', '물품', '쇼핑몰']:
-                                    s_data = 분야_누계.get(sector, [])
-                                    if s_data:
-                                        fig_ag3.add_trace(go.Scatter(
-                                            x=month_labels, y=[d['수주율'] for d in s_data], name=sector,
-                                            mode='lines+markers',
-                                            line=dict(color=sec_colors[sector], width=2),
-                                            marker=dict(size=5),
-                                        ))
-                                fig_ag3.update_layout(
-                                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                    height=200, margin=dict(t=10, b=25, l=35, r=10),
-                                    yaxis=dict(gridcolor='rgba(0,0,0,0.05)', range=[0, 100]),
-                                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, font=dict(size=10)),
-                                )
-                                st.plotly_chart(fig_ag3, use_container_width=True, config={'displayModeBar': False})
+                            분야_월간 = ag_info.get('분야별_월간', {})
 
                             if ag_누계:
-                                st.markdown(f'<div style="font-size:0.82rem; font-weight:700; color:{COLORS["text_dark"]}; padding:8px 0 2px;">월별 수치</div>', unsafe_allow_html=True)
-                                table_data = []
-                                for d_c, d_m in zip(ag_누계, ag_월간 or ag_누계):
-                                    table_data.append({
-                                        '월': f"{int(d_c['월'])}월",
-                                        '누계발주액': f"{d_c['발주액']/1e8:,.1f}억",
-                                        '누계수주액': f"{d_c['수주액']/1e8:,.1f}억",
-                                        '누계수주율': f"{d_c['수주율']}%",
-                                        '월간수주율': f"{d_m['수주율']}%",
-                                    })
-                                st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True, height=180)
+                                # ── 히어로 + 2×2 레이아웃 ──
+                                col_ah, col_as = st.columns([5, 5])
+
+                                with col_ah:
+                                    # 히어로 헤더
+                                    ag_rate = ag_누계[-1]['수주율'] if ag_누계 else 0
+                                    ag_발주 = ag_누계[-1]['발주액'] if ag_누계 else 0
+                                    ag_수주 = ag_누계[-1]['수주액'] if ag_누계 else 0
+                                    ag_dtxt = ""
+                                    if len(ag_누계) >= 2:
+                                        ag_delta = round(ag_누계[-1]['수주율'] - ag_누계[-2]['수주율'], 1)
+                                        ag_dtxt = f"({'↑' if ag_delta>=0 else '↓'} {abs(ag_delta):.1f}%p)"
+
+                                    st.markdown(f'''<div style="background:linear-gradient(135deg, #1a2360 0%, #232e7a 50%, #2d3a8c 100%);
+                                        border-radius:12px; padding:18px 20px 10px; margin-bottom:8px;">
+<div style="font-size:0.78rem; font-weight:600; color:rgba(255,255,255,0.7);">📊 {selected_ag} 수주율 월간 변동</div>
+<div style="display:flex; justify-content:space-between; align-items:baseline; margin:4px 0 8px;">
+<div><span style="font-size:1.8rem; font-weight:800; color:#fff; font-family:Nunito Sans,sans-serif;">현재 {ag_rate}%</span>
+<span style="font-size:0.7rem; color:rgba(255,255,255,0.5); margin-left:6px;">{ag_dtxt}</span></div>
+<div style="text-align:right;">
+<div style="font-size:0.68rem; color:rgba(255,255,255,0.5);">발주액 <b style="color:#fff;">{format_억(ag_발주)}</b></div>
+<div style="font-size:0.68rem; color:rgba(255,255,255,0.5);">수주액 <b style="color:#1ee0ac;">{format_억(ag_수주)}</b></div>
+</div></div></div>''', unsafe_allow_html=True)
+
+                                    # 히어로 차트
+                                    fig_ah = go.Figure()
+                                    c_rates = [d['수주율'] for d in ag_누계]
+                                    c_발주s = [d['발주액']/1e8 for d in ag_누계]
+                                    c_수주s = [d['수주액']/1e8 for d in ag_누계]
+
+                                    if ag_월간:
+                                        m_rates = [d['수주율'] for d in ag_월간]
+                                        m_발주s = [d['발주액']/1e8 for d in ag_월간]
+                                        m_수주s = [d['수주액']/1e8 for d in ag_월간]
+                                        bar_c = ['rgba(101,118,255,0.35)'] * len(m_rates)
+                                        if bar_c: bar_c[-1] = 'rgba(101,118,255,0.6)'
+                                        fig_ah.add_trace(go.Bar(
+                                            x=month_labels, y=m_rates, marker_color=bar_c,
+                                            text=[f"{r}%" for r in m_rates], textposition='inside', insidetextanchor='middle',
+                                            textfont=dict(size=9, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
+                                            customdata=list(zip(m_발주s, m_수주s)),
+                                            hovertemplate='<b>%{x} 월간</b><br>발주 %{customdata[0]:,.0f}억<br><b style="color:#1ee0ac">수주 %{customdata[1]:,.0f}억</b><extra></extra>',
+                                        ))
+
+                                    fig_ah.add_trace(go.Scatter(
+                                        x=month_labels, y=c_rates, mode='lines+markers+text',
+                                        line=dict(color='#00d2ff', width=2.5, shape='spline'),
+                                        marker=dict(size=6, color='#00d2ff'),
+                                        text=[f"<b>{r}%</b>" for r in c_rates], textposition='top center',
+                                        textfont=dict(size=11, color='#fff', family='Nunito Sans'),
+                                        customdata=list(zip(c_수주s, c_발주s)),
+                                        hovertemplate='<b>%{x} 누계 %{y}%</b><br>발주 %{customdata[1]:,.0f}억<br><b style="color:#1ee0ac">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
+                                        cliponaxis=False,
+                                    ))
+                                    fig_ah.update_layout(
+                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
+                                        height=280, margin=dict(t=20, b=20, l=40, r=50),
+                                        yaxis=dict(gridcolor='rgba(255,255,255,0.08)', range=[0, 100],
+                                                   tickfont=dict(size=9, color='rgba(255,255,255,0.35)')),
+                                        xaxis=dict(tickfont=dict(size=9, color='rgba(255,255,255,0.45)'), showgrid=False),
+                                        showlegend=False, bargap=0.4,
+                                        hoverlabel=dict(bgcolor='#232e7a', font_size=13, font_family='Nunito Sans'),
+                                    )
+                                    st.plotly_chart(fig_ah, use_container_width=True, config={'displayModeBar': False})
+
+                                    # 변동분석 + 다운로드
+                                    dl1, dl2 = st.columns([1, 1])
+                                    with dl1:
+                                        st.markdown(f'<div style="font-size:0.78rem; font-weight:600; color:{COLORS["text_dark"]}; padding:2px 0;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                                    with dl2:
+                                        import io
+                                        xl_buf = io.BytesIO()
+                                        with pd.ExcelWriter(xl_buf, engine='openpyxl') as writer:
+                                            pd.DataFrame(ag_누계).to_excel(writer, sheet_name='누계', index=False)
+                                            if ag_월간:
+                                                pd.DataFrame(ag_월간).to_excel(writer, sheet_name='월간', index=False)
+                                            for _sec in ['공사', '용역', '물품', '쇼핑몰']:
+                                                _sd = 분야_누계.get(_sec, [])
+                                                if _sd: pd.DataFrame(_sd).to_excel(writer, sheet_name=f'{_sec}_누계', index=False)
+                                                _sd2 = 분야_월간.get(_sec, [])
+                                                if _sd2: pd.DataFrame(_sd2).to_excel(writer, sheet_name=f'{_sec}_월간', index=False)
+                                        st.download_button(f'📥 종합분석 다운로드', xl_buf.getvalue(),
+                                                           file_name=f'{selected_ag}_종합분석_{year}.xlsx',
+                                                           mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                                           use_container_width=True, key='dl_agency')
+
+                                    # 월 선택 변동분석
+                                    if len(ag_누계) >= 2:
+                                        ag_mo_list = [f"{int(ag_누계[i+1]['월'])}월" for i in range(len(ag_누계)-1)]
+                                        sel_ag_m = st.selectbox('월별 변동', ['선택'] + ag_mo_list, key='변동_agency', label_visibility='collapsed')
+                                        if sel_ag_m != '선택':
+                                            idx = ag_mo_list.index(sel_ag_m) + 1
+                                            prev_r = ag_누계[idx-1]['수주율']
+                                            cur_r = ag_누계[idx]['수주율']
+                                            ag_vv = round(cur_r - prev_r, 1)
+                                            ag_vc = '#1ee0ac' if ag_vv >= 0 else '#e85347'
+                                            ag_va = '↑' if ag_vv >= 0 else '↓'
+
+                                            st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+<span style="font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']};">{sel_ag_m} 전체 변동</span>
+<span style="font-size:0.78rem; font-weight:700; color:{ag_vc};">{ag_va} {abs(ag_vv):.1f}%p · {'감소' if ag_vv < 0 else '증가'}</span>
+</div>
+<div style="font-size:0.65rem; color:{COLORS['text_light']};">{prev_r}% → {cur_r}%</div>''', unsafe_allow_html=True)
+
+                                            # 분야별 변동 뱃지
+                                            sec_badge_ag = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
+                                            sh = ''
+                                            for sn in ['공사', '용역', '물품', '쇼핑몰']:
+                                                sc = 분야_누계.get(sn, [])
+                                                if sc and len(sc) > idx:
+                                                    sp = sc[idx-1]['수주율'] if idx > 0 else 0
+                                                    sn_r = sc[idx]['수주율']
+                                                    sd = round(sn_r - sp, 1)
+                                                else:
+                                                    sp, sn_r, sd = 0, 0, 0
+                                                s_c = '#1ee0ac' if sd >= 0 else '#e85347'
+                                                s_a = '↑' if sd >= 0 else '↓'
+                                                bc = sec_badge_ag[sn]
+                                                sh += f'<div style="display:inline-flex; align-items:center; gap:6px; padding:5px 12px; margin:3px 6px 3px 0; border-radius:6px; background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]};">'
+                                                sh += f'<span style="font-size:0.75rem; font-weight:700; color:{bc};">{sn}</span>'
+                                                sh += f'<span style="font-size:0.8rem; font-weight:800; color:{s_c};">{s_a}{abs(sd):.1f}%p</span>'
+                                                sh += f'<span style="font-size:0.68rem; color:{COLORS["text_light"]};">{sp}→{sn_r}%</span>'
+                                                sh += '</div>'
+                                            st.markdown(f'<div style="padding:6px 0;">{sh}</div>', unsafe_allow_html=True)
+
+                                with col_as:
+                                    # 2×2 분야별 차트
+                                    for row_secs in [['공사', '용역'], ['물품', '쇼핑몰']]:
+                                        sc1, sc2 = st.columns(2)
+                                        for col_o, sect in zip([sc1, sc2], row_secs):
+                                            sd_c = 분야_누계.get(sect, [])
+                                            sd_m = 분야_월간.get(sect, [])
+                                            sclr = sec_colors[sect]
+                                            with col_o:
+                                                st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:2px 0;">{sect} 수주율 변동</div>', unsafe_allow_html=True)
+                                                MAX_SH = 5
+                                                s_lb = month_labels[-MAX_SH:]
+                                                sdc = sd_c[-MAX_SH:]
+                                                sdm = sd_m[-MAX_SH:] if sd_m else []
+                                                if sdc:
+                                                    fig_s = go.Figure()
+                                                    _r, _g, _b = int(sclr[1:3],16), int(sclr[3:5],16), int(sclr[5:7],16)
+                                                    cr = [d['수주율'] for d in sdc]
+                                                    if sdm:
+                                                        mr = [d['수주율'] for d in sdm]
+                                                        bc = [f'rgba({_r},{_g},{_b},0.18)'] * len(mr)
+                                                        if bc: bc[-1] = f'rgba({_r},{_g},{_b},0.35)'
+                                                        fig_s.add_trace(go.Bar(
+                                                            x=s_lb, y=mr, marker_color=bc,
+                                                            text=[f"<b>{v}%</b>" for v in mr],
+                                                            textposition='inside', insidetextanchor='middle',
+                                                            textfont=dict(size=10, color=sclr, family='Nunito Sans'),
+                                                        ))
+                                                    fig_s.add_trace(go.Scatter(
+                                                        x=s_lb, y=cr, mode='lines+markers+text', fill='tozeroy',
+                                                        line=dict(color=sclr, width=2, shape='spline'),
+                                                        fillcolor=f'rgba({_r},{_g},{_b},0.08)',
+                                                        marker=dict(size=5, color=sclr),
+                                                        text=[f"<b>{v}%</b>" for v in cr],
+                                                        textposition='top center',
+                                                        textfont=dict(size=14, color='#364a63', family='Nunito Sans'),
+                                                        cliponaxis=False,
+                                                    ))
+                                                    fig_s.update_layout(
+                                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                                        height=230, margin=dict(t=22, b=16, l=0, r=0),
+                                                        yaxis=dict(visible=False, range=[0, 100]),
+                                                        xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
+                                                        showlegend=False, bargap=0.35,
+                                                        hoverlabel=dict(bgcolor='#fff', font_size=14),
+                                                    )
+                                                    st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False})
                     else:
                         st.info(f"'{agency_q}'에 해당하는 기관이 없습니다.")
             elif agency_q:
