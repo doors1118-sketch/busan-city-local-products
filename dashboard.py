@@ -3651,6 +3651,7 @@ elif page == "📈 종합분석":
                         data_m = 월간_분야.get(sector, [])
                         color = sec_colors[sector]
                         with col_obj:
+                            # 누계 데이터
                             s_rate = data_c[-1]['수주율'] if data_c else 0
                             s_발주 = data_c[-1]['발주액'] if data_c else 0
                             s_수주 = data_c[-1]['수주액'] if data_c else 0
@@ -3662,35 +3663,52 @@ elif page == "📈 종합분석":
                                 s_d_txt = ""
                                 s_d_color = COLORS['text_light']
 
+                            # 제목 + 누계 요약 (컴팩트)
                             st.markdown(f"""<div style="padding:0 0 2px;">
 <div style="display:flex; justify-content:space-between; align-items:center;">
-<span style="font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']};">{sector}계약액</span>
-<span style="font-size:0.7rem; font-weight:600; color:{s_d_color};">{s_d_txt}</span>
+<span style="font-size:0.75rem; font-weight:700; color:{COLORS['text_dark']};">{sector} 수주율 변동</span>
+<span style="font-size:0.68rem; font-weight:700; color:{s_d_color};">{s_d_txt}</span>
 </div>
-<div style="font-size:1.2rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans;">{s_발주/1e8:,.0f}억</div>
-<div style="font-size:0.7rem; color:{COLORS['text_light']};">지역업체 수주액</div>
-<div style="font-size:0.88rem; font-weight:700; color:{COLORS['text_dark']}; font-family:Nunito Sans;">{s_수주/1e8:,.0f}억 <span style="color:{color};">({s_rate}%)</span></div>
+<div style="display:flex; justify-content:space-between; align-items:baseline; padding:2px 0;">
+<div>
+<span style="font-size:0.95rem; font-weight:800; font-family:Nunito Sans; color:{COLORS['text_dark']};">{s_발주/1e8:,.0f}억</span>
+<span style="font-size:0.6rem; color:{COLORS['text_light']};">총계약</span>
+</div>
+<div>
+<span style="font-size:0.85rem; font-weight:700; font-family:Nunito Sans; color:{color};">{s_수주/1e8:,.0f}억</span>
+<span style="font-size:0.6rem; color:{COLORS['text_light']};">수주 ({s_rate}%)</span>
+</div>
+</div>
 </div>""", unsafe_allow_html=True)
 
-                            # 월간 Bar 차트
+                            # 그룹형 바 차트 (총계약액 vs 지역수주액)
                             if data_m:
                                 fig_s = go.Figure()
-                                m_rates = [d['수주율'] for d in data_m]
-                                bar_colors = [f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.45)" for _ in m_rates]
-                                if len(m_rates) > 0:
-                                    bar_colors[-1] = color  # 최근월 강조
+                                r, g, b = int(color[1:3],16), int(color[3:5],16), int(color[5:7],16)
+                                m_총s = [d['발주액']/1e8 for d in data_m]
+                                m_지s = [d['수주액']/1e8 for d in data_m]
+                                m_rs = [d['수주율'] for d in data_m]
+                                # 총계약액 바 (연한색)
                                 fig_s.add_trace(go.Bar(
-                                    x=month_labels, y=m_rates,
-                                    marker_color=bar_colors,
-                                    hovertemplate='%{x}: %{y}%<extra></extra>',
+                                    x=month_labels, y=m_총s, name='총계약액',
+                                    marker_color=f'rgba({r},{g},{b},0.3)',
+                                    customdata=list(zip(m_rs, m_지s)),
+                                    hovertemplate='%{x} 총계약액 %{y:,.0f}억<br>수주액 %{customdata[1]:,.0f}억<br><b>수주율 %{customdata[0]}%</b><extra></extra>',
+                                ))
+                                # 지역수주액 바 (진한색)
+                                fig_s.add_trace(go.Bar(
+                                    x=month_labels, y=m_지s, name='수주액',
+                                    marker_color=f'rgba({r},{g},{b},0.7)',
+                                    customdata=list(zip(m_rs, m_총s)),
+                                    hovertemplate='%{x} 수주액 %{y:,.0f}억<br>총계약액 %{customdata[1]:,.0f}억<br><b>수주율 %{customdata[0]}%</b><extra></extra>',
                                 ))
                                 fig_s.update_layout(
                                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                    height=80, margin=dict(t=2, b=18, l=0, r=0),
-                                    yaxis=dict(visible=False, range=[0, 100]),
-                                    xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']),
-                                               showgrid=False),
-                                    showlegend=False, bargap=0.25,
+                                    height=90, margin=dict(t=2, b=18, l=0, r=0),
+                                    yaxis=dict(visible=False),
+                                    xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
+                                    showlegend=False, bargap=0.2, barmode='group',
+                                    hoverlabel=dict(bgcolor='#fff', font_size=11),
                                 )
                                 st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False})
 
