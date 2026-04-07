@@ -3589,7 +3589,35 @@ elif page == "📈 종합분석":
                         mo_list.append(ml)
                         mk_map[ml] = pk
                     if mo_list:
-                        st.markdown(f'<div style="font-size:0.78rem; font-weight:700; color:{COLORS["text_dark"]}; padding:4px 0 2px;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                        dl_col1, dl_col2 = st.columns([3, 1])
+                        with dl_col1:
+                            st.markdown(f'<div style="font-size:0.78rem; font-weight:700; color:{COLORS["text_dark"]}; padding:4px 0 2px;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                        with dl_col2:
+                            # 엑셀 다운로드
+                            import io
+                            xl_buf = io.BytesIO()
+                            with pd.ExcelWriter(xl_buf, engine='openpyxl') as writer:
+                                # 전체 누적
+                                전체d_xl = 누계_그룹.get('전체', [])
+                                if 전체d_xl:
+                                    pd.DataFrame(전체d_xl).to_excel(writer, sheet_name='전체_누계', index=False)
+                                전체m_xl = 월간_그룹.get('전체', [])
+                                if 전체m_xl:
+                                    pd.DataFrame(전체m_xl).to_excel(writer, sheet_name='전체_월간', index=False)
+                                for grp in ['부산시', '국가']:
+                                    gd = 누계_그룹.get(grp, [])
+                                    if gd:
+                                        pd.DataFrame(gd).to_excel(writer, sheet_name=f'{grp}_누계', index=False)
+                                for sec in ['공사', '용역', '물품', '쇼핑몰']:
+                                    sd_c = 누계_분야.get(sec, [])
+                                    sd_m = 월간_분야.get(sec, [])
+                                    if sd_c:
+                                        pd.DataFrame(sd_c).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
+                                    if sd_m:
+                                        pd.DataFrame(sd_m).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
+                            st.download_button('📥 엑셀', xl_buf.getvalue(), file_name=f'종합분석_{year}.xlsx',
+                                               mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                               use_container_width=True)
                         sel_m = st.selectbox('월별 변동 원인', ['선택'] + mo_list, key='변동월h2', label_visibility='collapsed')
                         if sel_m != '선택':
                             sk = mk_map.get(sel_m, '')
@@ -3696,7 +3724,7 @@ elif page == "📈 종합분석":
                                         marker_color=bar_colors,
                                         text=[f"{rv}%" for rv in m_rates],
                                         textposition='inside', insidetextanchor='middle',
-                                        textfont=dict(size=8, color=f'rgba(255,255,255,0.7)'),
+                                        textfont=dict(size=9, color=f'rgba({r},{g},{b},0.9)', family='Nunito Sans'),
                                         customdata=list(zip(m_발주s, m_수주s)),
                                         hovertemplate='<b>%{x} 월간</b><br>발주액 %{customdata[0]:,.0f}억<br><b style="color:' + color + '">수주액 %{customdata[1]:,.0f}억</b><extra></extra>',
                                         name='월간',
@@ -3719,7 +3747,7 @@ elif page == "📈 종합분석":
                                 ))
                                 fig_s.update_layout(
                                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                    height=110, margin=dict(t=18, b=18, l=0, r=0),
+                                    height=150, margin=dict(t=18, b=18, l=0, r=0),
                                     yaxis=dict(visible=False, range=[0, 100]),
                                     xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
                                     showlegend=False, bargap=0.35,
