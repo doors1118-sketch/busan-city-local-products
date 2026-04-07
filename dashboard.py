@@ -3768,10 +3768,10 @@ elif page == "📈 종합분석":
             h_key = sec_info['key']
             h_accent = hero_accents[si]
 
-            col_h, col_s = st.columns([5, 5])
+            with st.container(border=True):
+                col_h, col_s = st.columns([5, 5])
 
-            with col_h:
-                with st.container(border=True):
+                with col_h:
                     h_rate = h_c[-1]['수주율'] if h_c else 0
                     h_발주 = h_c[-1]['발주액'] if h_c else 0
                     h_수주 = h_c[-1]['수주액'] if h_c else 0
@@ -3875,62 +3875,62 @@ elif page == "📈 종합분석":
 </div>
 <div style="font-size:0.65rem; color:{COLORS['text_light']};">{vi_sub.get('이전율',0)}% → {vi_sub.get('현재율',0)}%</div>''', unsafe_allow_html=True)
 
-            with col_s:
-                sg_분야c = 누계_소분야.get(h_key, {})
-                sg_분야m = 월간_소분야.get(h_key, {})
-                for row_secs in [['공사', '용역'], ['물품', '쇼핑몰']]:
-                    sc1, sc2 = st.columns(2)
-                    for col_obj, sector in zip([sc1, sc2], row_secs):
-                        sd_c = sg_분야c.get(sector, [])
-                        sd_m = sg_분야m.get(sector, [])
-                        s_color = sec_colors[sector]
-                        with col_obj:
-                            st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:2px 0;">{sector} 수주율 변동</div>', unsafe_allow_html=True)
-                            MAX_SHOW = 5
-                            s_labels = month_labels[-MAX_SHOW:]
-                            sd_c_s = sd_c[-MAX_SHOW:]
-                            sd_m_s = sd_m[-MAX_SHOW:] if sd_m else []
-                            if sd_c_s:
-                                fig_sc = go.Figure()
-                                r, g, b = int(s_color[1:3],16), int(s_color[3:5],16), int(s_color[5:7],16)
-                                sc_rates = [d['수주율'] for d in sd_c_s]
-                                sc_수주 = [d['수주액']/1e8 for d in sd_c_s]
-                                sc_발주 = [d['발주액']/1e8 for d in sd_c_s]
-                                if sd_m_s:
-                                    sm_rates = [d['수주율'] for d in sd_m_s]
-                                    sm_발주 = [d['발주액']/1e8 for d in sd_m_s]
-                                    sm_수주 = [d['수주액']/1e8 for d in sd_m_s]
-                                    bar_c = [f'rgba({r},{g},{b},0.18)'] * len(sm_rates)
-                                    if bar_c: bar_c[-1] = f'rgba({r},{g},{b},0.35)'
-                                    fig_sc.add_trace(go.Bar(
-                                        x=s_labels, y=sm_rates, marker_color=bar_c,
-                                        text=[f"<b>{rv}%</b>" for rv in sm_rates],
-                                        textposition='inside', insidetextanchor='middle',
-                                        textfont=dict(size=10, color=s_color, family='Nunito Sans'),
-                                        customdata=list(zip(sm_발주, sm_수주)),
-                                        hovertemplate='<b>%{x} 월간</b><br>발주 %{customdata[0]:,.0f}억<br><b style="color:' + s_color + '">수주 %{customdata[1]:,.0f}억</b><extra></extra>',
+                with col_s:
+                    sg_분야c = 누계_소분야.get(h_key, {})
+                    sg_분야m = 월간_소분야.get(h_key, {})
+                    for row_secs in [['공사', '용역'], ['물품', '쇼핑몰']]:
+                        sc1, sc2 = st.columns(2)
+                        for col_obj, sector in zip([sc1, sc2], row_secs):
+                            sd_c = sg_분야c.get(sector, [])
+                            sd_m = sg_분야m.get(sector, [])
+                            s_color = sec_colors[sector]
+                            with col_obj:
+                                st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:2px 0;">{sector} 수주율 변동</div>', unsafe_allow_html=True)
+                                MAX_SHOW = 5
+                                s_labels = month_labels[-MAX_SHOW:]
+                                sd_c_s = sd_c[-MAX_SHOW:]
+                                sd_m_s = sd_m[-MAX_SHOW:] if sd_m else []
+                                if sd_c_s:
+                                    fig_sc = go.Figure()
+                                    r, g, b = int(s_color[1:3],16), int(s_color[3:5],16), int(s_color[5:7],16)
+                                    sc_rates = [d['수주율'] for d in sd_c_s]
+                                    sc_수주 = [d['수주액']/1e8 for d in sd_c_s]
+                                    sc_발주 = [d['발주액']/1e8 for d in sd_c_s]
+                                    if sd_m_s:
+                                        sm_rates = [d['수주율'] for d in sd_m_s]
+                                        sm_발주 = [d['발주액']/1e8 for d in sd_m_s]
+                                        sm_수주 = [d['수주액']/1e8 for d in sd_m_s]
+                                        bar_c = [f'rgba({r},{g},{b},0.18)'] * len(sm_rates)
+                                        if bar_c: bar_c[-1] = f'rgba({r},{g},{b},0.35)'
+                                        fig_sc.add_trace(go.Bar(
+                                            x=s_labels, y=sm_rates, marker_color=bar_c,
+                                            text=[f"<b>{rv}%</b>" for rv in sm_rates],
+                                            textposition='inside', insidetextanchor='middle',
+                                            textfont=dict(size=10, color=s_color, family='Nunito Sans'),
+                                            customdata=list(zip(sm_발주, sm_수주)),
+                                            hovertemplate='<b>%{x} 월간</b><br>발주 %{customdata[0]:,.0f}억<br><b style="color:' + s_color + '">수주 %{customdata[1]:,.0f}억</b><extra></extra>',
+                                        ))
+                                    fig_sc.add_trace(go.Scatter(
+                                        x=s_labels, y=sc_rates, mode='lines+markers+text', fill='tozeroy',
+                                        line=dict(color=s_color, width=2, shape='spline'),
+                                        fillcolor=f'rgba({r},{g},{b},0.08)',
+                                        marker=dict(size=5, color=s_color),
+                                        text=[f"<b>{rv}%</b>" for rv in sc_rates],
+                                        textposition='top center',
+                                        textfont=dict(size=14, color='#364a63', family='Nunito Sans'),
+                                        customdata=list(zip(sc_수주, sc_발주)),
+                                        hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + s_color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
+                                        cliponaxis=False,
                                     ))
-                                fig_sc.add_trace(go.Scatter(
-                                    x=s_labels, y=sc_rates, mode='lines+markers+text', fill='tozeroy',
-                                    line=dict(color=s_color, width=2, shape='spline'),
-                                    fillcolor=f'rgba({r},{g},{b},0.08)',
-                                    marker=dict(size=5, color=s_color),
-                                    text=[f"<b>{rv}%</b>" for rv in sc_rates],
-                                    textposition='top center',
-                                    textfont=dict(size=14, color='#364a63', family='Nunito Sans'),
-                                    customdata=list(zip(sc_수주, sc_발주)),
-                                    hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + s_color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
-                                    cliponaxis=False,
-                                ))
-                                fig_sc.update_layout(
-                                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                    height=230, margin=dict(t=22, b=16, l=0, r=0),
-                                    yaxis=dict(visible=False, range=[0, 100]),
-                                    xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
-                                    showlegend=False, bargap=0.35,
-                                    hoverlabel=dict(bgcolor='#fff', font_size=14),
-                                )
-                                st.plotly_chart(fig_sc, use_container_width=True, config={'displayModeBar': False})
+                                    fig_sc.update_layout(
+                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                        height=230, margin=dict(t=22, b=16, l=0, r=0),
+                                        yaxis=dict(visible=False, range=[0, 100]),
+                                        xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
+                                        showlegend=False, bargap=0.35,
+                                        hoverlabel=dict(bgcolor='#fff', font_size=14),
+                                    )
+                                    st.plotly_chart(fig_sc, use_container_width=True, config={'displayModeBar': False})
 
 
         # ═══════════════════════════════════════
