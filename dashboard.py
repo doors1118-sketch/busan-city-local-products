@@ -3663,52 +3663,67 @@ elif page == "📈 종합분석":
                                 s_d_txt = ""
                                 s_d_color = COLORS['text_light']
 
-                            # 제목 + 누계 요약 (컴팩트)
+                            # 제목 + 누계 요약
                             st.markdown(f"""<div style="padding:0 0 2px;">
 <div style="display:flex; justify-content:space-between; align-items:center;">
 <span style="font-size:0.75rem; font-weight:700; color:{COLORS['text_dark']};">{sector} 수주율 변동</span>
 <span style="font-size:0.68rem; font-weight:700; color:{s_d_color};">{s_d_txt}</span>
 </div>
-<div style="display:flex; justify-content:space-between; align-items:baseline; padding:2px 0;">
-<div>
-<span style="font-size:0.95rem; font-weight:800; font-family:Nunito Sans; color:{COLORS['text_dark']};">{s_발주/1e8:,.0f}억</span>
-<span style="font-size:0.6rem; color:{COLORS['text_light']};">총계약</span>
-</div>
-<div>
-<span style="font-size:0.85rem; font-weight:700; font-family:Nunito Sans; color:{color};">{s_수주/1e8:,.0f}억</span>
-<span style="font-size:0.6rem; color:{COLORS['text_light']};">수주 ({s_rate}%)</span>
-</div>
+<div style="display:flex; justify-content:space-between; align-items:baseline; padding:1px 0;">
+<span style="font-size:0.95rem; font-weight:800; font-family:Nunito Sans; color:{color};">{s_rate}%</span>
+<span style="font-size:0.6rem; color:{COLORS['text_light']};">발주 {s_발주/1e8:,.0f}억 · 수주 {s_수주/1e8:,.0f}억</span>
 </div>
 </div>""", unsafe_allow_html=True)
 
-                            # 그룹형 바 차트 (총계약액 vs 지역수주액)
-                            if data_m:
+                            # 영역 차트(누계) + 바(월간) 동일 스타일
+                            if data_c:
                                 fig_s = go.Figure()
                                 r, g, b = int(color[1:3],16), int(color[3:5],16), int(color[5:7],16)
-                                m_총s = [d['발주액']/1e8 for d in data_m]
-                                m_지s = [d['수주액']/1e8 for d in data_m]
-                                m_rs = [d['수주율'] for d in data_m]
-                                # 총계약액 바 (연한색)
-                                fig_s.add_trace(go.Bar(
-                                    x=month_labels, y=m_총s, name='총계약액',
-                                    marker_color=f'rgba({r},{g},{b},0.3)',
-                                    customdata=list(zip(m_rs, m_지s)),
-                                    hovertemplate='%{x} 총계약액 %{y:,.0f}억<br>수주액 %{customdata[1]:,.0f}억<br><b>수주율 %{customdata[0]}%</b><extra></extra>',
-                                ))
-                                # 지역수주액 바 (진한색)
-                                fig_s.add_trace(go.Bar(
-                                    x=month_labels, y=m_지s, name='수주액',
-                                    marker_color=f'rgba({r},{g},{b},0.7)',
-                                    customdata=list(zip(m_rs, m_총s)),
-                                    hovertemplate='%{x} 수주액 %{y:,.0f}억<br>총계약액 %{customdata[1]:,.0f}억<br><b>수주율 %{customdata[0]}%</b><extra></extra>',
+                                c_rates = [d['수주율'] for d in data_c]
+                                c_수주s = [d['수주액']/1e8 for d in data_c]
+                                c_발주s = [d['발주액']/1e8 for d in data_c]
+
+                                # 월간 바 (뒤에 깔기)
+                                if data_m:
+                                    m_rates = [d['수주율'] for d in data_m]
+                                    m_발주s = [d['발주액']/1e8 for d in data_m]
+                                    m_수주s = [d['수주액']/1e8 for d in data_m]
+                                    bar_colors = [f'rgba({r},{g},{b},0.2)'] * len(m_rates)
+                                    if bar_colors:
+                                        bar_colors[-1] = f'rgba({r},{g},{b},0.4)'
+                                    fig_s.add_trace(go.Bar(
+                                        x=month_labels, y=m_rates,
+                                        marker_color=bar_colors,
+                                        text=[f"{rv}%" for rv in m_rates],
+                                        textposition='inside', insidetextanchor='middle',
+                                        textfont=dict(size=8, color=f'rgba(255,255,255,0.7)'),
+                                        customdata=list(zip(m_발주s, m_수주s)),
+                                        hovertemplate='<b>%{x} 월간</b><br>발주액 %{customdata[0]:,.0f}억<br><b style="color:' + color + '">수주액 %{customdata[1]:,.0f}억</b><extra></extra>',
+                                        name='월간',
+                                    ))
+
+                                # 누계 영역 차트 (위에 겹치기)
+                                fig_s.add_trace(go.Scatter(
+                                    x=month_labels, y=c_rates,
+                                    mode='lines+markers+text',
+                                    fill='tozeroy',
+                                    line=dict(color=color, width=2, shape='spline'),
+                                    fillcolor=f'rgba({r},{g},{b},0.08)',
+                                    marker=dict(size=5, color=color),
+                                    text=[f"{rv}%" for rv in c_rates],
+                                    textposition='top center',
+                                    textfont=dict(size=9, color=f'rgba({r},{g},{b},0.85)', family='Nunito Sans'),
+                                    customdata=list(zip(c_수주s, c_발주s)),
+                                    hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
+                                    cliponaxis=False,
                                 ))
                                 fig_s.update_layout(
                                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                                    height=90, margin=dict(t=2, b=18, l=0, r=0),
-                                    yaxis=dict(visible=False),
+                                    height=110, margin=dict(t=18, b=18, l=0, r=0),
+                                    yaxis=dict(visible=False, range=[0, 100]),
                                     xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
-                                    showlegend=False, bargap=0.2, barmode='group',
-                                    hoverlabel=dict(bgcolor='#fff', font_size=11),
+                                    showlegend=False, bargap=0.35,
+                                    hoverlabel=dict(bgcolor='#fff', font_size=10),
                                 )
                                 st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False})
 
