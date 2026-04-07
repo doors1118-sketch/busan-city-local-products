@@ -3526,6 +3526,7 @@ elif page == "📈 종합분석":
                         textposition='top center',
                         textfont=dict(size=9, color='rgba(255,255,255,0.7)'),
                         hovertemplate='%{x}: %{y}%<extra></extra>',
+                        cliponaxis=False,
                     ))
                     fig_hero.update_layout(
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
