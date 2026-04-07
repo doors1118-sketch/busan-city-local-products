@@ -173,7 +173,7 @@ def send_ncp_sms(message, config):
         req.add_header('x-ncp-iam-access-key', access_key)
         req.add_header('x-ncp-apigw-signature-v2', signature)
         
-        with urllib.request.urlopen(req, timeout=10) as res:
+        with urllib.request.urlopen(req, timeout=30) as res:
             result = json.loads(res.read().decode('utf-8'))
             status = result.get('statusCode', '')
             if status == '202':
