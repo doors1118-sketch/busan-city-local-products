@@ -3721,22 +3721,37 @@ elif page == "📈 종합분석":
             st.markdown('<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
             with st.container(border=True):
                 st.markdown(f'''<div style="padding:4px 0 6px;">
-<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">🔍 누계 변동 원인 분석</div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">전월 대비 누계 수주율 변동 시 주요 영향 계약 TOP 5</div>
+<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">🔍 월별 변동 원인</div>
+<div style="font-size:0.68rem; color:{COLORS['text_light']};">해당 월에 누계 수주율이 변동한 주요 원인 계약 TOP 5</div>
 </div>''', unsafe_allow_html=True)
 
+                # "01→02" → "2월", "02→03" → "3월" 매핑
                 period_keys = list(변동분석.keys())
-                if period_keys:
-                    selected_period = st.selectbox('기간 선택', period_keys, key='변동기간')
-                    info = 변동분석.get(selected_period, {})
+                month_options = []
+                month_key_map = {}
+                for pk in period_keys:
+                    target_month = pk.split('→')[1]  # "02"
+                    label = f"{int(target_month)}월"
+                    month_options.append(label)
+                    month_key_map[label] = pk
+
+                if month_options:
+                    st.markdown(f'<div style="font-size:0.72rem; color:{COLORS["text_light"]}; padding:2px 0;">📅 월 선택</div>', unsafe_allow_html=True)
+                    selected_month = st.selectbox('월 선택', month_options, key='변동월', label_visibility='collapsed')
+                    sel_key = month_key_map.get(selected_month, '')
+                    info = 변동분석.get(sel_key, {})
                     방향 = info.get('방향', '')
                     변동val = info.get('변동', 0)
+                    prev_rate = info.get('이전율', 0)
+                    cur_rate = info.get('현재율', 0)
                     arrow = '🔴 ▼' if 변동val < 0 else '🟢 ▲' if 변동val > 0 else '⚪'
+                    bg = '#ffe0e0' if 변동val < 0 else '#e0ffe0' if 변동val > 0 else '#f0f0f0'
+                    fg = '#c00' if 변동val < 0 else '#080' if 변동val > 0 else '#888'
 
-                    st.markdown(f'''<div style="display:flex; gap:24px; align-items:center; padding:8px 0;">
-<div style="font-size:0.85rem; color:{COLORS['text_dark']};">{info.get('이전율',0)}% → {info.get('현재율',0)}%</div>
-<div style="font-size:1.1rem; font-weight:800;">{arrow} {변동val:+.1f}%p</div>
-<div style="font-size:0.75rem; padding:3px 10px; border-radius:20px; background:{'#ffe0e0' if 변동val<0 else '#e0ffe0' if 변동val>0 else '#f0f0f0'}; color:{'#c00' if 변동val<0 else '#080' if 변동val>0 else '#888'};">{방향}</div>
+                    st.markdown(f'''<div style="display:flex; gap:20px; align-items:center; padding:10px 0 6px;">
+<div style="font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']};">{selected_month} 누계: {prev_rate}% → {cur_rate}%</div>
+<div style="font-size:1.05rem; font-weight:800;">{arrow} {변동val:+.1f}%p</div>
+<div style="font-size:0.72rem; padding:3px 10px; border-radius:20px; background:{bg}; color:{fg};">{방향}</div>
 </div>''', unsafe_allow_html=True)
 
                     contracts = info.get('주요계약', [])
@@ -3761,6 +3776,8 @@ elif page == "📈 종합분석":
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>''', unsafe_allow_html=True)
+                    else:
+                        st.caption('해당 월에 주요 변동 계약이 없습니다.')
 
         # ═══════════════════════════════════════
         # 개별 기관 검색
