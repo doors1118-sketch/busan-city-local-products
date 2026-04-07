@@ -3552,70 +3552,38 @@ elif page == "📈 종합분석":
                         month_key_map[lbl] = pk
 
                     if month_options:
-                        col_v1, col_v2 = st.columns(2)
-                        with col_v1:
+                        sel_m = st.selectbox('🔍 월별 변동 원인', ['선택하세요'] + month_options, key='변동월hero')
+                        if sel_m != '선택하세요':
+                            sel_key = month_key_map.get(sel_m, '')
+                            vinfo = 변동분석.get(sel_key, {})
+                            v_val = vinfo.get('변동', 0)
+                            v_arrow = '↑' if v_val >= 0 else '↓'
+                            v_color = '#1ee0ac' if v_val >= 0 else '#e85347'
                             with st.container(border=True):
-                                sel_m = st.selectbox('🔍 월별 변동 원인', month_options, key='변동월hero')
-                                sel_key = month_key_map.get(sel_m, '')
-                                vinfo = 변동분석.get(sel_key, {})
-                                v_val = vinfo.get('변동', 0)
-                                v_arrow = '↑' if v_val >= 0 else '↓'
-                                v_color = '#1ee0ac' if v_val >= 0 else '#e85347'
-                                st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
-<div style="font-size:0.82rem; font-weight:700; color:{COLORS['text_dark']};">{sel_m} 누계 변동</div>
-<div style="font-size:0.82rem; font-weight:700; color:{v_color};">{v_arrow} {abs(v_val):.1f}%p</div>
+                                st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0;">
+<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">{sel_m} 누계 변동</div>
+<div style="font-size:0.85rem; font-weight:700; color:{v_color};">{v_arrow} {abs(v_val):.1f}%p</div>
 </div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">{vinfo.get('이전율',0)}% → {vinfo.get('현재율',0)}%</div>''', unsafe_allow_html=True)
+<div style="font-size:0.7rem; color:{COLORS['text_light']};">{vinfo.get('이전율',0)}% → {vinfo.get('현재율',0)}%  ·  {vinfo.get('방향','')}</div>''', unsafe_allow_html=True)
                                 contracts = vinfo.get('주요계약', [])
                                 if contracts:
                                     header = '유출액' if v_val < 0 else '수주액'
                                     rows_html = ''
-                                    for ci, c in enumerate(contracts[:3]):
+                                    for ci, c in enumerate(contracts[:5]):
                                         amt_val = c.get('유출액', c.get('수주액', 0))
-                                        rows_html += f'<tr><td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
-                                        rows_html += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
-                                        rows_html += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:20]}</td>'
-                                        rows_html += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{amt_val/1e8:,.1f}억</td></tr>'
-                                    st.markdown(f'''<table style="width:100%; border-collapse:collapse; margin-top:4px;">
-<thead><tr><th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">순</th>
-<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">분야</th>
-<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
-<th style="padding:3px 4px; font-size:0.62rem; text-align:right; color:{COLORS['text_light']};">{header}</th>
+                                        rows_html += f'<tr><td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
+                                        rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
+                                        rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("기관","")}</td>'
+                                        rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:25]}</td>'
+                                        rows_html += f'<td style="padding:3px 6px; font-size:0.7rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{amt_val/1e8:,.1f}억</td></tr>'
+                                    st.markdown(f'''<table style="width:100%; border-collapse:collapse; margin-top:6px;">
+<thead><tr>
+<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">순</th>
+<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">분야</th>
+<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">기관</th>
+<th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
+<th style="padding:4px 6px; font-size:0.65rem; text-align:right; color:{COLORS['text_light']};">{header}</th>
 </tr></thead><tbody>{rows_html}</tbody></table>''', unsafe_allow_html=True)
-
-                        with col_v2:
-                            # 다음 월 or 전체 요약
-                            if len(month_options) >= 2:
-                                sel_idx = month_options.index(sel_m) if sel_m in month_options else 0
-                                next_idx = (sel_idx + 1) % len(month_options)
-                                next_m = month_options[next_idx]
-                                nk = month_key_map.get(next_m, '')
-                                ninfo = 변동분석.get(nk, {})
-                                n_val = ninfo.get('변동', 0)
-                                n_arrow = '↑' if n_val >= 0 else '↓'
-                                n_color = '#1ee0ac' if n_val >= 0 else '#e85347'
-                                with st.container(border=True):
-                                    st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
-<div style="font-size:0.82rem; font-weight:700; color:{COLORS['text_dark']};">{next_m} 누계 변동</div>
-<div style="font-size:0.82rem; font-weight:700; color:{n_color};">{n_arrow} {abs(n_val):.1f}%p</div>
-</div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">{ninfo.get('이전율',0)}% → {ninfo.get('현재율',0)}%</div>''', unsafe_allow_html=True)
-                                    ncontracts = ninfo.get('주요계약', [])
-                                    if ncontracts:
-                                        nheader = '유출액' if n_val < 0 else '수주액'
-                                        nrows = ''
-                                        for ci, c in enumerate(ncontracts[:3]):
-                                            amt_val = c.get('유출액', c.get('수주액', 0))
-                                            nrows += f'<tr><td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
-                                            nrows += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
-                                            nrows += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:20]}</td>'
-                                            nrows += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{amt_val/1e8:,.1f}억</td></tr>'
-                                        st.markdown(f'''<table style="width:100%; border-collapse:collapse; margin-top:4px;">
-<thead><tr><th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">순</th>
-<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">분야</th>
-<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
-<th style="padding:3px 4px; font-size:0.62rem; text-align:right; color:{COLORS['text_light']};">{nheader}</th>
-</tr></thead><tbody>{nrows}</tbody></table>''', unsafe_allow_html=True)
 
             # ── 우측: 분야별 2×2 ──
             with col_side:
