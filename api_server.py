@@ -202,8 +202,54 @@ def search_agency_shop(q: str = Query(..., min_length=1, description="검색할 
         "검색결과": results
     }
 
+# ── 월별 추이 ──
+MONTHLY_CACHE_FILE = 'monthly_cache.json'
+
+def load_monthly_cache():
+    try:
+        with open(MONTHLY_CACHE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[ERROR] 월별 캐시 로드 실패: {e}")
+        return {"error": f"월별 캐시 파일 로드 실패: {str(e)}"}
+
+@app.get("/api/monthly-trend", tags=["종합분석"])
+def get_monthly_trend():
+    """월별 누계/단월 수주율 추이 (전체, 그룹별, 분야별) + 변동 원인"""
+    mc = load_monthly_cache()
+    return {
+        "generated_at": mc.get("generated_at"),
+        "year": mc.get("year"),
+        "months": mc.get("months", []),
+        "누계_그룹": mc.get("누계_그룹", {}),
+        "누계_분야": mc.get("누계_분야", {}),
+        "월간_그룹": mc.get("월간_그룹", {}),
+        "월간_분야": mc.get("월간_분야", {}),
+        "변동분석": mc.get("변동분석", {}),
+    }
+
+@app.get("/api/monthly-trend/agency", tags=["종합분석"])
+def get_monthly_trend_agency(q: str = Query(..., min_length=1, description="검색할 기관명")):
+    """특정 기관의 월별 누계/단월 수주율 추이"""
+    mc = load_monthly_cache()
+    기관별 = mc.get("기관별", {})
+    
+    results = {}
+    q_clean = q.strip()
+    for unit, details in 기관별.items():
+        if q_clean in unit:
+            results[unit] = details
+            
+    return {
+        "generated_at": mc.get("generated_at"),
+        "months": mc.get("months", []),
+        "검색어": q_clean,
+        "검색결과": results
+    }
+
 if __name__ == '__main__':
     import uvicorn
     print("[API] 부산 조달 모니터링 API 서버 시작")
     print("   http://localhost:8000/docs")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
