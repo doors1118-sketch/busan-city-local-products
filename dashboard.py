@@ -3529,7 +3529,7 @@ elif page == "📈 종합분석":
                     ))
                     fig_hero.update_layout(
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
-                        height=150, margin=dict(t=25, b=25, l=45, r=40),
+                        height=150, margin=dict(t=25, b=25, l=45, r=60),
                         yaxis=dict(gridcolor='rgba(255,255,255,0.08)', range=[0, 100],
                                    tickfont=dict(size=9, color='rgba(255,255,255,0.35)')),
                         xaxis=dict(tickfont=dict(size=9, color='rgba(255,255,255,0.45)'),
