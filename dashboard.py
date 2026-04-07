@@ -3635,6 +3635,7 @@ elif page == "📈 종합분석":
                                     list_html += f'<div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid {COLORS["card_border"]};">'
                                     list_html += f'<span style="font-size:0.65rem; font-weight:700; color:#fff; background:{bc}; padding:2px 6px; border-radius:3px; white-space:nowrap;">{sec_name}</span>'
                                     list_html += f'<span style="font-size:0.72rem; color:{COLORS["text_dark"]}; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{ct.get("계약명","")}</span>'
+                                    list_html += f'<span style="font-size:0.65rem; color:{COLORS["text_light"]}; white-space:nowrap;">{ct.get("기관","")}</span>'
                                     list_html += f'<span style="font-size:0.72rem; font-weight:700; color:{amt_color}; font-family:Nunito Sans; white-space:nowrap;">{av/1e8:,.1f}억</span>'
                                     list_html += '</div>'
                             if list_html:
