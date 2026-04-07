@@ -3853,7 +3853,8 @@ elif page == "📈 종합분석":
                         st.plotly_chart(fig_hx, use_container_width=True, config={'displayModeBar': False})
 
                 # 월간 변동요인 분석 + 종합분석 다운로드
-                    변동분석_sub = trend_data.get('변동분석', {})
+                    소그룹_변동분석_all = trend_data.get('소그룹_변동분석', {})
+                    변동분석_sub = 소그룹_변동분석_all.get(h_key, trend_data.get('변동분석', {}))
                     dl_col1, dl_col2 = st.columns([1, 1])
                     with dl_col1:
                         st.markdown(f'<div style="font-size:0.78rem; font-weight:600; color:{COLORS["text_dark"]}; padding:2px 0;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)

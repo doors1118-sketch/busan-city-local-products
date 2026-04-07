@@ -254,6 +254,7 @@ def get_monthly_trend():
         "누계_소그룹분야": 누계_소그룹분야,
         "월간_소그룹분야": mc.get("월간_소그룹분야", {}),
         "소그룹_분야변동": mc.get("소그룹_분야변동", {}),
+        "소그룹_변동분석": mc.get("소그룹_변동분석", {}),
     }
 
 @app.get("/api/monthly-trend/agency", tags=["종합분석"])

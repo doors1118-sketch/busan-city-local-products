@@ -436,7 +436,41 @@ def build_monthly():
             prev_t, prev_l = cur_t, cur_l
     output['분야변동'] = 분야변동
 
-    # 5-3. 소그룹별 분야변동 (4개 그룹 각각의 분야별 변동 + 계약 목록)
+    # 5-3. 소그룹별 전체 변동분석 (수주율 변동 + 주요 계약)
+    소그룹_변동분석 = {}
+    for sg_name in ['부산광역시및산하기관', '정부및국가공공기관', '자치구군', '출자출연기관']:
+        sg_분석 = {}
+        prev_t, prev_l = 0, 0
+        for i, m in enumerate(all_months):
+            d = 월별_소그룹[sg_name].get(m, {'total': 0, 'local': 0})
+            cur_t = prev_t + d['total']
+            cur_l = prev_l + d['local']
+            if i > 0:
+                prev_rate = pct(prev_t, prev_l)
+                cur_rate = pct(cur_t, cur_l)
+                delta = round(cur_rate - prev_rate, 1)
+                key = f"{all_months[i-1]}→{m}"
+                # 해당 그룹의 계약만 필터
+                sg_cts = [(s, u, a, l, a-l, n) for s, mo, cd, u, lrg, a, l, n in records
+                          if mo == m and get_sub_group(cd) == sg_name]
+                if delta < 0:
+                    top = sorted(sg_cts, key=lambda x: x[4], reverse=True)[:5]
+                    items = [{'분야': c[0], '기관': c[1], '계약명': c[5],
+                              '발주액': round(c[2]), '유출액': round(c[4])} for c in top]
+                else:
+                    top = sorted(sg_cts, key=lambda x: x[3], reverse=True)[:5]
+                    items = [{'분야': c[0], '기관': c[1], '계약명': c[5],
+                              '발주액': round(c[2]), '수주액': round(c[3])} for c in top]
+                sg_분석[key] = {
+                    '이전율': prev_rate, '현재율': cur_rate, '변동': delta,
+                    '방향': '감소' if delta < 0 else '증가' if delta > 0 else '유지',
+                    '주요계약': items,
+                }
+            prev_t, prev_l = cur_t, cur_l
+        소그룹_변동분석[sg_name] = sg_분석
+    output['소그룹_변동분석'] = 소그룹_변동분석
+
+    # 5-4. 소그룹별 분야변동 (4개 그룹 각각의 분야별 변동 + 계약 목록)
     소그룹_분야변동 = {}
     for sg_name in ['부산광역시및산하기관', '정부및국가공공기관', '자치구군', '출자출연기관']:
         소그룹_분야변동[sg_name] = {}
