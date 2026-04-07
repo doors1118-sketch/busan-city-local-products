@@ -3078,6 +3078,30 @@ elif page == "🏢 지역업체 정보":
                 DB_MFG = os.path.join(os.path.dirname(__file__), "busan_companies_master.db")
                 conn_mfg = sqlite3.connect(DB_MFG)
 
+                # 전체 제조업체 다운로드
+                all_mfg = pd.read_sql("""
+                    SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
+                           c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
+                           c.opbizDt, c.rgstDt,
+                           GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                    FROM company_master c
+                    LEFT JOIN company_industry i ON c.bizno = i.bizno
+                    WHERE c.mnfctDivNm = '제조'
+                    GROUP BY c.bizno ORDER BY c.corpNm
+                """, conn_mfg)
+                dl_all = all_mfg[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
+                dl_all.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
+                buf_all = io.BytesIO()
+                with pd.ExcelWriter(buf_all, engine='openpyxl') as writer:
+                    dl_all.to_excel(writer, index=False, sheet_name='제조업체전체')
+                st.download_button(
+                    label=f"📥 제조업체 전체 다운로드 ({len(all_mfg):,}건, Excel)",
+                    data=buf_all.getvalue(),
+                    file_name="부산_제조업체_전체.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_mfg_all"
+                )
+
                 # ── 탭1: 대표품명 선택 ──
                 with mfg_tab1:
                     # 대표품명 목록 (2개 이상 업체)
