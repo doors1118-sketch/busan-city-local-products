@@ -3496,14 +3496,13 @@ elif page == "📈 종합분석":
                     _d_color = "rgba(255,255,255,0.5)"
 
                 st.markdown(f"""<div style="background:linear-gradient(135deg,#232e7a 0%,#3b4ab8 100%); border-radius:8px; padding:20px 24px;">
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-<span style="font-size:0.88rem; font-weight:700; color:rgba(255,255,255,0.85);">부산시 전체 수주율 월간 변동</span>
-<span style="font-size:0.72rem; color:rgba(255,255,255,0.5);">{year}년 월말 누계</span>
-</div>
-<div style="display:flex; justify-content:space-between; align-items:flex-end;">
+<div style="font-size:0.88rem; font-weight:700; color:rgba(255,255,255,0.85); margin-bottom:12px;">부산시 전체 수주율 월간 변동</div>
+<div style="font-size:0.72rem; color:rgba(255,255,255,0.5);">현재 지역업체 수주율</div>
+<div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:2px;">
 <div>
-<div style="font-size:2.2rem; font-weight:800; color:#fff; font-family:Nunito Sans; letter-spacing:-0.02em;">{latest_rate}%</div>
-<div style="font-size:0.7rem; color:rgba(255,255,255,0.45); margin-top:4px;">발주 {latest_발주/1e8:,.0f}억 · 수주 {latest_수주/1e8:,.0f}억</div>
+<div style="font-size:2.4rem; font-weight:800; color:#fff; font-family:Nunito Sans; letter-spacing:-0.02em;">{latest_rate}%</div>
+<div style="font-size:0.72rem; color:rgba(255,255,255,0.5); margin-top:6px;">발주액 <span style="color:rgba(255,255,255,0.8); font-weight:700;">{latest_발주/1e8:,.0f}억</span></div>
+<div style="font-size:0.72rem; color:rgba(255,255,255,0.5);">지역업체 수주액 <span style="color:#1ee0ac; font-weight:700;">{latest_수주/1e8:,.0f}억</span></div>
 </div>
 <div style="text-align:right;">
 <span style="font-size:0.85rem; font-weight:700; color:{_d_color};">{_d_label}</span><br>
@@ -3530,7 +3529,7 @@ elif page == "📈 종합분석":
                     ))
                     fig_hero.update_layout(
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
-                        height=150, margin=dict(t=25, b=25, l=35, r=10),
+                        height=150, margin=dict(t=25, b=25, l=45, r=40),
                         yaxis=dict(gridcolor='rgba(255,255,255,0.08)', range=[0, 100],
                                    tickfont=dict(size=9, color='rgba(255,255,255,0.35)')),
                         xaxis=dict(tickfont=dict(size=9, color='rgba(255,255,255,0.45)'),
@@ -3559,12 +3558,31 @@ elif page == "📈 종합분석":
                             v_val = vinfo.get('변동', 0)
                             v_arrow = '↑' if v_val >= 0 else '↓'
                             v_color = '#1ee0ac' if v_val >= 0 else '#e85347'
+                            # 해당 월의 누계 수주액/수주율
+                            sel_month_idx = int(sel_key.split('→')[1]) - 1  # 0-indexed
+                            if sel_month_idx < len(전체d):
+                                m_info = 전체d[sel_month_idx]
+                                m_수주 = m_info.get('수주액', 0)
+                                m_발주 = m_info.get('발주액', 0)
+                                m_rate = m_info.get('수주율', 0)
+                            else:
+                                m_수주 = 0; m_발주 = 0; m_rate = 0
                             with st.container(border=True):
                                 st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0;">
 <div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">{sel_m} 누계 변동</div>
-<div style="font-size:0.85rem; font-weight:700; color:{v_color};">{v_arrow} {abs(v_val):.1f}%p</div>
+<div style="font-size:0.85rem; font-weight:700; color:{v_color};">{v_arrow} {abs(v_val):.1f}%p  ·  {vinfo.get('방향','')}</div>
 </div>
-<div style="font-size:0.7rem; color:{COLORS['text_light']};">{vinfo.get('이전율',0)}% → {vinfo.get('현재율',0)}%  ·  {vinfo.get('방향','')}</div>''', unsafe_allow_html=True)
+<div style="font-size:0.7rem; color:{COLORS['text_light']}; margin-bottom:6px;">{vinfo.get('이전율',0)}% → {vinfo.get('현재율',0)}%</div>
+<div style="display:flex; gap:20px; align-items:baseline; padding:4px 0 6px; border-top:1px solid {COLORS['card_border']};">
+<div>
+<div style="font-size:0.68rem; color:{COLORS['text_light']};">{sel_m} 지역업체 수주액 (수주율)</div>
+<div style="font-size:1.3rem; font-weight:800; color:{COLORS['text_dark']}; font-family:Nunito Sans;">{m_수주/1e8:,.0f}억 <span style="color:{v_color};">({m_rate}%)</span></div>
+</div>
+<div>
+<div style="font-size:0.68rem; color:{COLORS['text_light']};">발주액</div>
+<div style="font-size:1rem; font-weight:700; color:{COLORS['text_dark']}; font-family:Nunito Sans;">{m_발주/1e8:,.0f}억</div>
+</div>
+</div>''', unsafe_allow_html=True)
                                 contracts = vinfo.get('주요계약', [])
                                 if contracts:
                                     header = '유출액' if v_val < 0 else '수주액'
@@ -3584,6 +3602,7 @@ elif page == "📈 종합분석":
 <th style="padding:4px 6px; font-size:0.65rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
 <th style="padding:4px 6px; font-size:0.65rem; text-align:right; color:{COLORS['text_light']};">{header}</th>
 </tr></thead><tbody>{rows_html}</tbody></table>''', unsafe_allow_html=True)
+
 
             # ── 우측: 분야별 2×2 ──
             with col_side:
