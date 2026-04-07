@@ -3556,7 +3556,8 @@ elif page == "📈 종합분석":
                         mo_list.append(ml)
                         mk_map[ml] = pk
                     if mo_list:
-                        sel_m = st.selectbox('🔍 월별 변동 원인', ['선택'] + mo_list, key='변동월h2', label_visibility='collapsed')
+                        st.markdown(f'<div style="font-size:0.78rem; font-weight:700; color:{COLORS["text_dark"]}; padding:4px 0 2px;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                        sel_m = st.selectbox('월별 변동 원인', ['선택'] + mo_list, key='변동월h2', label_visibility='collapsed')
                         if sel_m != '선택':
                             sk = mk_map.get(sel_m, '')
                             vi = 변동분석_h.get(sk, {})
