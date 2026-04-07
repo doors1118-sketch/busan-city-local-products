@@ -236,6 +236,8 @@ def build_monthly():
     월별_기관_분야 = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {'total': 0, 'local': 0})))
     # 소그룹별 (4그룹)
     월별_소그룹 = defaultdict(lambda: defaultdict(lambda: {'total': 0, 'local': 0}))
+    # 소그룹×분야
+    월별_소그룹_분야 = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {'total': 0, 'local': 0})))
     # 변동 원인용: 기관별 개별 계약
     월별_계약 = defaultdict(list)  # month → [(sector, unit, amt, loc, leakage, nm), ...]
 
@@ -263,6 +265,8 @@ def build_monthly():
         if sub_g:
             월별_소그룹[sub_g][month]['total'] += amt
             월별_소그룹[sub_g][month]['local'] += loc
+            월별_소그룹_분야[sub_g][sector][month]['total'] += amt
+            월별_소그룹_분야[sub_g][sector][month]['local'] += loc
         # 유출 계약 기록
         if leakage > 0:
             월별_계약[month].append((sector, unit, amt, loc, leakage, nm))
@@ -332,6 +336,18 @@ def build_monthly():
         소그룹_월간[label] = calc_monthly(월별_소그룹[label], all_months)
     output['누계_소그룹'] = 소그룹_누계
     output['월간_소그룹'] = 소그룹_월간
+
+    # 소그룹×분야 누계/월간
+    소그룹_분야_누계 = {}
+    소그룹_분야_월간 = {}
+    for label in 소그룹_labels:
+        소그룹_분야_누계[label] = {}
+        소그룹_분야_월간[label] = {}
+        for sector in ['공사', '용역', '물품', '쇼핑몰']:
+            소그룹_분야_누계[label][sector] = calc_cumulative(월별_소그룹_분야[label][sector], all_months)
+            소그룹_분야_월간[label][sector] = calc_monthly(월별_소그룹_분야[label][sector], all_months)
+    output['누계_소그룹분야'] = 소그룹_분야_누계
+    output['월간_소그룹분야'] = 소그룹_분야_월간
 
     # 4. 분야별 월간 평균
     월간_분야 = {}
