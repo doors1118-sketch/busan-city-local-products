@@ -1091,11 +1091,18 @@ def build_cache():
             ], key=lambda x: x['수주율'], reverse=True)
             total_amt = sum(d['total'] for d in agg.values())
             total_loc = sum(d['local'] for d in agg.values())
+            # 분야별 합계
+            sec_totals = {}
+            for s in sectors:
+                s_t = sum(agg_sec[u][s]['total'] for u in agg)
+                s_l = sum(agg_sec[u][s]['local'] for u in agg)
+                sec_totals[s] = {"발주액": round(s_t), "수주액": round(s_l), "수주율": pct(s_t, s_l)}
             result[sg_name] = {
                 "기관수": len(scored),
                 "발주액": round(total_amt),
                 "수주액": round(total_loc),
                 "수주율": pct(total_amt, total_loc),
+                "분야별": sec_totals,
                 "순위": scored,
             }
         return result

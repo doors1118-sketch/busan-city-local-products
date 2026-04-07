@@ -220,13 +220,25 @@ def get_monthly_trend():
     ac = load_cache()
     # 소그룹 누계의 최종 값을 API 캐시 기준으로 보정 (데이터 정합성)
     누계_소그룹 = mc.get("누계_소그룹", {})
+    누계_소그룹분야 = mc.get("누계_소그룹분야", {})
     sg_ranking = ac.get("5_기관랭킹_소그룹", {})
     for sg_key, sg_data in sg_ranking.items():
+        # 합계 보정
         if sg_key in 누계_소그룹 and 누계_소그룹[sg_key]:
             last = 누계_소그룹[sg_key][-1]
             last['발주액'] = sg_data.get('발주액', last['발주액'])
             last['수주액'] = sg_data.get('수주액', last['수주액'])
             last['수주율'] = sg_data.get('수주율', last['수주율'])
+        # 분야별 보정
+        api_sec = sg_data.get('분야별', {})
+        if sg_key in 누계_소그룹분야 and api_sec:
+            for sec_name, sec_vals in api_sec.items():
+                sec_list = 누계_소그룹분야[sg_key].get(sec_name, [])
+                if sec_list:
+                    sec_last = sec_list[-1]
+                    sec_last['발주액'] = sec_vals.get('발주액', sec_last['발주액'])
+                    sec_last['수주액'] = sec_vals.get('수주액', sec_last['수주액'])
+                    sec_last['수주율'] = sec_vals.get('수주율', sec_last['수주율'])
     return {
         "generated_at": mc.get("generated_at"),
         "year": mc.get("year"),
@@ -239,7 +251,7 @@ def get_monthly_trend():
         "분야변동": mc.get("분야변동", {}),
         "누계_소그룹": 누계_소그룹,
         "월간_소그룹": mc.get("월간_소그룹", {}),
-        "누계_소그룹분야": mc.get("누계_소그룹분야", {}),
+        "누계_소그룹분야": 누계_소그룹분야,
         "월간_소그룹분야": mc.get("월간_소그룹분야", {}),
     }
 
