@@ -3539,6 +3539,84 @@ elif page == "📈 종합분석":
                     )
                     st.plotly_chart(fig_hero, use_container_width=True, config={'displayModeBar': False})
 
+                # 월별 변동 원인 (차트 아래, 히어로 카드 내부)
+                변동분석 = trend_data.get('변동분석', {})
+                if 변동분석:
+                    period_keys = list(변동분석.keys())
+                    month_options = []
+                    month_key_map = {}
+                    for pk in period_keys:
+                        target_month = pk.split('→')[1]
+                        lbl = f"{int(target_month)}월"
+                        month_options.append(lbl)
+                        month_key_map[lbl] = pk
+
+                    if month_options:
+                        col_v1, col_v2 = st.columns(2)
+                        with col_v1:
+                            with st.container(border=True):
+                                sel_m = st.selectbox('🔍 월별 변동 원인', month_options, key='변동월hero')
+                                sel_key = month_key_map.get(sel_m, '')
+                                vinfo = 변동분석.get(sel_key, {})
+                                v_val = vinfo.get('변동', 0)
+                                v_arrow = '↑' if v_val >= 0 else '↓'
+                                v_color = '#1ee0ac' if v_val >= 0 else '#e85347'
+                                st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+<div style="font-size:0.82rem; font-weight:700; color:{COLORS['text_dark']};">{sel_m} 누계 변동</div>
+<div style="font-size:0.82rem; font-weight:700; color:{v_color};">{v_arrow} {abs(v_val):.1f}%p</div>
+</div>
+<div style="font-size:0.68rem; color:{COLORS['text_light']};">{vinfo.get('이전율',0)}% → {vinfo.get('현재율',0)}%</div>''', unsafe_allow_html=True)
+                                contracts = vinfo.get('주요계약', [])
+                                if contracts:
+                                    header = '유출액' if v_val < 0 else '수주액'
+                                    rows_html = ''
+                                    for ci, c in enumerate(contracts[:3]):
+                                        amt_val = c.get('유출액', c.get('수주액', 0))
+                                        rows_html += f'<tr><td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
+                                        rows_html += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
+                                        rows_html += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:20]}</td>'
+                                        rows_html += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{amt_val/1e8:,.1f}억</td></tr>'
+                                    st.markdown(f'''<table style="width:100%; border-collapse:collapse; margin-top:4px;">
+<thead><tr><th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">순</th>
+<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">분야</th>
+<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
+<th style="padding:3px 4px; font-size:0.62rem; text-align:right; color:{COLORS['text_light']};">{header}</th>
+</tr></thead><tbody>{rows_html}</tbody></table>''', unsafe_allow_html=True)
+
+                        with col_v2:
+                            # 다음 월 or 전체 요약
+                            if len(month_options) >= 2:
+                                sel_idx = month_options.index(sel_m) if sel_m in month_options else 0
+                                next_idx = (sel_idx + 1) % len(month_options)
+                                next_m = month_options[next_idx]
+                                nk = month_key_map.get(next_m, '')
+                                ninfo = 변동분석.get(nk, {})
+                                n_val = ninfo.get('변동', 0)
+                                n_arrow = '↑' if n_val >= 0 else '↓'
+                                n_color = '#1ee0ac' if n_val >= 0 else '#e85347'
+                                with st.container(border=True):
+                                    st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+<div style="font-size:0.82rem; font-weight:700; color:{COLORS['text_dark']};">{next_m} 누계 변동</div>
+<div style="font-size:0.82rem; font-weight:700; color:{n_color};">{n_arrow} {abs(n_val):.1f}%p</div>
+</div>
+<div style="font-size:0.68rem; color:{COLORS['text_light']};">{ninfo.get('이전율',0)}% → {ninfo.get('현재율',0)}%</div>''', unsafe_allow_html=True)
+                                    ncontracts = ninfo.get('주요계약', [])
+                                    if ncontracts:
+                                        nheader = '유출액' if n_val < 0 else '수주액'
+                                        nrows = ''
+                                        for ci, c in enumerate(ncontracts[:3]):
+                                            amt_val = c.get('유출액', c.get('수주액', 0))
+                                            nrows += f'<tr><td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
+                                            nrows += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
+                                            nrows += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:20]}</td>'
+                                            nrows += f'<td style="padding:3px 4px; font-size:0.68rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{amt_val/1e8:,.1f}억</td></tr>'
+                                        st.markdown(f'''<table style="width:100%; border-collapse:collapse; margin-top:4px;">
+<thead><tr><th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">순</th>
+<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">분야</th>
+<th style="padding:3px 4px; font-size:0.62rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
+<th style="padding:3px 4px; font-size:0.62rem; text-align:right; color:{COLORS['text_light']};">{nheader}</th>
+</tr></thead><tbody>{nrows}</tbody></table>''', unsafe_allow_html=True)
+
             # ── 우측: 분야별 2×2 ──
             with col_side:
                 for row_sectors in [['공사', '용역'], ['물품', '쇼핑몰']]:
@@ -3713,71 +3791,6 @@ elif page == "📈 종합분석":
                 )
                 st.plotly_chart(fig4, use_container_width=True, config={'displayModeBar': False})
 
-        # ═══════════════════════════════════════
-        # 변동 원인 분석
-        # ═══════════════════════════════════════
-        변동분석 = trend_data.get('변동분석', {})
-        if 변동분석:
-            st.markdown('<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown(f'''<div style="padding:4px 0 6px;">
-<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">🔍 월별 변동 원인</div>
-<div style="font-size:0.68rem; color:{COLORS['text_light']};">해당 월에 누계 수주율이 변동한 주요 원인 계약 TOP 5</div>
-</div>''', unsafe_allow_html=True)
-
-                # "01→02" → "2월", "02→03" → "3월" 매핑
-                period_keys = list(변동분석.keys())
-                month_options = []
-                month_key_map = {}
-                for pk in period_keys:
-                    target_month = pk.split('→')[1]  # "02"
-                    label = f"{int(target_month)}월"
-                    month_options.append(label)
-                    month_key_map[label] = pk
-
-                if month_options:
-                    st.markdown(f'<div style="font-size:0.72rem; color:{COLORS["text_light"]}; padding:2px 0;">📅 월 선택</div>', unsafe_allow_html=True)
-                    selected_month = st.selectbox('월 선택', month_options, key='변동월', label_visibility='collapsed')
-                    sel_key = month_key_map.get(selected_month, '')
-                    info = 변동분석.get(sel_key, {})
-                    방향 = info.get('방향', '')
-                    변동val = info.get('변동', 0)
-                    prev_rate = info.get('이전율', 0)
-                    cur_rate = info.get('현재율', 0)
-                    arrow = '🔴 ▼' if 변동val < 0 else '🟢 ▲' if 변동val > 0 else '⚪'
-                    bg = '#ffe0e0' if 변동val < 0 else '#e0ffe0' if 변동val > 0 else '#f0f0f0'
-                    fg = '#c00' if 변동val < 0 else '#080' if 변동val > 0 else '#888'
-
-                    st.markdown(f'''<div style="display:flex; gap:20px; align-items:center; padding:10px 0 6px;">
-<div style="font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']};">{selected_month} 누계: {prev_rate}% → {cur_rate}%</div>
-<div style="font-size:1.05rem; font-weight:800;">{arrow} {변동val:+.1f}%p</div>
-<div style="font-size:0.72rem; padding:3px 10px; border-radius:20px; background:{bg}; color:{fg};">{방향}</div>
-</div>''', unsafe_allow_html=True)
-
-                    contracts = info.get('주요계약', [])
-                    if contracts:
-                        header = '유출액' if 변동val < 0 else '수주액'
-                        rows_html = ''
-                        for ci, c in enumerate(contracts):
-                            amt_val = c.get('유출액', c.get('수주액', 0))
-                            rows_html += f'<tr><td style="padding:5px 8px; font-size:0.75rem; border-bottom:1px solid {COLORS["card_border"]};">{ci+1}</td>'
-                            rows_html += f'<td style="padding:5px 8px; font-size:0.75rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("분야","")}</td>'
-                            rows_html += f'<td style="padding:5px 8px; font-size:0.75rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("기관","")}</td>'
-                            rows_html += f'<td style="padding:5px 8px; font-size:0.75rem; border-bottom:1px solid {COLORS["card_border"]};">{c.get("계약명","")[:30]}</td>'
-                            rows_html += f'<td style="padding:5px 8px; font-size:0.75rem; border-bottom:1px solid {COLORS["card_border"]}; text-align:right; font-family:Nunito Sans;">{amt_val/1e8:,.1f}억</td></tr>'
-
-                        st.markdown(f'''<table style="width:100%; border-collapse:collapse;">
-<thead><tr style="background:{COLORS['card_bg']};">
-<th style="padding:6px 8px; font-size:0.7rem; text-align:left; color:{COLORS['text_light']};">순</th>
-<th style="padding:6px 8px; font-size:0.7rem; text-align:left; color:{COLORS['text_light']};">분야</th>
-<th style="padding:6px 8px; font-size:0.7rem; text-align:left; color:{COLORS['text_light']};">기관</th>
-<th style="padding:6px 8px; font-size:0.7rem; text-align:left; color:{COLORS['text_light']};">계약명</th>
-<th style="padding:6px 8px; font-size:0.7rem; text-align:right; color:{COLORS['text_light']};">{header}</th>
-</tr></thead>
-<tbody>{rows_html}</tbody>
-</table>''', unsafe_allow_html=True)
-                    else:
-                        st.caption('해당 월에 주요 변동 계약이 없습니다.')
 
         # ═══════════════════════════════════════
         # 개별 기관 검색
