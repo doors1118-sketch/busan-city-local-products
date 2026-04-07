@@ -3890,7 +3890,8 @@ elif page == "📈 종합분석":
 <div style="font-size:0.65rem; color:{COLORS['text_light']};">{vi_sub.get('이전율',0)}% → {vi_sub.get('현재율',0)}%</div>''', unsafe_allow_html=True)
 
                         # 분야별 변동 카드
-                        분야변동_data = trend_data.get('분야변동', {})
+                        소그룹_분야변동_all = trend_data.get('소그룹_분야변동', {})
+                        분야변동_data = 소그룹_분야변동_all.get(h_key, trend_data.get('분야변동', {}))
                         sec_badge_colors = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
                         sec_html = ''
                         for sec_name in ['공사', '용역', '물품', '쇼핑몰']:
