@@ -3685,23 +3685,27 @@ elif page == "📈 종합분석":
                             # 영역 차트(누계) + 바(월간)
                             data_c = 누계_분야.get(sector, [])
                             data_m = 월간_분야.get(sector, [])
-                            if data_c:
+                            # 최근 5개월만 표시 (엑셀은 전체)
+                            MAX_SHOW = 5
+                            s_labels = month_labels[-MAX_SHOW:]
+                            data_c_s = data_c[-MAX_SHOW:]
+                            data_m_s = data_m[-MAX_SHOW:] if data_m else []
+                            if data_c_s:
                                 fig_s = go.Figure()
                                 r, g, b = int(color[1:3],16), int(color[3:5],16), int(color[5:7],16)
-                                c_rates = [d['수주율'] for d in data_c]
-                                c_수주s = [d['수주액']/1e8 for d in data_c]
-                                c_발주s = [d['발주액']/1e8 for d in data_c]
+                                c_rates = [d['수주율'] for d in data_c_s]
+                                c_수주s = [d['수주액']/1e8 for d in data_c_s]
+                                c_발주s = [d['발주액']/1e8 for d in data_c_s]
 
-                                # 월간 바
-                                if data_m:
-                                    m_rates = [d['수주율'] for d in data_m]
-                                    m_발주s = [d['발주액']/1e8 for d in data_m]
-                                    m_수주s = [d['수주액']/1e8 for d in data_m]
+                                if data_m_s:
+                                    m_rates = [d['수주율'] for d in data_m_s]
+                                    m_발주s = [d['발주액']/1e8 for d in data_m_s]
+                                    m_수주s = [d['수주액']/1e8 for d in data_m_s]
                                     bar_colors = [f'rgba({r},{g},{b},0.18)'] * len(m_rates)
                                     if bar_colors:
                                         bar_colors[-1] = f'rgba({r},{g},{b},0.35)'
                                     fig_s.add_trace(go.Bar(
-                                        x=month_labels, y=m_rates,
+                                        x=s_labels, y=m_rates,
                                         marker_color=bar_colors,
                                         text=[f"{rv}%" for rv in m_rates],
                                         textposition='inside', insidetextanchor='middle',
@@ -3713,7 +3717,7 @@ elif page == "📈 종합분석":
 
                                 # 누계 영역 차트
                                 fig_s.add_trace(go.Scatter(
-                                    x=month_labels, y=c_rates,
+                                    x=s_labels, y=c_rates,
                                     mode='lines+markers+text',
                                     fill='tozeroy',
                                     line=dict(color=color, width=2, shape='spline'),
