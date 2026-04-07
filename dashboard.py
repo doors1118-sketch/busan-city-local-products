@@ -3839,41 +3839,42 @@ elif page == "📈 종합분석":
                         st.plotly_chart(fig_hx, use_container_width=True, config={'displayModeBar': False})
 
                 # 월간 변동요인 분석 + 종합분석 다운로드
-                변동분석_sub = trend_data.get('변동분석', {})
-                dl_col1, dl_col2 = st.columns([1, 1])
-                with dl_col1:
-                    st.markdown(f'<div style="font-size:0.78rem; font-weight:600; color:{COLORS["text_dark"]}; padding:2px 0;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
-                with dl_col2:
-                    import io
-                    xl_buf_sub = io.BytesIO()
-                    with pd.ExcelWriter(xl_buf_sub, engine='openpyxl') as writer:
-                        if h_c:
-                            pd.DataFrame(h_c).to_excel(writer, sheet_name=f'{h_title}_누계', index=False)
-                        if h_m:
-                            pd.DataFrame(h_m).to_excel(writer, sheet_name=f'{h_title}_월간', index=False)
-                        for sec in ['공사', '용역', '물품', '쇼핑몰']:
-                            sd = 누계_소분야.get(h_key, {}).get(sec, [])
-                            if sd:
-                                pd.DataFrame(sd).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
-                            sd2 = 월간_소분야.get(h_key, {}).get(sec, [])
-                            if sd2:
-                                pd.DataFrame(sd2).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
-                    st.download_button(f'📥 종합분석 다운로드', xl_buf_sub.getvalue(),
-                                       file_name=f'{h_title}_종합분석_{year}.xlsx',
-                                       mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                       use_container_width=True, key=f'dl_{h_key}')
-                sel_sub = st.selectbox('월별 변동 원인', ['선택'] + mo_list, key=f'변동_{h_key}', label_visibility='collapsed')
-                if sel_sub != '선택':
-                    sk_sub = mk_map.get(sel_sub, '')
-                    vi_sub = 변동분석_sub.get(sk_sub, {})
-                    vv_sub = vi_sub.get('변동', 0)
-                    vc_sub = '#1ee0ac' if vv_sub >= 0 else '#e85347'
-                    va_sub = '↑' if vv_sub >= 0 else '↓'
-                    st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+                    변동분석_sub = trend_data.get('변동분석', {})
+                    dl_col1, dl_col2 = st.columns([1, 1])
+                    with dl_col1:
+                        st.markdown(f'<div style="font-size:0.78rem; font-weight:600; color:{COLORS["text_dark"]}; padding:2px 0;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                    with dl_col2:
+                        import io
+                        xl_buf_sub = io.BytesIO()
+                        with pd.ExcelWriter(xl_buf_sub, engine='openpyxl') as writer:
+                            if h_c:
+                                pd.DataFrame(h_c).to_excel(writer, sheet_name=f'{h_title}_누계', index=False)
+                            if h_m:
+                                pd.DataFrame(h_m).to_excel(writer, sheet_name=f'{h_title}_월간', index=False)
+                            for sec in ['공사', '용역', '물품', '쇼핑몰']:
+                                sd = 누계_소분야.get(h_key, {}).get(sec, [])
+                                if sd:
+                                    pd.DataFrame(sd).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
+                                sd2 = 월간_소분야.get(h_key, {}).get(sec, [])
+                                if sd2:
+                                    pd.DataFrame(sd2).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
+                        st.download_button(f'📥 종합분석 다운로드', xl_buf_sub.getvalue(),
+                                           file_name=f'{h_title}_종합분석_{year}.xlsx',
+                                           mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                           use_container_width=True, key=f'dl_{h_key}')
+                    sel_sub = st.selectbox('월별 변동 원인', ['선택'] + mo_list, key=f'변동_{h_key}', label_visibility='collapsed')
+                    if sel_sub != '선택':
+                        sk_sub = mk_map.get(sel_sub, '')
+                        vi_sub = 변동분석_sub.get(sk_sub, {})
+                        vv_sub = vi_sub.get('변동', 0)
+                        vc_sub = '#1ee0ac' if vv_sub >= 0 else '#e85347'
+                        va_sub = '↑' if vv_sub >= 0 else '↓'
+                        st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
 <span style="font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']};">{sel_sub} 전체 변동</span>
 <span style="font-size:0.78rem; font-weight:700; color:{vc_sub};">{va_sub} {abs(vv_sub):.1f}%p · {vi_sub.get('방향','')}</span>
 </div>
 <div style="font-size:0.65rem; color:{COLORS['text_light']};">{vi_sub.get('이전율',0)}% → {vi_sub.get('현재율',0)}%</div>''', unsafe_allow_html=True)
+
 
                 with col_s:
                     sg_분야c = 누계_소분야.get(h_key, {})
