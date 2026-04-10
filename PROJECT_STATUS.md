@@ -642,6 +642,12 @@ client.close()
 
 ## 6. 작업일지
 
+### 2026-04-06
+
+#### ✅ 일일 파이프라인 중복 데이터 오류 방어 및 버그 수정
+- `daily_pipeline_sync.py`: `df.to_sql(append)` 수행 전 DB에 동일한 차수의 계약(`dcsnCntrctNo`) 또는 동일 장바구니 품목(`dlvrReqNo`+`prdctSno`+`dlvrReqChgOrd`)이 존재할 경우 `DELETE`로 선삭제하는 방어 로직(Upsert 흉내) 추가. DB 중복 누적 문제 해결 완료.
+- `backup_db.py`: NCP 클라우드 인증키 에러 시 로컬 변수 `s3` 미할당 상태로 로컬 파일 정리 로직 진입 시 발생하는 `UnboundLocalError` 수정 (초기화 및 예외처리 강화).
+
 ### 2026-04-05
 
 #### ✅ 대시보드 누계 수주율 통일

@@ -248,6 +248,20 @@ def format_억(amt):
     else:
         return f"{amt:,.0f}원"
 
+def _xl_rows(data_list):
+    """엑셀 다운로드용: 발주액/수주액을 억원 단위로 변환"""
+    out = []
+    for d in data_list:
+        row = dict(d)
+        if '발주액' in row and isinstance(row['발주액'], (int, float)) and abs(row['발주액']) >= 1e6:
+            row['발주액(억원)'] = round(row['발주액'] / 1e8, 1)
+            del row['발주액']
+        if '수주액' in row and isinstance(row['수주액'], (int, float)) and abs(row['수주액']) >= 1e6:
+            row['수주액(억원)'] = round(row['수주액'] / 1e8, 1)
+            del row['수주액']
+        out.append(row)
+    return out
+
 
 def format_조(amt):
     if amt is None or amt == 0:
@@ -371,7 +385,7 @@ with st.sidebar:
     
     page = st.radio(
         "nav",
-        ["📊 종합현황", "🏆 기관별 순위", "🏠 구군·출자출연 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🛒 종합쇼핑몰", "🏢 지역업체 정보", "📜 면허업종 검색"],
+        ["📊 종합현황", "🏆 기관별 순위", "🏠 구군·출자출연 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🛒 종합쇼핑몰", "🏢 지역업체 정보", "📜 면허업종 검색", "📈 종합분석"],
         label_visibility="collapsed",
     )
     
@@ -400,6 +414,7 @@ page_titles = {
     "🏢 지역업체 정보": "지역업체 정보",
     "🛒 종합쇼핑몰": "종합쇼핑몰 지역외 유출현황",
     "📜 면허업종 검색": "조달업체 면허업종 검색",
+    "📈 종합분석": "월별 수주율 종합분석",
 }
 st.markdown(f"""
 <div style="background:linear-gradient(90deg, #1a2b6d 0%, #3b4ab8 50%, #1a2b6d 100%); padding:10px 24px; border-radius:6px; margin-bottom:16px; text-align:center;">
@@ -2831,11 +2846,10 @@ elif page == "🏢 지역업체 정보":
         # ── 물품 / 공사 / 용역 분류별 도넛차트 ──
         st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
         
-        # 데이터 준비 (positional access)
-        현황_vals = list(현황_comp.values()) if 현황_comp else []
-        물품_분류 = 현황_vals[6] if len(현황_vals) > 6 and isinstance(현황_vals[6], list) else []
-        공사_업종 = 현황_vals[7] if len(현황_vals) > 7 and isinstance(현황_vals[7], list) else []
-        용역_업종 = 현황_vals[8] if len(현황_vals) > 8 and isinstance(현황_vals[8], list) else []
+        # 데이터 준비 (키 이름 기반)
+        물품_분류 = 현황_comp.get("물품_대분류", [])
+        공사_업종 = 현황_comp.get("공사_업종", [])
+        용역_업종 = 현황_comp.get("용역_업종", [])
         
         donut_colors = ["#6576ff", "#1ee0ac", "#f4bd0e", "#e85347", "#9cabff", "#816bff"]
         
@@ -3053,16 +3067,176 @@ elif page == "🏢 지역업체 정보":
         # 물품 분류 데이터 변환 (분류명 + 업체수)
         물품_items = []
         for it in 물품_분류:
-            iv = list(it.values())
-            물품_items.append({"분류": iv[1] if len(iv) > 1 else "?", "업체수": iv[2] if len(iv) > 2 else 0})
+            물품_items.append({"분류": it.get("분류명", "?"), "업체수": it.get("업체수", 0)})
         
-        물품_total = 현황_comp.get("물품", list(현황_comp.values())[1] if len(현황_comp) > 1 else 0)
-        공사_total = 현황_comp.get("공사", list(현황_comp.values())[3] if len(현황_comp) > 3 else 0)
-        용역_total = 현황_comp.get("용역", list(현황_comp.values())[2] if len(현황_comp) > 2 else 0)
+        물품_total = 현황_comp.get("물품", 0)
+        공사_total = 현황_comp.get("공사", 0)
+        용역_total = 현황_comp.get("용역", 0)
         
         make_search_donut(col_d1, "물품 분류별", 물품_total, 물품_items, "search_물품")
         make_search_donut(col_d2, "공사 업종별", 공사_total, 공사_업종, "search_공사")
         make_search_donut(col_d3, "용역 업종별", 용역_total, 용역_업종, "search_용역")
+
+        # ── 제조업체 검색 섹션 ──
+        st.markdown('<div style="margin-top:28px;"></div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            제조_cnt = 현황_comp.get("제조", 0)
+            st.markdown(f'''<div style="padding:16px 0 8px;">
+<h3 style="margin:0; font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">🏭 제조업체 검색</h3>
+<span style="font-size:0.72rem; color:{COLORS['text_light']};">부산 소재 제조업체 {제조_cnt:,}개 · 대표품명 또는 업종으로 검색</span>
+</div>''', unsafe_allow_html=True)
+
+            mfg_tab1, mfg_tab2 = st.tabs(["📦 대표품명으로 검색", "📋 면허업종으로 검색"])
+
+            try:
+                import io
+                DB_MFG = os.path.join(os.path.dirname(__file__), "busan_companies_master.db")
+                conn_mfg = sqlite3.connect(DB_MFG)
+
+                # 전체 제조업체 다운로드
+                all_mfg = pd.read_sql("""
+                    SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
+                           c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
+                           c.opbizDt, c.rgstDt,
+                           GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                    FROM company_master c
+                    LEFT JOIN company_industry i ON c.bizno = i.bizno
+                    WHERE c.mnfctDivNm = '제조'
+                    GROUP BY c.bizno ORDER BY c.corpNm
+                """, conn_mfg)
+                dl_all = all_mfg[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
+                dl_all.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
+                buf_all = io.BytesIO()
+                with pd.ExcelWriter(buf_all, engine='openpyxl') as writer:
+                    dl_all.to_excel(writer, index=False, sheet_name='제조업체전체')
+                st.download_button(
+                    label=f"📥 제조업체 전체 다운로드 ({len(all_mfg):,}건, Excel)",
+                    data=buf_all.getvalue(),
+                    file_name="부산_제조업체_전체.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_mfg_all"
+                )
+
+                # ── 탭1: 대표품명 선택 ──
+                with mfg_tab1:
+                    # 대표품명 목록 (2개 이상 업체)
+                    prd_df = pd.read_sql("""
+                        SELECT rprsntDtlPrdnm as prdnm, COUNT(*) as cnt
+                        FROM company_master
+                        WHERE mnfctDivNm='제조' AND rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+                        GROUP BY rprsntDtlPrdnm
+                        HAVING cnt >= 2
+                        ORDER BY cnt DESC
+                    """, conn_mfg)
+
+                    prd_search = st.text_input("품명 검색", key="mfg_prd_q", placeholder="대표품명 검색...", label_visibility="collapsed")
+                    if prd_search:
+                        prd_filtered = prd_df[prd_df['prdnm'].str.contains(prd_search, case=False, na=False)]
+                    else:
+                        prd_filtered = prd_df.head(30)
+
+                    if len(prd_filtered) > 0:
+                        prd_options = [f"{row['prdnm']}  ({row['cnt']}개)" for _, row in prd_filtered.head(50).iterrows()]
+                        if prd_search:
+                            st.caption(f"🔎 '{prd_search}' 검색결과 {len(prd_filtered)}건")
+                        prd_selected = st.selectbox("대표품명 선택", prd_options, key="mfg_prd_sel", label_visibility="collapsed")
+                        prd_name = prd_selected.rsplit("  (", 1)[0] if prd_selected else None
+
+                        if prd_name:
+                            mfg_df = pd.read_sql("""
+                                SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
+                                       c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
+                                       c.opbizDt, c.rgstDt,
+                                       GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                                FROM company_master c
+                                LEFT JOIN company_industry i ON c.bizno = i.bizno
+                                WHERE c.mnfctDivNm = '제조' AND c.rprsntDtlPrdnm = ?
+                                GROUP BY c.bizno ORDER BY c.corpNm
+                            """, conn_mfg, params=(prd_name,))
+
+                            if len(mfg_df) > 0:
+                                st.caption(f"'{prd_name}' 제조업체: {len(mfg_df):,}건")
+                                show_df = mfg_df[['corpNm','ceoNm','rgnNm','hdoffceDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
+                                show_df.columns = ['업체명','대표자','소재지','본사구분','대표품명','면허업종','개업일']
+                                show_df['개업일'] = show_df['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
+                                st.dataframe(show_df, use_container_width=True, height=350, hide_index=True)
+
+                                dl_mfg = mfg_df[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
+                                dl_mfg.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
+                                buf_mfg = io.BytesIO()
+                                with pd.ExcelWriter(buf_mfg, engine='openpyxl') as writer:
+                                    dl_mfg.to_excel(writer, index=False, sheet_name='제조업체')
+                                st.download_button(
+                                    label=f"📥 다운로드 ({len(mfg_df)}건, Excel)",
+                                    data=buf_mfg.getvalue(),
+                                    file_name=f"제조업체_{prd_name}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="dl_mfg_prd"
+                                )
+                    elif prd_search:
+                        st.info(f"'{prd_search}'에 해당하는 대표품명이 없습니다.")
+
+                # ── 탭2: 업종 선택 ──
+                with mfg_tab2:
+                    ind_df = pd.read_sql("""
+                        SELECT i.indstrytyNm as indnm, COUNT(DISTINCT c.bizno) as cnt
+                        FROM company_industry i
+                        JOIN company_master c ON i.bizno = c.bizno
+                        WHERE c.mnfctDivNm='제조'
+                        GROUP BY i.indstrytyNm
+                        ORDER BY cnt DESC
+                    """, conn_mfg)
+
+                    ind_search = st.text_input("업종 검색", key="mfg_ind_q", placeholder="면허업종 검색...", label_visibility="collapsed")
+                    if ind_search:
+                        ind_filtered = ind_df[ind_df['indnm'].str.contains(ind_search, case=False, na=False)]
+                    else:
+                        ind_filtered = ind_df.head(30)
+
+                    if len(ind_filtered) > 0:
+                        ind_options = [f"{row['indnm']}  ({row['cnt']}개)" for _, row in ind_filtered.head(50).iterrows()]
+                        if ind_search:
+                            st.caption(f"🔎 '{ind_search}' 검색결과 {len(ind_filtered)}건")
+                        ind_selected = st.selectbox("업종 선택", ind_options, key="mfg_ind_sel", label_visibility="collapsed")
+                        ind_name = ind_selected.rsplit("  (", 1)[0] if ind_selected else None
+
+                        if ind_name:
+                            mfg_df2 = pd.read_sql("""
+                                SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs,
+                                       c.hdoffceDivNm, c.corpBsnsDivNm, c.rprsntDtlPrdnm,
+                                       c.opbizDt, c.rgstDt,
+                                       GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                                FROM company_master c
+                                JOIN company_industry i ON c.bizno = i.bizno
+                                WHERE c.mnfctDivNm = '제조' AND i.indstrytyNm = ?
+                                GROUP BY c.bizno ORDER BY c.corpNm
+                            """, conn_mfg, params=(ind_name,))
+
+                            if len(mfg_df2) > 0:
+                                st.caption(f"'{ind_name}' 제조업체: {len(mfg_df2):,}건")
+                                show_df2 = mfg_df2[['corpNm','ceoNm','rgnNm','hdoffceDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
+                                show_df2.columns = ['업체명','대표자','소재지','본사구분','대표품명','면허업종','개업일']
+                                show_df2['개업일'] = show_df2['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
+                                st.dataframe(show_df2, use_container_width=True, height=350, hide_index=True)
+
+                                dl_mfg2 = mfg_df2[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','rprsntDtlPrdnm','면허업종','opbizDt','rgstDt']].copy()
+                                dl_mfg2.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','대표품명','면허업종','개업일','등록일']
+                                buf_mfg2 = io.BytesIO()
+                                with pd.ExcelWriter(buf_mfg2, engine='openpyxl') as writer:
+                                    dl_mfg2.to_excel(writer, index=False, sheet_name='제조업체')
+                                st.download_button(
+                                    label=f"📥 다운로드 ({len(mfg_df2)}건, Excel)",
+                                    data=buf_mfg2.getvalue(),
+                                    file_name=f"제조업체_{ind_name}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="dl_mfg_ind"
+                                )
+                    elif ind_search:
+                        st.info(f"'{ind_search}'에 해당하는 업종이 없습니다.")
+
+                conn_mfg.close()
+            except Exception as e:
+                st.error(f"조회 실패: {e}")
 
 # ════════════════════════════════════════════
 # PAGE: 자치구·출자출연 순위
@@ -3210,16 +3384,23 @@ elif page == "📜 면허업종 검색":
                 selected_license = selected_opt.rsplit("  (", 1)[0] if selected_opt else None
 
                 if selected_license:
+                    # 제조업체 필터
+                    only_mfg = st.checkbox("🏭 제조업체만 보기", key="only_mfg")
+
                     # 해당 업종 업체 조회 (company_industry JOIN company_master)
-                    companies = pd.read_sql("""
+                    sql = """
                         SELECT c.corpNm, c.bizno, c.rgnNm, c.hdoffceDivNm, c.corpBsnsDivNm,
-                               c.ceoNm, c.adrs, c.opbizDt, c.rgstDt,
+                               c.ceoNm, c.adrs, c.opbizDt, c.rgstDt, c.mnfctDivNm,
                                i.indstrytyNm, i.rprsntIndstrytyYn
                         FROM company_industry i
                         JOIN company_master c ON i.bizno = c.bizno
                         WHERE i.indstrytyNm = ?
-                        ORDER BY c.corpNm
-                    """, conn_lic, params=(selected_license,))
+                    """
+                    params = [selected_license]
+                    if only_mfg:
+                        sql += " AND c.mnfctDivNm = '제조'"
+                    sql += " ORDER BY c.corpNm"
+                    companies = pd.read_sql(sql, conn_lic, params=params)
 
                     st.markdown(f'<div style="margin-top:12px;"></div>', unsafe_allow_html=True)
 
@@ -3263,8 +3444,8 @@ elif page == "📜 면허업종 검색":
 
                     # 업체 테이블
                     st.markdown(f'<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
-                    display_df = companies[['corpNm','ceoNm','rgnNm','hdoffceDivNm','corpBsnsDivNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
-                    display_df.columns = ['업체명','대표자','소재지','본사구분','업체구분','개업일','등록일','대표업종']
+                    display_df = companies[['corpNm','ceoNm','rgnNm','hdoffceDivNm','corpBsnsDivNm','mnfctDivNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
+                    display_df.columns = ['업체명','대표자','소재지','본사구분','업체구분','제조구분','개업일','등록일','대표업종']
                     display_df['대표업종'] = display_df['대표업종'].apply(lambda x: '✅' if x == 'Y' else '')
                     display_df['개업일'] = display_df['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
                     display_df['등록일'] = display_df['등록일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
@@ -3273,8 +3454,8 @@ elif page == "📜 면허업종 검색":
 
                     # Excel 다운로드
                     import io
-                    dl_df = companies[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','indstrytyNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
-                    dl_df.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','면허업종','개업일','등록일','대표업종여부']
+                    dl_df = companies[['corpNm','bizno','ceoNm','rgnNm','adrs','hdoffceDivNm','corpBsnsDivNm','mnfctDivNm','indstrytyNm','opbizDt','rgstDt','rprsntIndstrytyYn']].copy()
+                    dl_df.columns = ['업체명','사업자번호','대표자','소재지','주소','본사구분','업체구분','제조구분','면허업종','개업일','등록일','대표업종여부']
                     buf = io.BytesIO()
                     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                         dl_df.to_excel(writer, index=False, sheet_name='업체목록')
@@ -3287,4 +3468,752 @@ elif page == "📜 면허업종 검색":
                     )
 
         conn_lic.close()
+
+# ════════════════════════════════════════════
+# PAGE: 종합분석
+# ════════════════════════════════════════════
+elif page == "📈 종합분석":
+    trend_data = fetch_api("/api/monthly-trend")
+    if trend_data and 'error' not in trend_data:
+        year = trend_data.get('year', '2026')
+        months = trend_data.get('months', [])
+        month_labels = [f"{int(m)}월" for m in months]
+
+        누계_그룹 = trend_data.get('누계_그룹', {})
+        누계_분야 = trend_data.get('누계_분야', {})
+        월간_그룹 = trend_data.get('월간_그룹', {})
+        월간_분야 = trend_data.get('월간_분야', {})
+
+        # ── 색상 매핑 ──
+        grp_colors = {'전체': '#6576ff', '부산시': '#1ee0ac', '국가': '#e85347'}
+        sec_colors = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
+
+        # ═══════════════════════════════════════
+        # 히어로: 좌측 전체 수주율 area + 우측 분야별 2×2 bar
+        # ═══════════════════════════════════════
+        with st.container(border=True):
+            col_hero, col_side = st.columns([5, 5])
+
+            # ── 좌측: 전체 수주율 변동 ──
+            with col_hero:
+                전체d = 누계_그룹.get('전체', [])
+                latest_rate = 전체d[-1]['수주율'] if 전체d else 0
+                latest_발주 = 전체d[-1]['발주액'] if 전체d else 0
+                latest_수주 = 전체d[-1]['수주액'] if 전체d else 0
+                if len(전체d) >= 2:
+                    _delta = round(전체d[-1]['수주율'] - 전체d[-2]['수주율'], 1)
+                    _d_arrow = "↑" if _delta >= 0 else "↓"
+                    _d_color = "#1ee0ac" if _delta >= 0 else "#e85347"
+                    _d_label = f"{_d_arrow} {abs(_delta):.1f}%p"
+                else:
+                    _d_label = ""
+                    _d_color = "rgba(255,255,255,0.5)"
+
+                st.markdown(f"""<div style="background:linear-gradient(135deg,#232e7a 0%,#3b4ab8 100%); border-radius:8px; padding:14px 24px 10px;">
+<div style="font-size:0.85rem; font-weight:700; color:rgba(255,255,255,0.85); margin-bottom:6px;">부산시 전체 수주율 월간 변동</div>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+<div style="display:flex; align-items:baseline; gap:6px;">
+<span style="font-size:0.72rem; color:rgba(255,255,255,0.5);">현재</span>
+<span style="font-size:2.2rem; font-weight:800; color:#fff; font-family:Nunito Sans; letter-spacing:-0.02em;">{latest_rate}%</span>
+<span style="font-size:0.68rem; color:{_d_color};">({_d_label}, vs.전월)</span>
+</div>
+<div style="text-align:right; font-size:0.7rem; line-height:1.5;">
+<div style="color:rgba(255,255,255,0.5);">발주액 <span style="color:rgba(255,255,255,0.8); font-weight:700;">{latest_발주/1e8:,.0f}억</span></div>
+<div style="color:rgba(255,255,255,0.5);">수주액 <span style="color:#1ee0ac; font-weight:700;">{latest_수주/1e8:,.0f}억</span></div>
+</div>
+</div>
+</div>""", unsafe_allow_html=True)
+
+                # Area 차트 (종합현황 스파크라인과 동일 스타일)
+                if 전체d:
+                    fig_hero = go.Figure()
+                    rates = [d['수주율'] for d in 전체d]
+                    수주액s = [d['수주액']/1e8 for d in 전체d]
+                    발주액s = [d['발주액']/1e8 for d in 전체d]
+                    fig_hero.add_trace(go.Scatter(
+                        x=month_labels, y=rates,
+                        mode='lines+markers+text',
+                        fill='tozeroy',
+                        line=dict(color='#00e5ff', width=2.5, shape='spline'),
+                        fillcolor='rgba(0,229,255,0.08)',
+                        marker=dict(size=6, color='#00e5ff'),
+                        text=[f"{r}%" for r in rates],
+                        textposition='top center',
+                        textfont=dict(size=12, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
+                        customdata=list(zip(수주액s, 발주액s)),
+                        hovertemplate='<b style="font-size:15px">%{x} 수주율 누계 %{y}%</b><br><br>'
+                                      '<b>총 계약 누계액</b>  %{customdata[1]:,.0f}억<br>'
+                                      '<b style="color:#1ee0ac">지역업체 수주 누계액</b>  <span style="color:#1ee0ac">%{customdata[0]:,.0f}억</span>'
+                                      '<extra></extra>',
+                        cliponaxis=False,
+                    ))
+                    # 월간 바도 같은 차트에 합침
+                    전체_월간h = 월간_그룹.get('전체', [])
+                    if 전체_월간h:
+                        import datetime
+                        today_str = datetime.date.today().strftime('%m.%d')
+                        m_rates = [d['수주율'] for d in 전체_월간h]
+                        m_발주s = [d['발주액']/1e8 for d in 전체_월간h]
+                        m_수주s = [d['수주액']/1e8 for d in 전체_월간h]
+                        bar_colors = ['rgba(0,229,255,0.2)'] * len(m_rates)
+                        if bar_colors:
+                            bar_colors[-1] = 'rgba(0,229,255,0.4)'
+                        # x축 라벨: 마지막 월은 "4.1~04.07" 형태
+                        x_labels = []
+                        for i, m in enumerate(months):
+                            if i == len(months) - 1:
+                                x_labels.append(f"{int(m)}.1~{today_str}")
+                            else:
+                                x_labels.append(f"{int(m)}월")
+                        fig_hero.add_trace(go.Bar(
+                            x=month_labels, y=m_rates,
+                            marker_color=bar_colors,
+                            text=[f"{r}%" for r in m_rates],
+                            textposition='inside',
+                            insidetextanchor='middle',
+                            textfont=dict(size=9, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
+                            customdata=list(zip(m_발주s, m_수주s, x_labels)),
+                            hovertemplate='<b style="font-size:13px">%{customdata[2]} 월간</b><br><br>'
+                                          '<b>발주액</b>  %{customdata[0]:,.0f}억<br>'
+                                          '<b style="color:#1ee0ac">수주액</b>  <span style="color:#1ee0ac">%{customdata[1]:,.0f}억</span>'
+                                          '<extra></extra>',
+                            name='월간',
+                        ))
+
+                    fig_hero.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
+                        height=320, margin=dict(t=25, b=25, l=45, r=60),
+                        yaxis=dict(gridcolor='rgba(255,255,255,0.08)', range=[0, 100],
+                                   tickfont=dict(size=9, color='rgba(255,255,255,0.35)')),
+                        xaxis=dict(tickfont=dict(size=9, color='rgba(255,255,255,0.45)'),
+                                   showgrid=False),
+                        showlegend=False, bargap=0.4,
+                        hoverlabel=dict(bgcolor='#232e7a', font_size=13, font_family='Nunito Sans'),
+                    )
+                    st.plotly_chart(fig_hero, use_container_width=True, config={'displayModeBar': False})
+
+                # 월별 변동 원인 (차트 아래 공백 활용)
+                변동분석_h = trend_data.get('변동분석', {})
+                if 변동분석_h:
+                    pk_list = list(변동분석_h.keys())
+                    mo_list = []
+                    mk_map = {}
+                    for pk in pk_list:
+                        ml = f"{int(pk.split('→')[1])}월"
+                        mo_list.append(ml)
+                        mk_map[ml] = pk
+                    if mo_list:
+                        dl_col1, dl_col2 = st.columns([3, 1])
+                        with dl_col1:
+                            st.markdown(f'<div style="font-size:0.78rem; font-weight:700; color:{COLORS["text_dark"]}; padding:4px 0 2px;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                        with dl_col2:
+                            # 엑셀 다운로드
+                            import io
+                            xl_buf = io.BytesIO()
+                            with pd.ExcelWriter(xl_buf, engine='openpyxl') as writer:
+                                # 전체 누적
+                                전체d_xl = 누계_그룹.get('전체', [])
+                                if 전체d_xl:
+                                    pd.DataFrame(_xl_rows(전체d_xl)).to_excel(writer, sheet_name='전체_누계', index=False)
+                                전체m_xl = 월간_그룹.get('전체', [])
+                                if 전체m_xl:
+                                    pd.DataFrame(_xl_rows(전체m_xl)).to_excel(writer, sheet_name='전체_월간', index=False)
+                                for grp in ['부산시', '국가']:
+                                    gd = 누계_그룹.get(grp, [])
+                                    if gd:
+                                        pd.DataFrame(_xl_rows(gd)).to_excel(writer, sheet_name=f'{grp}_누계', index=False)
+                                for sec in ['공사', '용역', '물품', '쇼핑몰']:
+                                    sd_c = 누계_분야.get(sec, [])
+                                    sd_m = 월간_분야.get(sec, [])
+                                    if sd_c:
+                                        pd.DataFrame(_xl_rows(sd_c)).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
+                                    if sd_m:
+                                        pd.DataFrame(_xl_rows(sd_m)).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
+                            st.download_button('📥 종합분석 다운로드', xl_buf.getvalue(), file_name=f'종합분석_{year}.xlsx',
+                                               mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                               use_container_width=True)
+                        sel_m = st.selectbox('월별 변동 원인', ['선택'] + mo_list, key='변동월h2', label_visibility='collapsed')
+                        if sel_m != '선택':
+                            sk = mk_map.get(sel_m, '')
+                            vi = 변동분석_h.get(sk, {})
+                            vv = vi.get('변동', 0)
+                            vc = '#1ee0ac' if vv >= 0 else '#e85347'
+                            va = '↑' if vv >= 0 else '↓'
+                            # 전체 변동
+                            st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+<span style="font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']};">{sel_m} 전체 변동</span>
+<span style="font-size:0.78rem; font-weight:700; color:{vc};">{va} {abs(vv):.1f}%p · {vi.get('방향','')}</span>
+</div>
+<div style="font-size:0.65rem; color:{COLORS['text_light']};">{vi.get('이전율',0)}% → {vi.get('현재율',0)}%</div>''', unsafe_allow_html=True)
+
+                            # 분야별 변동 카드 (크게)
+                            분야변동_data = trend_data.get('분야변동', {})
+                            sec_badge_colors = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
+                            sec_html = ''
+                            for sec_name in ['공사', '용역', '물품', '쇼핑몰']:
+                                sec_d = 분야변동_data.get(sec_name, {}).get(sk, {})
+                                sd = sec_d.get('변동', 0)
+                                sc = '#1ee0ac' if sd >= 0 else '#e85347'
+                                sa = '↑' if sd >= 0 else '↓'
+                                bc = sec_badge_colors[sec_name]
+                                sec_html += f'<div style="display:inline-flex; align-items:center; gap:6px; padding:5px 12px; margin:3px 6px 3px 0; border-radius:6px; background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]};">'
+                                sec_html += f'<span style="font-size:0.75rem; font-weight:700; color:{bc};">{sec_name}</span>'
+                                sec_html += f'<span style="font-size:0.8rem; font-weight:800; color:{sc};">{sa}{abs(sd):.1f}%p</span>'
+                                sec_html += f'<span style="font-size:0.68rem; color:{COLORS["text_light"]};">{sec_d.get("이전율",0)}→{sec_d.get("현재율",0)}%</span>'
+                                sec_html += '</div>'
+                            st.markdown(f'<div style="padding:6px 0;">{sec_html}</div>', unsafe_allow_html=True)
+
+                            # 주요 유출/수주 원인 계약 (텍스트 리스트 형태)
+                            list_html = ''
+                            for sec_name in ['공사', '용역', '물품', '쇼핑몰']:
+                                sec_d = 분야변동_data.get(sec_name, {}).get(sk, {})
+                                sd = sec_d.get('변동', 0)
+                                sec_cts = sec_d.get('주요계약', [])
+                                bc = sec_badge_colors[sec_name]
+                                amt_label = '유출' if sd < 0 else '수주'
+                                for ct in sec_cts[:3]:
+                                    av = ct.get('유출액', ct.get('수주액', 0))
+                                    amt_color = '#e85347' if sd < 0 else '#1ee0ac'
+                                    list_html += f'<div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid {COLORS["card_border"]};">'
+                                    list_html += f'<span style="font-size:0.65rem; font-weight:700; color:#fff; background:{bc}; padding:2px 6px; border-radius:3px; white-space:nowrap;">{sec_name}</span>'
+                                    list_html += f'<span style="font-size:0.72rem; color:{COLORS["text_dark"]}; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{ct.get("계약명","")}</span>'
+                                    list_html += f'<span style="font-size:0.65rem; color:{COLORS["text_light"]}; white-space:nowrap;">{ct.get("기관","")}</span>'
+                                    list_html += f'<span style="font-size:0.72rem; font-weight:700; color:{amt_color}; font-family:Nunito Sans; white-space:nowrap;">{av/1e8:,.1f}억</span>'
+                                    list_html += '</div>'
+                            if list_html:
+                                title_text = '주요 유출 원인 계약' if vv < 0 else '주요 수주 계약'
+                                st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:6px 0 2px;">📋 {title_text}</div>{list_html}', unsafe_allow_html=True)
+
+            # ── 우측: 분야별 2×2 ──
+            with col_side:
+                for row_sectors in [['공사', '용역'], ['물품', '쇼핑몰']]:
+                    c1, c2 = st.columns(2)
+                    for col_obj, sector in zip([c1, c2], row_sectors):
+                        data_c = 누계_분야.get(sector, [])
+                        data_m = 월간_분야.get(sector, [])
+                        color = sec_colors[sector]
+                        with col_obj:
+                            # 제목만 표시
+                            st.markdown(f'<div style="font-size:0.78rem; font-weight:700; color:{COLORS["text_dark"]}; padding:2px 0;">{sector} 수주율 변동</div>', unsafe_allow_html=True)
+
+                            # 영역 차트(누계) + 바(월간)
+                            data_c = 누계_분야.get(sector, [])
+                            data_m = 월간_분야.get(sector, [])
+                            # 최근 5개월만 표시 (엑셀은 전체)
+                            MAX_SHOW = 5
+                            s_labels = month_labels[-MAX_SHOW:]
+                            data_c_s = data_c[-MAX_SHOW:]
+                            data_m_s = data_m[-MAX_SHOW:] if data_m else []
+                            if data_c_s:
+                                fig_s = go.Figure()
+                                r, g, b = int(color[1:3],16), int(color[3:5],16), int(color[5:7],16)
+                                c_rates = [d['수주율'] for d in data_c_s]
+                                c_수주s = [d['수주액']/1e8 for d in data_c_s]
+                                c_발주s = [d['발주액']/1e8 for d in data_c_s]
+
+                                if data_m_s:
+                                    m_rates = [d['수주율'] for d in data_m_s]
+                                    m_발주s = [d['발주액']/1e8 for d in data_m_s]
+                                    m_수주s = [d['수주액']/1e8 for d in data_m_s]
+                                    bar_colors = [f'rgba({r},{g},{b},0.18)'] * len(m_rates)
+                                    if bar_colors:
+                                        bar_colors[-1] = f'rgba({r},{g},{b},0.35)'
+                                    fig_s.add_trace(go.Bar(
+                                        x=s_labels, y=m_rates,
+                                        marker_color=bar_colors,
+                                        text=[f"<b>{rv}%</b>" for rv in m_rates],
+                                        textposition='inside', insidetextanchor='middle',
+                                        textfont=dict(size=10, color=color, family='Nunito Sans'),
+                                        customdata=list(zip(m_발주s, m_수주s)),
+                                        hovertemplate='<b>%{x} 월간</b><br>발주액 %{customdata[0]:,.0f}억<br><b style="color:' + color + '">수주액 %{customdata[1]:,.0f}억</b><extra></extra>',
+                                        name='월간',
+                                    ))
+
+                                # 누계 영역 차트
+                                fig_s.add_trace(go.Scatter(
+                                    x=s_labels, y=c_rates,
+                                    mode='lines+markers+text',
+                                    fill='tozeroy',
+                                    line=dict(color=color, width=2, shape='spline'),
+                                    fillcolor=f'rgba({r},{g},{b},0.08)',
+                                    marker=dict(size=5, color=color),
+                                    text=[f"<b>{rv}%</b>" for rv in c_rates],
+                                    textposition='top center',
+                                    textfont=dict(size=14, color='#364a63', family='Nunito Sans'),
+                                    customdata=list(zip(c_수주s, c_발주s)),
+                                    hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
+                                    cliponaxis=False,
+                                ))
+                                fig_s.update_layout(
+                                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                    height=230, margin=dict(t=22, b=16, l=0, r=0),
+                                    yaxis=dict(visible=False, range=[0, 100]),
+                                    xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
+                                    showlegend=False, bargap=0.35,
+                                    hoverlabel=dict(bgcolor='#fff', font_size=14),
+                                )
+                                st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False})
+
+        # ═══════════════════════════════════════
+        # 기관 유형별 4개 히어로+2×2 섹션
+        # ═══════════════════════════════════════
+        누계_소그룹 = trend_data.get('누계_소그룹', {})
+        월간_소그룹 = trend_data.get('월간_소그룹', {})
+        누계_소분야 = trend_data.get('누계_소그룹분야', {})
+        월간_소분야 = trend_data.get('월간_소그룹분야', {})
+
+        sub_sections = [
+            {'key': '부산광역시및산하기관', 'title': '부산광역시 소관 수요기관',
+             'hero_c': 누계_그룹.get('부산시', []), 'hero_m': 월간_그룹.get('부산시', [])},
+            {'key': '정부및국가공공기관', 'title': '정부 및 국가공공기관',
+             'hero_c': 누계_그룹.get('국가', []), 'hero_m': 월간_그룹.get('국가', [])},
+            {'key': '자치구군', 'title': '자치구군',
+             'hero_c': 누계_소그룹.get('자치구군', []), 'hero_m': 월간_소그룹.get('자치구군', [])},
+            {'key': '출자출연기관', 'title': '부산시 출자출연 및 공사공단',
+             'hero_c': 누계_소그룹.get('출자출연기관', []), 'hero_m': 월간_소그룹.get('출자출연기관', [])},
+        ]
+        hero_accents = ['#00e5ff', '#ff6b6b', '#1ee0ac', '#f4bd0e']
+
+        for si, sec_info in enumerate(sub_sections):
+            st.markdown('<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
+            h_c = sec_info['hero_c']
+            h_m = sec_info['hero_m']
+            h_title = sec_info['title']
+            h_key = sec_info['key']
+            h_accent = hero_accents[si]
+
+            with st.container(border=True):
+                col_h, col_s = st.columns([5, 5])
+
+                with col_h:
+                    h_rate = h_c[-1]['수주율'] if h_c else 0
+                    h_발주 = h_c[-1]['발주액'] if h_c else 0
+                    h_수주 = h_c[-1]['수주액'] if h_c else 0
+                    if len(h_c) >= 2:
+                        h_delta = round(h_c[-1]['수주율'] - h_c[-2]['수주율'], 1)
+                        h_dtxt = f"({'↑' if h_delta>=0 else '↓'} {abs(h_delta):.1f}%p, vs. 전월)"
+                    else:
+                        h_dtxt = ""
+                    st.markdown(f"""<div style="background:linear-gradient(135deg, #1b2559 0%, #232e7a 100%); border-radius:12px; padding:18px 20px; color:#fff;">
+<div style="font-size:0.78rem; font-weight:600; color:rgba(255,255,255,0.6);">{h_title} 수주율 월간 변동</div>
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+<div>
+<span style="font-size:0.72rem; color:rgba(255,255,255,0.5);">현재</span>
+<span style="font-size:2rem; font-weight:800; font-family:Nunito Sans; margin:0 6px;">{h_rate}%</span>
+<span style="font-size:0.7rem; color:{h_accent};">{h_dtxt}</span>
+</div>
+<div style="text-align:right; font-size:0.68rem; color:rgba(255,255,255,0.55);">
+발주액 <span style="color:#fff; font-weight:700; font-family:Nunito Sans;">{h_발주/1e8:,.0f}억</span><br>
+수주액 <span style="color:{h_accent}; font-weight:700; font-family:Nunito Sans;">{h_수주/1e8:,.0f}억</span>
+</div>
+</div>
+</div>""", unsafe_allow_html=True)
+
+                    if h_c:
+                        fig_hx = go.Figure()
+                        hx_rates = [d['수주율'] for d in h_c]
+                        hx_수주 = [d['수주액']/1e8 for d in h_c]
+                        hx_발주 = [d['발주액']/1e8 for d in h_c]
+                        if h_m:
+                            hm_rates = [d['수주율'] for d in h_m]
+                            hm_발주 = [d['발주액']/1e8 for d in h_m]
+                            hm_수주 = [d['수주액']/1e8 for d in h_m]
+                            fig_hx.add_trace(go.Bar(
+                                x=month_labels, y=hm_rates,
+                                marker_color='rgba(101,118,255,0.3)',
+                                text=[f"<b>{rv}%</b>" for rv in hm_rates],
+                                textposition='inside', insidetextanchor='middle',
+                                textfont=dict(size=12, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
+                                customdata=list(zip(hm_발주, hm_수주)),
+                                hovertemplate='<b>%{x} 월간</b><br>발주액 %{customdata[0]:,.0f}억<br><b style="color:' + h_accent + '">수주액 %{customdata[1]:,.0f}억</b><extra></extra>',
+                            ))
+                        ar, ag, ab = int(h_accent[1:3],16), int(h_accent[3:5],16), int(h_accent[5:7],16)
+                        fig_hx.add_trace(go.Scatter(
+                            x=month_labels, y=hx_rates,
+                            mode='lines+markers+text', fill='tozeroy',
+                            line=dict(color=h_accent, width=2.5, shape='spline'),
+                            fillcolor=f'rgba({ar},{ag},{ab},0.08)',
+                            marker=dict(size=6, color=h_accent),
+                            text=[f"<b>{rv}%</b>" for rv in hx_rates],
+                            textposition='top center',
+                            textfont=dict(size=12, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
+                            customdata=list(zip(hx_수주, hx_발주)),
+                            hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + h_accent + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
+                            cliponaxis=False,
+                        ))
+                        fig_hx.update_layout(
+                            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
+                            height=320, margin=dict(t=25, b=25, l=45, r=60),
+                            yaxis=dict(gridcolor='rgba(255,255,255,0.08)', range=[0, 100],
+                                       tickfont=dict(size=9, color='rgba(255,255,255,0.35)')),
+                            xaxis=dict(tickfont=dict(size=9, color='rgba(255,255,255,0.45)'), showgrid=False),
+                            showlegend=False, bargap=0.4,
+                            hoverlabel=dict(bgcolor='#232e7a', font_size=13, font_family='Nunito Sans'),
+                        )
+                        st.plotly_chart(fig_hx, use_container_width=True, config={'displayModeBar': False})
+
+                # 월간 변동요인 분석 + 종합분석 다운로드
+                    소그룹_변동분석_all = trend_data.get('소그룹_변동분석', {})
+                    변동분석_sub = 소그룹_변동분석_all.get(h_key, trend_data.get('변동분석', {}))
+                    dl_col1, dl_col2 = st.columns([1, 1])
+                    with dl_col1:
+                        st.markdown(f'<div style="font-size:0.78rem; font-weight:600; color:{COLORS["text_dark"]}; padding:2px 0;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                    with dl_col2:
+                        import io
+                        xl_buf_sub = io.BytesIO()
+                        with pd.ExcelWriter(xl_buf_sub, engine='openpyxl') as writer:
+                            if h_c:
+                                pd.DataFrame(_xl_rows(h_c)).to_excel(writer, sheet_name=f'{h_title}_누계', index=False)
+                            if h_m:
+                                pd.DataFrame(_xl_rows(h_m)).to_excel(writer, sheet_name=f'{h_title}_월간', index=False)
+                            for sec in ['공사', '용역', '물품', '쇼핑몰']:
+                                sd = 누계_소분야.get(h_key, {}).get(sec, [])
+                                if sd:
+                                    pd.DataFrame(_xl_rows(sd)).to_excel(writer, sheet_name=f'{sec}_누계', index=False)
+                                sd2 = 월간_소분야.get(h_key, {}).get(sec, [])
+                                if sd2:
+                                    pd.DataFrame(_xl_rows(sd2)).to_excel(writer, sheet_name=f'{sec}_월간', index=False)
+                        st.download_button(f'📥 종합분석 다운로드', xl_buf_sub.getvalue(),
+                                           file_name=f'{h_title}_종합분석_{year}.xlsx',
+                                           mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                           use_container_width=True, key=f'dl_{h_key}')
+                    sel_sub = st.selectbox('월별 변동 원인', ['선택'] + mo_list, key=f'변동_{h_key}', label_visibility='collapsed')
+                    if sel_sub != '선택':
+                        sk_sub = mk_map.get(sel_sub, '')
+                        vi_sub = 변동분석_sub.get(sk_sub, {})
+                        vv_sub = vi_sub.get('변동', 0)
+                        vc_sub = '#1ee0ac' if vv_sub >= 0 else '#e85347'
+                        va_sub = '↑' if vv_sub >= 0 else '↓'
+                        st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+<span style="font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']};">{sel_sub} 전체 변동</span>
+<span style="font-size:0.78rem; font-weight:700; color:{vc_sub};">{va_sub} {abs(vv_sub):.1f}%p · {vi_sub.get('방향','')}</span>
+</div>
+<div style="font-size:0.65rem; color:{COLORS['text_light']};">{vi_sub.get('이전율',0)}% → {vi_sub.get('현재율',0)}%</div>''', unsafe_allow_html=True)
+
+                        # 분야별 변동 카드
+                        소그룹_분야변동_all = trend_data.get('소그룹_분야변동', {})
+                        분야변동_data = 소그룹_분야변동_all.get(h_key, trend_data.get('분야변동', {}))
+                        sec_badge_colors = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
+                        sec_html = ''
+                        for sec_name in ['공사', '용역', '물품', '쇼핑몰']:
+                            sec_d = 분야변동_data.get(sec_name, {}).get(sk_sub, {})
+                            sd = sec_d.get('변동', 0)
+                            sc = '#1ee0ac' if sd >= 0 else '#e85347'
+                            sa = '↑' if sd >= 0 else '↓'
+                            bc = sec_badge_colors[sec_name]
+                            sec_html += f'<div style="display:inline-flex; align-items:center; gap:6px; padding:5px 12px; margin:3px 6px 3px 0; border-radius:6px; background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]};">'
+                            sec_html += f'<span style="font-size:0.75rem; font-weight:700; color:{bc};">{sec_name}</span>'
+                            sec_html += f'<span style="font-size:0.8rem; font-weight:800; color:{sc};">{sa}{abs(sd):.1f}%p</span>'
+                            sec_html += f'<span style="font-size:0.68rem; color:{COLORS["text_light"]};">{sec_d.get("이전율",0)}→{sec_d.get("현재율",0)}%</span>'
+                            sec_html += '</div>'
+                        st.markdown(f'<div style="padding:6px 0;">{sec_html}</div>', unsafe_allow_html=True)
+
+                        # 주요 수주/유출 계약
+                        list_html = ''
+                        for sec_name in ['공사', '용역', '물품', '쇼핑몰']:
+                            sec_d = 분야변동_data.get(sec_name, {}).get(sk_sub, {})
+                            sd = sec_d.get('변동', 0)
+                            sec_cts = sec_d.get('주요계약', [])
+                            bc = sec_badge_colors[sec_name]
+                            for ct in sec_cts[:3]:
+                                av = ct.get('유출액', ct.get('수주액', 0))
+                                amt_color = '#e85347' if sd < 0 else '#1ee0ac'
+                                list_html += f'<div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid {COLORS["card_border"]};">'
+                                list_html += f'<span style="font-size:0.65rem; font-weight:700; color:#fff; background:{bc}; padding:2px 6px; border-radius:3px; white-space:nowrap;">{sec_name}</span>'
+                                list_html += f'<span style="font-size:0.72rem; color:{COLORS["text_dark"]}; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{ct.get("계약명","")}</span>'
+                                list_html += f'<span style="font-size:0.65rem; color:{COLORS["text_light"]}; white-space:nowrap;">{ct.get("기관","")}</span>'
+                                list_html += f'<span style="font-size:0.72rem; font-weight:700; color:{amt_color}; font-family:Nunito Sans; white-space:nowrap;">{av/1e8:,.1f}억</span>'
+                                list_html += '</div>'
+                        if list_html:
+                            title_text = '주요 유출 원인 계약' if vv_sub < 0 else '주요 수주 계약'
+                            st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:6px 0 2px;">📋 {title_text}</div>{list_html}', unsafe_allow_html=True)
+
+                with col_s:
+                    sg_분야c = 누계_소분야.get(h_key, {})
+                    sg_분야m = 월간_소분야.get(h_key, {})
+                    for row_secs in [['공사', '용역'], ['물품', '쇼핑몰']]:
+                        sc1, sc2 = st.columns(2)
+                        for col_obj, sector in zip([sc1, sc2], row_secs):
+                            sd_c = sg_분야c.get(sector, [])
+                            sd_m = sg_분야m.get(sector, [])
+                            s_color = sec_colors[sector]
+                            with col_obj:
+                                st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:2px 0;">{sector} 수주율 변동</div>', unsafe_allow_html=True)
+                                MAX_SHOW = 5
+                                s_labels = month_labels[-MAX_SHOW:]
+                                sd_c_s = sd_c[-MAX_SHOW:]
+                                sd_m_s = sd_m[-MAX_SHOW:] if sd_m else []
+                                if sd_c_s:
+                                    fig_sc = go.Figure()
+                                    r, g, b = int(s_color[1:3],16), int(s_color[3:5],16), int(s_color[5:7],16)
+                                    sc_rates = [d['수주율'] for d in sd_c_s]
+                                    sc_수주 = [d['수주액']/1e8 for d in sd_c_s]
+                                    sc_발주 = [d['발주액']/1e8 for d in sd_c_s]
+                                    if sd_m_s:
+                                        sm_rates = [d['수주율'] for d in sd_m_s]
+                                        sm_발주 = [d['발주액']/1e8 for d in sd_m_s]
+                                        sm_수주 = [d['수주액']/1e8 for d in sd_m_s]
+                                        bar_c = [f'rgba({r},{g},{b},0.18)'] * len(sm_rates)
+                                        if bar_c: bar_c[-1] = f'rgba({r},{g},{b},0.35)'
+                                        fig_sc.add_trace(go.Bar(
+                                            x=s_labels, y=sm_rates, marker_color=bar_c,
+                                            text=[f"<b>{rv}%</b>" for rv in sm_rates],
+                                            textposition='inside', insidetextanchor='middle',
+                                            textfont=dict(size=10, color=s_color, family='Nunito Sans'),
+                                            customdata=list(zip(sm_발주, sm_수주)),
+                                            hovertemplate='<b>%{x} 월간</b><br>발주 %{customdata[0]:,.0f}억<br><b style="color:' + s_color + '">수주 %{customdata[1]:,.0f}억</b><extra></extra>',
+                                        ))
+                                    fig_sc.add_trace(go.Scatter(
+                                        x=s_labels, y=sc_rates, mode='lines+markers+text', fill='tozeroy',
+                                        line=dict(color=s_color, width=2, shape='spline'),
+                                        fillcolor=f'rgba({r},{g},{b},0.08)',
+                                        marker=dict(size=5, color=s_color),
+                                        text=[f"<b>{rv}%</b>" for rv in sc_rates],
+                                        textposition='top center',
+                                        textfont=dict(size=14, color='#364a63', family='Nunito Sans'),
+                                        customdata=list(zip(sc_수주, sc_발주)),
+                                        hovertemplate='<b>%{x} 누계 %{y}%</b><br>계약 %{customdata[1]:,.0f}억<br><b style="color:' + s_color + '">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
+                                        cliponaxis=False,
+                                    ))
+                                    fig_sc.update_layout(
+                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                        height=230, margin=dict(t=22, b=16, l=0, r=0),
+                                        yaxis=dict(visible=False, range=[0, 100]),
+                                        xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
+                                        showlegend=False, bargap=0.35,
+                                        hoverlabel=dict(bgcolor='#fff', font_size=14),
+                                    )
+                                    st.plotly_chart(fig_sc, use_container_width=True, config={'displayModeBar': False})
+
+
+        # ═══════════════════════════════════════
+        # 기관별 종합분석
+        # ═══════════════════════════════════════
+        st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(f'''<div style="padding:4px 0 6px;">
+<div style="font-size:0.85rem; font-weight:700; color:{COLORS['text_dark']};">🏛️ 기관별 종합분석</div>
+<div style="font-size:0.68rem; color:{COLORS['text_light']};">개별 기관의 히어로 차트 · 분야별 수주율 · 월간 변동요인 분석</div>
+</div>''', unsafe_allow_html=True)
+
+            agency_q = st.text_input('기관 검색', key='trend_agency_q', placeholder='기관명 입력...', label_visibility='collapsed')
+            if agency_q and len(agency_q) >= 2:
+                ag_data = fetch_api(f"/api/monthly-trend/agency?q={agency_q}")
+                if ag_data:
+                    results = ag_data.get('검색결과', {})
+                    if results:
+                        ag_names = list(results.keys())
+                        selected_ag = st.selectbox('기관 선택', ag_names, key='trend_ag_sel')
+                        if selected_ag:
+                            ag_info = results[selected_ag]
+                            ag_누계 = ag_info.get('누계', [])
+                            ag_월간 = ag_info.get('월간', [])
+                            분야_누계 = ag_info.get('분야별_누계', {})
+                            분야_월간 = ag_info.get('분야별_월간', {})
+
+                            if ag_누계:
+                                # ── 히어로 + 2×2 레이아웃 ──
+                                col_ah, col_as = st.columns([5, 5])
+
+                                with col_ah:
+                                    # 히어로 헤더
+                                    ag_rate = ag_누계[-1]['수주율'] if ag_누계 else 0
+                                    ag_발주 = ag_누계[-1]['발주액'] if ag_누계 else 0
+                                    ag_수주 = ag_누계[-1]['수주액'] if ag_누계 else 0
+                                    ag_dtxt = ""
+                                    if len(ag_누계) >= 2:
+                                        ag_delta = round(ag_누계[-1]['수주율'] - ag_누계[-2]['수주율'], 1)
+                                        ag_dtxt = f"({'↑' if ag_delta>=0 else '↓'} {abs(ag_delta):.1f}%p)"
+
+                                    st.markdown(f'''<div style="background:linear-gradient(135deg, #1a2360 0%, #232e7a 50%, #2d3a8c 100%);
+                                        border-radius:12px; padding:18px 20px 10px; margin-bottom:8px;">
+<div style="font-size:0.78rem; font-weight:600; color:rgba(255,255,255,0.7);">📊 {selected_ag} 수주율 월간 변동</div>
+<div style="display:flex; justify-content:space-between; align-items:baseline; margin:4px 0 8px;">
+<div><span style="font-size:1.8rem; font-weight:800; color:#fff; font-family:Nunito Sans,sans-serif;">현재 {ag_rate}%</span>
+<span style="font-size:0.7rem; color:rgba(255,255,255,0.5); margin-left:6px;">{ag_dtxt}</span></div>
+<div style="text-align:right;">
+<div style="font-size:0.68rem; color:rgba(255,255,255,0.5);">발주액 <b style="color:#fff;">{format_억(ag_발주)}</b></div>
+<div style="font-size:0.68rem; color:rgba(255,255,255,0.5);">수주액 <b style="color:#1ee0ac;">{format_억(ag_수주)}</b></div>
+</div></div></div>''', unsafe_allow_html=True)
+
+                                    # 히어로 차트
+                                    fig_ah = go.Figure()
+                                    c_rates = [d['수주율'] for d in ag_누계]
+                                    c_발주s = [d['발주액']/1e8 for d in ag_누계]
+                                    c_수주s = [d['수주액']/1e8 for d in ag_누계]
+
+                                    if ag_월간:
+                                        m_rates = [d['수주율'] for d in ag_월간]
+                                        m_발주s = [d['발주액']/1e8 for d in ag_월간]
+                                        m_수주s = [d['수주액']/1e8 for d in ag_월간]
+                                        bar_c = ['rgba(101,118,255,0.35)'] * len(m_rates)
+                                        if bar_c: bar_c[-1] = 'rgba(101,118,255,0.6)'
+                                        fig_ah.add_trace(go.Bar(
+                                            x=month_labels, y=m_rates, marker_color=bar_c,
+                                            text=[f"{r}%" for r in m_rates], textposition='inside', insidetextanchor='middle',
+                                            textfont=dict(size=9, color='rgba(255,255,255,0.85)', family='Nunito Sans'),
+                                            customdata=list(zip(m_발주s, m_수주s)),
+                                            hovertemplate='<b>%{x} 월간</b><br>발주 %{customdata[0]:,.0f}억<br><b style="color:#1ee0ac">수주 %{customdata[1]:,.0f}억</b><extra></extra>',
+                                        ))
+
+                                    fig_ah.add_trace(go.Scatter(
+                                        x=month_labels, y=c_rates, mode='lines+markers+text',
+                                        line=dict(color='#00d2ff', width=2.5, shape='spline'),
+                                        marker=dict(size=6, color='#00d2ff'),
+                                        text=[f"<b>{r}%</b>" for r in c_rates], textposition='top center',
+                                        textfont=dict(size=11, color='#fff', family='Nunito Sans'),
+                                        customdata=list(zip(c_수주s, c_발주s)),
+                                        hovertemplate='<b>%{x} 누계 %{y}%</b><br>발주 %{customdata[1]:,.0f}억<br><b style="color:#1ee0ac">수주 %{customdata[0]:,.0f}억</b><extra></extra>',
+                                        cliponaxis=False,
+                                    ))
+                                    fig_ah.update_layout(
+                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(35,46,122,1)',
+                                        height=280, margin=dict(t=20, b=20, l=40, r=50),
+                                        yaxis=dict(gridcolor='rgba(255,255,255,0.08)', range=[0, 100],
+                                                   tickfont=dict(size=9, color='rgba(255,255,255,0.35)')),
+                                        xaxis=dict(tickfont=dict(size=9, color='rgba(255,255,255,0.45)'), showgrid=False),
+                                        showlegend=False, bargap=0.4,
+                                        hoverlabel=dict(bgcolor='#232e7a', font_size=13, font_family='Nunito Sans'),
+                                    )
+                                    st.plotly_chart(fig_ah, use_container_width=True, config={'displayModeBar': False})
+
+                                    # 변동분석 + 다운로드
+                                    dl1, dl2 = st.columns([1, 1])
+                                    with dl1:
+                                        st.markdown(f'<div style="font-size:0.78rem; font-weight:600; color:{COLORS["text_dark"]}; padding:2px 0;">🔍 월간 변동요인 분석</div>', unsafe_allow_html=True)
+                                    with dl2:
+                                        import io
+                                        xl_buf = io.BytesIO()
+                                        with pd.ExcelWriter(xl_buf, engine='openpyxl') as writer:
+                                            pd.DataFrame(_xl_rows(ag_누계)).to_excel(writer, sheet_name='누계', index=False)
+                                            if ag_월간:
+                                                pd.DataFrame(_xl_rows(ag_월간)).to_excel(writer, sheet_name='월간', index=False)
+                                            for _sec in ['공사', '용역', '물품', '쇼핑몰']:
+                                                _sd = 분야_누계.get(_sec, [])
+                                                if _sd: pd.DataFrame(_xl_rows(_sd)).to_excel(writer, sheet_name=f'{_sec}_누계', index=False)
+                                                _sd2 = 분야_월간.get(_sec, [])
+                                                if _sd2: pd.DataFrame(_xl_rows(_sd2)).to_excel(writer, sheet_name=f'{_sec}_월간', index=False)
+                                        st.download_button(f'📥 종합분석 다운로드', xl_buf.getvalue(),
+                                                           file_name=f'{selected_ag}_종합분석_{year}.xlsx',
+                                                           mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                                           use_container_width=True, key='dl_agency')
+
+                                    # 월 선택 변동분석
+                                    if len(ag_누계) >= 2:
+                                        ag_mo_list = [f"{int(ag_누계[i+1]['월'])}월" for i in range(len(ag_누계)-1)]
+                                        sel_ag_m = st.selectbox('월별 변동', ['선택'] + ag_mo_list, key='변동_agency', label_visibility='collapsed')
+                                        if sel_ag_m != '선택':
+                                            idx = ag_mo_list.index(sel_ag_m) + 1
+                                            prev_r = ag_누계[idx-1]['수주율']
+                                            cur_r = ag_누계[idx]['수주율']
+                                            ag_vv = round(cur_r - prev_r, 1)
+                                            ag_vc = '#1ee0ac' if ag_vv >= 0 else '#e85347'
+                                            ag_va = '↑' if ag_vv >= 0 else '↓'
+
+                                            st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
+<span style="font-size:0.78rem; font-weight:700; color:{COLORS['text_dark']};">{sel_ag_m} 전체 변동</span>
+<span style="font-size:0.78rem; font-weight:700; color:{ag_vc};">{ag_va} {abs(ag_vv):.1f}%p · {'감소' if ag_vv < 0 else '증가'}</span>
+</div>
+<div style="font-size:0.65rem; color:{COLORS['text_light']};">{prev_r}% → {cur_r}%</div>''', unsafe_allow_html=True)
+
+                                            # 분야별 변동 뱃지
+                                            sec_badge_ag = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
+                                            sh = ''
+                                            for sn in ['공사', '용역', '물품', '쇼핑몰']:
+                                                sc = 분야_누계.get(sn, [])
+                                                if sc and len(sc) > idx:
+                                                    sp = sc[idx-1]['수주율'] if idx > 0 else 0
+                                                    sn_r = sc[idx]['수주율']
+                                                    sd = round(sn_r - sp, 1)
+                                                else:
+                                                    sp, sn_r, sd = 0, 0, 0
+                                                s_c = '#1ee0ac' if sd >= 0 else '#e85347'
+                                                s_a = '↑' if sd >= 0 else '↓'
+                                                bc = sec_badge_ag[sn]
+                                                sh += f'<div style="display:inline-flex; align-items:center; gap:6px; padding:5px 12px; margin:3px 6px 3px 0; border-radius:6px; background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]};">'
+                                                sh += f'<span style="font-size:0.75rem; font-weight:700; color:{bc};">{sn}</span>'
+                                                sh += f'<span style="font-size:0.8rem; font-weight:800; color:{s_c};">{s_a}{abs(sd):.1f}%p</span>'
+                                                sh += f'<span style="font-size:0.68rem; color:{COLORS["text_light"]};">{sp}→{sn_r}%</span>'
+                                                sh += '</div>'
+                                            st.markdown(f'<div style="padding:6px 0;">{sh}</div>', unsafe_allow_html=True)
+
+                                            # 주요 계약 목록
+                                            ag_변동 = ag_info.get('변동분석', {})
+                                            prev_mm = f"{int(ag_누계[idx-1]['월']):02d}"
+                                            cur_mm = f"{int(ag_누계[idx]['월']):02d}"
+                                            vk = f"{prev_mm}→{cur_mm}"
+                                            vd = ag_변동.get(vk, {})
+                                            주요계약 = vd.get('주요계약', [])
+                                            if 주요계약:
+                                                is_down = ag_vv < 0
+                                                label = '주요 유출 계약' if is_down else '주요 수주 계약'
+                                                st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:6px 0 3px;">📋 {label}</div>', unsafe_allow_html=True)
+                                                for ci, ct in enumerate(주요계약):
+                                                    ct_amt = ct.get('발주액', 0)
+                                                    ct_val = ct.get('유출액', ct.get('수주액', 0))
+                                                    val_label = '유출' if is_down else '수주'
+                                                    val_color = '#e85347' if is_down else '#1ee0ac'
+                                                    st.markdown(f'''<div style="display:flex; justify-content:space-between; align-items:center;
+                                                        padding:4px 10px; margin:2px 0; border-radius:5px; background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']};">
+<div><span style="font-size:0.68rem; padding:1px 5px; border-radius:3px; background:rgba(101,118,255,0.1); color:#6576ff; margin-right:6px;">{ct.get('분야','')}</span>
+<span style="font-size:0.72rem; color:{COLORS['text_dark']};">{ct.get('계약명','')[:30]}</span></div>
+<div style="text-align:right;">
+<span style="font-size:0.68rem; color:{COLORS['text_light']};">발주 {format_억(ct_amt)}</span>
+<span style="font-size:0.72rem; font-weight:700; color:{val_color}; margin-left:8px;">{val_label} {format_억(ct_val)}</span>
+</div></div>''', unsafe_allow_html=True)
+
+                                with col_as:
+                                    # 2×2 분야별 차트
+                                    for row_secs in [['공사', '용역'], ['물품', '쇼핑몰']]:
+                                        sc1, sc2 = st.columns(2)
+                                        for col_o, sect in zip([sc1, sc2], row_secs):
+                                            sd_c = 분야_누계.get(sect, [])
+                                            sd_m = 분야_월간.get(sect, [])
+                                            sclr = sec_colors[sect]
+                                            with col_o:
+                                                st.markdown(f'<div style="font-size:0.72rem; font-weight:700; color:{COLORS["text_dark"]}; padding:2px 0;">{sect} 수주율 변동</div>', unsafe_allow_html=True)
+                                                MAX_SH = 5
+                                                s_lb = month_labels[-MAX_SH:]
+                                                sdc = sd_c[-MAX_SH:]
+                                                sdm = sd_m[-MAX_SH:] if sd_m else []
+                                                if sdc:
+                                                    fig_s = go.Figure()
+                                                    _r, _g, _b = int(sclr[1:3],16), int(sclr[3:5],16), int(sclr[5:7],16)
+                                                    cr = [d['수주율'] for d in sdc]
+                                                    if sdm:
+                                                        mr = [d['수주율'] for d in sdm]
+                                                        bc = [f'rgba({_r},{_g},{_b},0.18)'] * len(mr)
+                                                        if bc: bc[-1] = f'rgba({_r},{_g},{_b},0.35)'
+                                                        fig_s.add_trace(go.Bar(
+                                                            x=s_lb, y=mr, marker_color=bc,
+                                                            text=[f"<b>{v}%</b>" for v in mr],
+                                                            textposition='inside', insidetextanchor='middle',
+                                                            textfont=dict(size=10, color=sclr, family='Nunito Sans'),
+                                                        ))
+                                                    fig_s.add_trace(go.Scatter(
+                                                        x=s_lb, y=cr, mode='lines+markers+text', fill='tozeroy',
+                                                        line=dict(color=sclr, width=2, shape='spline'),
+                                                        fillcolor=f'rgba({_r},{_g},{_b},0.08)',
+                                                        marker=dict(size=5, color=sclr),
+                                                        text=[f"<b>{v}%</b>" for v in cr],
+                                                        textposition='top center',
+                                                        textfont=dict(size=14, color='#364a63', family='Nunito Sans'),
+                                                        cliponaxis=False,
+                                                    ))
+                                                    fig_s.update_layout(
+                                                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                                        height=230, margin=dict(t=22, b=16, l=0, r=0),
+                                                        yaxis=dict(visible=False, range=[0, 100]),
+                                                        xaxis=dict(tickfont=dict(size=7, color=COLORS['text_light']), showgrid=False),
+                                                        showlegend=False, bargap=0.35,
+                                                        hoverlabel=dict(bgcolor='#fff', font_size=14),
+                                                    )
+                                                    st.plotly_chart(fig_s, use_container_width=True, config={'displayModeBar': False})
+                    else:
+                        st.info(f"'{agency_q}'에 해당하는 기관이 없습니다.")
+            elif agency_q:
+                st.caption('2글자 이상 입력해주세요.')
+    else:
+        st.warning('월별 추이 데이터를 불러올 수 없습니다. 캐시를 먼저 생성해주세요.')
+
 

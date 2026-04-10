@@ -25,3 +25,7 @@ description: 새 대화 시작 시 자동 적용되는 작업 지침
     - Python `paramiko` 라이브러리로 접속: `pip install paramiko`
     - 접속 정보: `root@49.50.133.160:22`, 비밀번호 인증
     - 배포 명령: `cd /opt/busan && git pull origin main --ff-only && python3 build_api_cache.py && systemctl restart busan-api`
+
+6. **터미널 명령어 실행 규칙 (행업 방지)**
+    - 윈도우 환경에서 명령어 실행 시 프로세스가 종료되지 않고 무한 대기(Hang)하는 문제를 방지하기 위해, 모든 로컬 쉘 실행 시에는 `cmd /c` 접두사를 사용할 것.
+    - 예: `python script.py` 대신 `cmd /c python script.py` 사용.

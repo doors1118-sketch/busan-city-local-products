@@ -210,6 +210,7 @@ def search_agency_shop(q: str = Query(..., min_length=1, description="검색할 
         "검색결과": results
     }
 
+
 # ════════════════════════════════════════════
 #   업체 검색 API (busan_companies_master.db 직접 쿼리)
 # ════════════════════════════════════════════
@@ -310,8 +311,83 @@ def search_by_product(
     except Exception as e:
         return {"error": str(e)}
 
+# ── 월별 추이 ──
+MONTHLY_CACHE_FILE = 'monthly_cache.json'
+
+def load_monthly_cache():
+    try:
+        with open(MONTHLY_CACHE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[ERROR] 월별 캐시 로드 실패: {e}")
+        return {"error": f"월별 캐시 파일 로드 실패: {str(e)}"}
+
+@app.get("/api/monthly-trend", tags=["종합분석"])
+def get_monthly_trend():
+    """월별 누계/단월 수주율 추이 (전체, 그룹별, 분야별) + 변동 원인"""
+    mc = load_monthly_cache()
+    ac = load_cache()
+    # 소그룹 누계의 최종 값을 API 캐시 기준으로 보정 (데이터 정합성)
+    누계_소그룹 = mc.get("누계_소그룹", {})
+    누계_소그룹분야 = mc.get("누계_소그룹분야", {})
+    sg_ranking = ac.get("5_기관랭킹_소그룹", {})
+    for sg_key, sg_data in sg_ranking.items():
+        # 합계 보정
+        if sg_key in 누계_소그룹 and 누계_소그룹[sg_key]:
+            last = 누계_소그룹[sg_key][-1]
+            last['발주액'] = sg_data.get('발주액', last['발주액'])
+            last['수주액'] = sg_data.get('수주액', last['수주액'])
+            last['수주율'] = sg_data.get('수주율', last['수주율'])
+        # 분야별 보정
+        api_sec = sg_data.get('분야별', {})
+        if sg_key in 누계_소그룹분야 and api_sec:
+            for sec_name, sec_vals in api_sec.items():
+                sec_list = 누계_소그룹분야[sg_key].get(sec_name, [])
+                if sec_list:
+                    sec_last = sec_list[-1]
+                    sec_last['발주액'] = sec_vals.get('발주액', sec_last['발주액'])
+                    sec_last['수주액'] = sec_vals.get('수주액', sec_last['수주액'])
+                    sec_last['수주율'] = sec_vals.get('수주율', sec_last['수주율'])
+    return {
+        "generated_at": mc.get("generated_at"),
+        "year": mc.get("year"),
+        "months": mc.get("months", []),
+        "누계_그룹": mc.get("누계_그룹", {}),
+        "누계_분야": mc.get("누계_분야", {}),
+        "월간_그룹": mc.get("월간_그룹", {}),
+        "월간_분야": mc.get("월간_분야", {}),
+        "변동분석": mc.get("변동분석", {}),
+        "분야변동": mc.get("분야변동", {}),
+        "누계_소그룹": 누계_소그룹,
+        "월간_소그룹": mc.get("월간_소그룹", {}),
+        "누계_소그룹분야": 누계_소그룹분야,
+        "월간_소그룹분야": mc.get("월간_소그룹분야", {}),
+        "소그룹_분야변동": mc.get("소그룹_분야변동", {}),
+        "소그룹_변동분석": mc.get("소그룹_변동분석", {}),
+    }
+
+@app.get("/api/monthly-trend/agency", tags=["종합분석"])
+def get_monthly_trend_agency(q: str = Query(..., min_length=1, description="검색할 기관명")):
+    """특정 기관의 월별 누계/단월 수주율 추이"""
+    mc = load_monthly_cache()
+    기관별 = mc.get("기관별", {})
+    
+    results = {}
+    q_clean = q.strip()
+    for unit, details in 기관별.items():
+        if q_clean in unit:
+            results[unit] = details
+            
+    return {
+        "generated_at": mc.get("generated_at"),
+        "months": mc.get("months", []),
+        "검색어": q_clean,
+        "검색결과": results
+    }
+
 if __name__ == '__main__':
     import uvicorn
     print("[API] 부산 조달 모니터링 API 서버 시작")
     print("   http://localhost:8000/docs")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

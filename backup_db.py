@@ -69,6 +69,7 @@ def backup_and_upload():
     
     # 2. NCP Object Storage 업로드
     print(f"\n  [Object Storage 업로드]")
+    s3 = None
     try:
         s3 = ensure_bucket()
         for fpath in backup_files:
@@ -97,20 +98,23 @@ def backup_and_upload():
     print(f"  정리 완료: {deleted}개 삭제, {len(os.listdir(BACKUP_DIR))}개 보관 중")
     
     # 4. 오래된 Object Storage 백업 삭제 (7일 초과)
-    print(f"\n  [Object Storage 정리] {RETENTION_DAYS}일 초과 백업 삭제")
-    try:
-        objs = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix='daily/')
-        s3_deleted = 0
-        for obj in objs.get('Contents', []):
-            key = obj['Key']
-            last_mod = obj['LastModified'].replace(tzinfo=None)
-            if last_mod < cutoff:
-                s3.delete_object(Bucket=BUCKET_NAME, Key=key)
-                print(f"    삭제: {key}")
-                s3_deleted += 1
-        print(f"  정리 완료: {s3_deleted}개 삭제")
-    except Exception as e:
-        print(f"  ⚠️ Object Storage 정리 실패: {e}")
+    if s3 is not None:
+        print(f"\n  [Object Storage 정리] {RETENTION_DAYS}일 초과 백업 삭제")
+        try:
+            objs = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix='daily/')
+            s3_deleted = 0
+            for obj in objs.get('Contents', []):
+                key = obj['Key']
+                last_mod = obj['LastModified'].replace(tzinfo=None)
+                if last_mod < cutoff:
+                    s3.delete_object(Bucket=BUCKET_NAME, Key=key)
+                    print(f"    삭제: {key}")
+                    s3_deleted += 1
+            print(f"  정리 완료: {s3_deleted}개 삭제")
+        except Exception as e:
+            print(f"  ⚠️ Object Storage 정리 실패: {e}")
+    else:
+        print(f"\n  [Object Storage 정리] 통과 (S3 연결 안 됨)")
     
     print(f"\n{'='*50}")
     print(f" ✅ DB 백업 완료!")
