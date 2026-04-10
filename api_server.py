@@ -9,7 +9,8 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-import json, sys, math
+import json, sys, math, os, sqlite3
+from typing import Optional
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -28,6 +29,13 @@ app = FastAPI(title="부산 조달 모니터링 API", version="1.0", default_res
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 CACHE_FILE = 'api_cache.json'
+DB_COMPANIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'busan_companies_master.db')
+
+def _get_company_db():
+    """부산 업체 마스터 DB 연결 (읽기 전용)"""
+    conn = sqlite3.connect(f"file:{DB_COMPANIES}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def load_cache():
     try:
@@ -201,6 +209,106 @@ def search_agency_shop(q: str = Query(..., min_length=1, description="검색할 
         "검색어": q_clean,
         "검색결과": results
     }
+
+# ════════════════════════════════════════════
+#   업체 검색 API (busan_companies_master.db 직접 쿼리)
+# ════════════════════════════════════════════
+
+@app.get("/api/company/license-list", tags=["업체 검색"])
+def get_license_list(q: Optional[str] = Query(None, description="업종명 검색어 (포함 검색)")):
+    """면허업종 목록 + 업체수 (업체수 내림차순). q 파라미터로 필터링 가능"""
+    try:
+        conn = _get_company_db()
+        if q and q.strip():
+            rows = conn.execute(
+                "SELECT indstrytyNm, COUNT(DISTINCT bizno) cnt FROM company_industry "
+                "WHERE indstrytyNm LIKE ? GROUP BY indstrytyNm ORDER BY cnt DESC",
+                (f"%{q.strip()}%",)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT indstrytyNm, COUNT(DISTINCT bizno) cnt FROM company_industry "
+                "GROUP BY indstrytyNm ORDER BY cnt DESC"
+            ).fetchall()
+        conn.close()
+        return {
+            "총업종수": len(rows),
+            "업종목록": [{"업종명": r["indstrytyNm"], "업체수": r["cnt"]} for r in rows]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/company/license-search", tags=["업체 검색"])
+def search_by_license(
+    q: str = Query(..., min_length=1, description="면허업종명 (정확 매칭 또는 포함 검색)"),
+    exact: bool = Query(False, description="True면 정확 매칭, False면 포함 검색"),
+    limit: int = Query(200, ge=1, le=1000, description="최대 반환 건수"),
+):
+    """면허업종으로 업체 검색 → 업체명/대표자/소재지/주소/본사구분/개업일"""
+    try:
+        conn = _get_company_db()
+        q_clean = q.strip()
+        where = "i.indstrytyNm = ?" if exact else "i.indstrytyNm LIKE ?"
+        param = q_clean if exact else f"%{q_clean}%"
+        rows = conn.execute(f"""
+            SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs, c.dtlAdrs,
+                   c.hdoffceDivNm, c.corpBsnsDivNm, c.opbizDt, c.rgstDt,
+                   c.rprsntDtlPrdnm, i.indstrytyNm, i.rprsntIndstrytyYn
+            FROM company_industry i
+            JOIN company_master c ON i.bizno = c.bizno
+            WHERE {where}
+            ORDER BY c.corpNm
+            LIMIT ?
+        """, (param, limit)).fetchall()
+        conn.close()
+        return {
+            "검색어": q_clean,
+            "검색결과수": len(rows),
+            "업체목록": [{
+                "업체명": r["corpNm"], "사업자번호": r["bizno"],
+                "대표자": r["ceoNm"], "소재지": r["rgnNm"],
+                "주소": r["adrs"], "상세주소": r["dtlAdrs"],
+                "본사구분": r["hdoffceDivNm"], "업체구분": r["corpBsnsDivNm"],
+                "대표품명": r["rprsntDtlPrdnm"],
+                "면허업종": r["indstrytyNm"], "대표업종여부": r["rprsntIndstrytyYn"],
+                "개업일": r["opbizDt"], "등록일": r["rgstDt"],
+            } for r in rows]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/company/product-search", tags=["업체 검색"])
+def search_by_product(
+    q: str = Query(..., min_length=1, description="대표품명 검색어 (포함 검색)"),
+    limit: int = Query(200, ge=1, le=1000, description="최대 반환 건수"),
+):
+    """대표품명(세부품명)으로 업체 검색 → 업체명/대표자/소재지/대표품명"""
+    try:
+        conn = _get_company_db()
+        q_clean = q.strip()
+        rows = conn.execute("""
+            SELECT corpNm, bizno, ceoNm, rgnNm, adrs, dtlAdrs,
+                   hdoffceDivNm, corpBsnsDivNm, rprsntDtlPrdnm, opbizDt, rgstDt
+            FROM company_master
+            WHERE rprsntDtlPrdnm LIKE ?
+            ORDER BY corpNm
+            LIMIT ?
+        """, (f"%{q_clean}%", limit)).fetchall()
+        conn.close()
+        return {
+            "검색어": q_clean,
+            "검색결과수": len(rows),
+            "업체목록": [{
+                "업체명": r["corpNm"], "사업자번호": r["bizno"],
+                "대표자": r["ceoNm"], "소재지": r["rgnNm"],
+                "주소": r["adrs"], "상세주소": r["dtlAdrs"],
+                "본사구분": r["hdoffceDivNm"], "업체구분": r["corpBsnsDivNm"],
+                "대표품명": r["rprsntDtlPrdnm"],
+                "개업일": r["opbizDt"], "등록일": r["rgstDt"],
+            } for r in rows]
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == '__main__':
     import uvicorn
