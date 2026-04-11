@@ -185,7 +185,7 @@ def build_cache():
     # --- 공사 (현장 필터 포함) ---
     print("  [공사] 계산 중...")
     df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo
+        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cnstrtsiteRgnNm
         FROM cnstwk_cntrct""", conn)
     df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     n_before = len(df); df = dedup_by_dcsn(df)

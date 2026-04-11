@@ -227,14 +227,41 @@ def check_busan_restriction(rgn_json_str):
 
 
 def filter_cnstwk_by_site(df, bid_df):
-    """공사 계약에서 부산 외 현장 배제 (bid_notices_raw 조인)"""
+    """공사 계약에서 부산 외 현장 배제 (공고 현장 + DB 자체 현장)
+    
+    1차: bid_notices_raw의 공고 현장소재지 (경쟁입찰)
+    2차: cnstwk_cntrct.cnstrtsiteRgnNm (조달데이터허브 임포트, 수의계약 포함)
+    coalesce(공고현장, DB현장) 으로 비부산 배제.
+    """
+    df = df.copy()
     df['ntceNo_str'] = df['ntceNo'].astype(str).str.replace('-', '', regex=False).str.strip()
+    
+    # DB 자체 현장 백업 (merge 전에 별도 보관)
+    has_db_site = 'cnstrtsiteRgnNm' in df.columns
+    if has_db_site:
+        df['_db_site'] = df['cnstrtsiteRgnNm'].fillna('').astype(str).str.strip()
+        df.drop(columns=['cnstrtsiteRgnNm'], inplace=True)
+    else:
+        df['_db_site'] = ''
+    
+    # 공고 현장 JOIN (이제 df에 cnstrtsiteRgnNm이 없으므로 충돌 없음)
     merged = pd.merge(df, bid_df[['bidNtceNo_str', 'cnstrtsiteRgnNm']],
                        how='left', left_on='ntceNo_str', right_on='bidNtceNo_str')
-    mask_outside = merged['cnstrtsiteRgnNm'].notna() & (~merged['cnstrtsiteRgnNm'].str.contains('부산', na=False))
+    
+    # coalesce: 공고현장 우선, 없으면 DB 현장
+    bid_site = merged['cnstrtsiteRgnNm'].fillna('').astype(str).str.strip()
+    db_site = merged['_db_site'].fillna('').astype(str).str.strip()
+    final_site = bid_site.where(bid_site != '', db_site)
+    
+    # 비부산 배제
+    mask_outside = (final_site != '') & (~final_site.str.contains('부산', na=False))
     n_dropped = mask_outside.sum()
     amt_dropped = merged.loc[mask_outside, 'totCntrctAmt'].astype(float).sum()
     filtered = merged[~mask_outside].copy()
+    
+    # cnstrtsiteRgnNm을 최종 현장으로 통일, 임시컬럼 제거
+    filtered['cnstrtsiteRgnNm'] = final_site[~mask_outside].values
+    filtered.drop(columns=['_db_site'], inplace=True, errors='ignore')
     return filtered, n_dropped, amt_dropped
 
 
