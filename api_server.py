@@ -341,6 +341,226 @@ def search_by_product(
     except Exception as e:
         return {"error": str(e)}
 
+# ── 물품 대분류 코드 ↔ 공식 분류명 매핑 (조달청 UNSPSC 기준) ──
+UNSPSC_CATEGORIES = {
+    "10": "농축수산물", "11": "광물/금속/비금속", "12": "화학약품",
+    "14": "종이/고무/플라스틱원재료", "15": "연료/윤활유",
+    "20": "광업/유전/가스장비", "21": "농림어업장비",
+    "22": "건설/건물유지관리장비", "23": "산업생산/제조장비",
+    "24": "산업취급/보관장비", "25": "차량/수송장비",
+    "26": "동력/발전장비", "27": "공구/일반기계",
+    "30": "구조물/건축자재", "31": "배관/난방자재", "32": "배선/통신자재",
+    "39": "전기/조명장비", "40": "냉난방/공조/환기",
+    "41": "실험/측정/관측장비", "42": "의료/보건장비",
+    "43": "정보통신/방송장비", "44": "사무용기기/용품",
+    "46": "안전/방호/소방", "47": "환경/수처리장비",
+    "48": "세정/위생장비", "49": "체육/레저/여행",
+    "50": "식품/음료/담배", "51": "약품/의약품",
+    "52": "가정주방/세탁/가전", "53": "피복/섬유/개인용품",
+    "54": "시계/보석/귀금속", "55": "인쇄/출판/광고",
+    "56": "가구/인테리어", "60": "악기/게임/완구",
+    "70": "서비스(임대/관리)", "72": "건설/유지보수서비스",
+    "73": "산업생산/유지보수서비스", "76": "환경/산업청소서비스",
+    "77": "교육/훈련서비스", "78": "운송/보관서비스",
+    "80": "경영/마케팅서비스", "81": "정보시스템서비스",
+    "82": "디자인/엔지니어링서비스", "83": "공공서비스/행정서비스",
+    "84": "금융/보험서비스", "85": "보건의료서비스",
+    "86": "교육/문화/예술서비스",
+    "90": "국방/공공질서", "92": "소방/구조서비스",
+    "93": "정치/시민활동",
+}
+# 역매핑: 분류명 → 코드 (포함검색용)
+_CAT_NAME_TO_CODES = {}
+for _code, _name in UNSPSC_CATEGORIES.items():
+    for _part in _name.replace("/", " ").split():
+        _CAT_NAME_TO_CODES.setdefault(_part, []).append(_code)
+
+@app.get("/api/company/category-list", tags=["업체 검색"])
+def get_category_list(q: Optional[str] = Query(None, description="분류코드(숫자) 또는 분류명(한글) 검색어")):
+    """물품 대분류 목록 + 공식분류명 + 업체수. q로 코드/이름 필터링 가능"""
+    try:
+        conn = _get_company_db()
+        rows = conn.execute("""
+            SELECT SUBSTR(rprsntDtlPrdnmNo, 1, 2) AS cat2, COUNT(*) AS cnt
+            FROM company_master
+            WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+            GROUP BY cat2 ORDER BY cnt DESC
+        """).fetchall()
+        conn.close()
+
+        result = []
+        qc = q.strip() if q else None
+        for r in rows:
+            code = r["cat2"]
+            cat_name = UNSPSC_CATEGORIES.get(code, "기타")
+            if qc:
+                if qc.isdigit():
+                    if not code.startswith(qc):
+                        continue
+                else:
+                    if qc not in cat_name:
+                        continue
+            result.append({"분류코드": code, "분류명": cat_name, "업체수": r["cnt"]})
+        return {"총분류수": len(result), "분류목록": result}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/company/category-search", tags=["업체 검색"])
+def search_by_category(
+    q: str = Query(..., min_length=1, description="분류코드(예:50) / 분류명(예:식품) / 대표품명(예:우유)"),
+    exact: bool = Query(False, description="True면 정확 매칭, False면 포함 검색"),
+    limit: int = Query(500, ge=1, le=5000, description="최대 반환 건수"),
+):
+    """물품 분류코드 / 분류명 / 대표품명으로 업체 검색 (자동 판별)
+
+    - 숫자 → 분류코드 검색 (rprsntDtlPrdnmNo 앞자리 매칭)
+    - 분류명 매칭 → 해당 코드의 업체 전체 반환 (예: '식품' → 코드50 전체)
+    - 그 외 → 대표품명 키워드 검색 (예: '우유', '컴퓨터')
+    """
+    try:
+        conn = _get_company_db()
+        q_clean = q.strip()
+
+        # 1) 숫자 → 분류코드 검색
+        if q_clean.isdigit():
+            search_mode = "분류코드"
+            if exact:
+                where = "SUBSTR(rprsntDtlPrdnmNo, 1, 2) = ?"
+                param = q_clean
+            else:
+                where = "rprsntDtlPrdnmNo LIKE ?"
+                param = f"{q_clean}%"
+        else:
+            # 2) 분류명 매칭 시도 (예: '식품' → 코드50, '음료' → 코드50)
+            matched_codes = set()
+            for part in q_clean.replace("/", " ").split():
+                for cat_code, cat_name in UNSPSC_CATEGORIES.items():
+                    if part in cat_name:
+                        matched_codes.add(cat_code)
+
+            if matched_codes:
+                search_mode = "분류명"
+                placeholders = ",".join("?" * len(matched_codes))
+                where = f"SUBSTR(rprsntDtlPrdnmNo, 1, 2) IN ({placeholders})"
+                param = tuple(sorted(matched_codes))
+            else:
+                # 3) 대표품명 키워드 검색
+                search_mode = "대표품명"
+                if exact:
+                    where = "rprsntDtlPrdnm = ?"
+                    param = q_clean
+                else:
+                    where = "rprsntDtlPrdnm LIKE ?"
+                    param = f"%{q_clean}%"
+
+        # 분류명 검색은 IN 절이므로 tuple, 나머지는 단일 param
+        if search_mode == "분류명":
+            rows = conn.execute(f"""
+                SELECT corpNm, bizno, ceoNm, rgnNm, adrs, dtlAdrs,
+                       hdoffceDivNm, corpBsnsDivNm, mnfctDivNm,
+                       rprsntDtlPrdnmNo, rprsntDtlPrdnm, opbizDt, rgstDt
+                FROM company_master
+                WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+                  AND {where}
+                ORDER BY corpNm
+                LIMIT ?
+            """, (*param, limit)).fetchall()
+            matched_names = [f"{c}({UNSPSC_CATEGORIES[c]})" for c in sorted(matched_codes)]
+        else:
+            rows = conn.execute(f"""
+                SELECT corpNm, bizno, ceoNm, rgnNm, adrs, dtlAdrs,
+                       hdoffceDivNm, corpBsnsDivNm, mnfctDivNm,
+                       rprsntDtlPrdnmNo, rprsntDtlPrdnm, opbizDt, rgstDt
+                FROM company_master
+                WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+                  AND {where}
+                ORDER BY corpNm
+                LIMIT ?
+            """, (param, limit)).fetchall()
+            matched_names = None
+        conn.close()
+
+        resp = {
+            "검색어": q_clean,
+            "검색방식": search_mode,
+            "검색결과수": len(rows),
+        }
+        if matched_names:
+            resp["매칭분류"] = matched_names
+        resp["업체목록"] = [{
+            "업체명": r["corpNm"], "사업자번호": r["bizno"],
+            "대표자": r["ceoNm"], "소재지": r["rgnNm"],
+            "주소": r["adrs"], "상세주소": r["dtlAdrs"],
+            "본사구분": r["hdoffceDivNm"], "업체구분": r["corpBsnsDivNm"],
+            "제조구분": r["mnfctDivNm"],
+            "분류코드": r["rprsntDtlPrdnmNo"],
+            "분류명": UNSPSC_CATEGORIES.get((r["rprsntDtlPrdnmNo"] or "")[:2], ""),
+            "대표품명": r["rprsntDtlPrdnm"],
+            "개업일": r["opbizDt"], "등록일": r["rgstDt"],
+        } for r in rows]
+        return resp
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/company/manufacturers", tags=["업체 검색"])
+def get_manufacturers(
+    limit: int = Query(5000, ge=1, le=10000, description="최대 반환 건수"),
+    format: Optional[str] = Query(None, description="'csv'면 CSV 파일 다운로드, 미지정 시 JSON"),
+):
+    """제조업체 전체 목록 (mnfctDivNm='제조'). format=csv로 CSV 다운로드 가능"""
+    try:
+        conn = _get_company_db()
+        rows = conn.execute("""
+            SELECT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs, c.dtlAdrs,
+                   c.hdoffceDivNm, c.corpBsnsDivNm, c.mnfctDivNm,
+                   c.rprsntDtlPrdnmNo, c.rprsntDtlPrdnm,
+                   c.rprsntIndstrytyNm, c.opbizDt, c.rgstDt
+            FROM company_master c
+            WHERE c.mnfctDivNm = '제조'
+            ORDER BY c.corpNm
+            LIMIT ?
+        """, (limit,)).fetchall()
+        conn.close()
+
+        # CSV 다운로드
+        if format and format.strip().lower() == "csv":
+            import csv, io
+            output = io.StringIO()
+            writer = csv.writer(output)
+            headers = ["업체명","사업자번호","대표자","소재지","주소","상세주소",
+                       "본사구분","업체구분","제조구분","분류코드","대표품명","대표업종","개업일","등록일"]
+            writer.writerow(headers)
+            for r in rows:
+                writer.writerow([
+                    r["corpNm"], r["bizno"], r["ceoNm"], r["rgnNm"],
+                    r["adrs"], r["dtlAdrs"], r["hdoffceDivNm"], r["corpBsnsDivNm"],
+                    r["mnfctDivNm"], r["rprsntDtlPrdnmNo"], r["rprsntDtlPrdnm"],
+                    r["rprsntIndstrytyNm"], r["opbizDt"], r["rgstDt"],
+                ])
+            from starlette.responses import StreamingResponse
+            csv_bytes = output.getvalue().encode("utf-8-sig")
+            return StreamingResponse(
+                iter([csv_bytes]),
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=busan_manufacturers.csv"}
+            )
+
+        return {
+            "총제조업체수": len(rows),
+            "업체목록": [{
+                "업체명": r["corpNm"], "사업자번호": r["bizno"],
+                "대표자": r["ceoNm"], "소재지": r["rgnNm"],
+                "주소": r["adrs"], "상세주소": r["dtlAdrs"],
+                "본사구분": r["hdoffceDivNm"], "업체구분": r["corpBsnsDivNm"],
+                "제조구분": r["mnfctDivNm"],
+                "분류코드": r["rprsntDtlPrdnmNo"], "대표품명": r["rprsntDtlPrdnm"],
+                "대표업종": r["rprsntIndstrytyNm"],
+                "개업일": r["opbizDt"], "등록일": r["rgstDt"],
+            } for r in rows]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 # ── 월별 추이 ──
 MONTHLY_CACHE_FILE = 'monthly_cache.json'
 
