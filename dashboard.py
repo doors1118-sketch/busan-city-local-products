@@ -4233,48 +4233,61 @@ elif page == "📋 사전규격 모니터링":
         if not tbl_check:
             st.info("사전규격 데이터가 아직 수집되지 않았습니다. 파이프라인이 실행되면 자동으로 수집됩니다.")
         else:
-            # 요약 카드
+            # 요약 카드 (마감 전만)
             total = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor").fetchone()[0]
-            target_all = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE is_target=1").fetchone()[0]
+            active = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE opninRgstClseDt >= date('now')").fetchone()[0]
             target_active = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE is_target=1 AND opninRgstClseDt >= date('now')").fetchone()[0]
-            recent_7d = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE collected_dt >= date('now', '-7 days')").fetchone()[0]
+            recent_7d = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE collected_dt >= date('now', '-7 days') AND opninRgstClseDt >= date('now')").fetchone()[0]
 
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
-                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">전체 수집</div>
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">전체 누적</div>
                     <div style="font-size:1.8rem; font-weight:800; color:{COLORS['primary']};">{total:,}</div>
                 </div>''', unsafe_allow_html=True)
             with c2:
                 st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
-                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">최근 7일</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['info']};">{recent_7d:,}</div>
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">진행 중</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['info']};">{active:,}</div>
                 </div>''', unsafe_allow_html=True)
             with c3:
                 st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
-                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">보호제도 대상</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['warning']};">{target_all:,}</div>
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">보호대상 (진행중)</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['warning']};">{target_active:,}</div>
                 </div>''', unsafe_allow_html=True)
             with c4:
                 st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
-                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">마감 전 대상</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['danger']};">{target_active:,}</div>
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">최근 7일 신규</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['success']};">{recent_7d:,}</div>
                 </div>''', unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # 필터
-            fc1, fc2, fc3 = st.columns([1, 1, 2])
+            # 월 목록
+            months_raw = conn_ps.execute(
+                "SELECT DISTINCT substr(rcptDt, 1, 7) AS ym FROM prespec_monitor WHERE ym IS NOT NULL ORDER BY ym DESC"
+            ).fetchall()
+            month_list = ['전체'] + [r[0] for r in months_raw if r[0]]
+
+            # 필터 행
+            fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 2])
             with fc1:
-                ps_sector = st.selectbox("분야", ["전체", "공사", "용역"], key="ps_sector")
+                ps_month = st.selectbox("기간 (월)", month_list, key="ps_month")
             with fc2:
-                ps_target = st.selectbox("보호제도 대상", ["전체", "대상만", "비대상"], key="ps_target")
+                ps_sector = st.selectbox("분야", ["전체", "공사", "용역"], key="ps_sector")
             with fc3:
+                ps_target = st.selectbox("보호제도 대상", ["전체", "대상만", "비대상"], key="ps_target")
+            with fc4:
                 ps_search = st.text_input("품명 검색", key="ps_search", placeholder="검색어 입력...")
 
-            # 쿼리 빌드
+            # 쿼리 빌드 — 기본: 의견마감 지나지 않은 건만 (월 선택 시 해당 월 전체)
             where_clauses = []
             params = []
+            if ps_month == "전체":
+                where_clauses.append("opninRgstClseDt >= date('now')")
+            else:
+                where_clauses.append("substr(rcptDt, 1, 7) = ?")
+                params.append(ps_month)
             if ps_sector != "전체":
                 where_clauses.append("bsnsDivNm = ?")
                 params.append(ps_sector)
@@ -4287,18 +4300,55 @@ elif page == "📋 사전규격 모니터링":
                 params.append(f"%{ps_search}%")
 
             where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-            query = f"""SELECT bfSpecRgstNo, bsnsDivNm, prdctClsfcNoNm, rlDminsttNm,
-                        asignBdgtAmt, opninRgstClseDt, is_target, target_type,
-                        threshold_amt, bidNtceNoList, rcptDt
-                        FROM prespec_monitor WHERE {where_sql}
-                        ORDER BY rcptDt DESC LIMIT 200"""
-            rows = conn_ps.execute(query, params).fetchall()
 
-            if rows:
-                df_ps = pd.DataFrame(rows, columns=[
-                    '등록번호', '분야', '품명', '수요기관', '배정예산', '의견마감',
-                    '보호대상', '구분', '기준액', '공고번호', '접수일'
-                ])
+            # 데이터 조회
+            df_ps = pd.read_sql_query(
+                f"""SELECT bfSpecRgstNo AS 등록번호, bsnsDivNm AS 분야, prdctClsfcNoNm AS 품명,
+                    rlDminsttNm AS 수요기관, asignBdgtAmt AS 배정예산,
+                    opninRgstClseDt AS 의견마감, is_target AS 보호대상, target_type AS 구분,
+                    threshold_amt AS 기준액, rcptDt AS 접수일
+                    FROM prespec_monitor WHERE {where_sql}
+                    ORDER BY rcptDt DESC""",
+                conn_ps, params=params
+            )
+
+            # 다운로드 버튼
+            dl1, dl2, dl3 = st.columns([1, 1, 4])
+            with dl1:
+                if not df_ps.empty:
+                    dl_df = df_ps.copy()
+                    dl_df['배정예산(억)'] = (dl_df['배정예산'] / 1e8).round(1)
+                    dl_df['보호대상'] = dl_df['보호대상'].map({1: '대상', 0: '-'})
+                    dl_cols = ['분야', '품명', '수요기관', '배정예산(억)', '보호대상', '구분', '의견마감', '접수일']
+                    label = f"📥 {ps_month} 다운로드" if ps_month != "전체" else "📥 진행중 다운로드"
+                    fname = f"사전규격_{ps_month.replace('-','')}.csv" if ps_month != "전체" else "사전규격_진행중.csv"
+                    st.download_button(
+                        label=label,
+                        data=dl_df[dl_cols].to_csv(index=False, encoding='utf-8-sig'),
+                        file_name=fname,
+                        mime="text/csv",
+                        key="ps_dl_filter"
+                    )
+            with dl2:
+                df_full = pd.read_sql_query(
+                    """SELECT bsnsDivNm AS 분야, prdctClsfcNoNm AS 품명, rlDminsttNm AS 수요기관,
+                        asignBdgtAmt/1e8 AS '배정예산(억)', is_target AS 보호대상, target_type AS 구분,
+                        opninRgstClseDt AS 의견마감, rcptDt AS 접수일
+                        FROM prespec_monitor ORDER BY rcptDt DESC""",
+                    conn_ps
+                )
+                df_full['보호대상'] = df_full['보호대상'].map({1: '대상', 0: '-'})
+                st.download_button(
+                    label="📥 전체 다운로드",
+                    data=df_full.to_csv(index=False, encoding='utf-8-sig'),
+                    file_name="사전규격_전체.csv",
+                    mime="text/csv",
+                    key="ps_dl_full"
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            if not df_ps.empty:
                 df_ps['배정예산(억)'] = (df_ps['배정예산'] / 1e8).round(1)
                 df_ps['기준액(억)'] = (df_ps['기준액'].fillna(0) / 1e8).round(0).astype(int)
                 df_ps['보호대상'] = df_ps['보호대상'].map({1: '⚠️ 대상', 0: '-'})
@@ -4315,7 +4365,8 @@ elif page == "📋 사전규격 모니터링":
                         '품명': st.column_config.TextColumn(width="large"),
                     }
                 )
-                st.caption(f"총 {len(rows)}건 표시 (최대 200건)")
+                view_label = f"{ps_month}월" if ps_month != "전체" else "진행 중(마감 전)"
+                st.caption(f"조회: {view_label} — {len(df_ps)}건")
             else:
                 st.info("조건에 맞는 사전규격이 없습니다.")
 
