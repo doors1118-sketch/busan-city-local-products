@@ -1067,7 +1067,7 @@ def sync_one_day(target_date):
                     df = df[df['_cd_clean'].isin(busan_codes)].drop(columns=['_cd_clean'])
                 table_name = TABLE_MAP[cat]
                 
-                # 중복 데이터 적재 방어 (Upsert 방식)
+                # 중복 데이터 적재 방어 (Upsert 방식 — dcsnCntrctNo + untyCntrctNo 이중 삭제)
                 if not df.empty:
                     cur = conn.cursor()
                     if table_name == 'shopping_cntrct':
@@ -1078,9 +1078,15 @@ def sync_one_day(target_date):
                     else:
                         if 'dcsnCntrctNo' in df.columns:
                             df = df.drop_duplicates(subset=['dcsnCntrctNo'], keep='last')
+                            # 1차: dcsnCntrctNo 기준 삭제
                             keys = [(str(x),) for x in df['dcsnCntrctNo'].tolist() if pd.notna(x) and str(x).strip() != '']
                             if keys:
                                 cur.executemany(f"DELETE FROM {table_name} WHERE dcsnCntrctNo=?", keys)
+                            # 2차: untyCntrctNo 기준 삭제 (API가 같은 계약을 다른 날짜에 반환하는 경우 방어)
+                            if 'untyCntrctNo' in df.columns:
+                                ukeys = [(str(x),) for x in df['untyCntrctNo'].tolist() if pd.notna(x) and str(x).strip() != '']
+                                if ukeys:
+                                    cur.executemany(f"DELETE FROM {table_name} WHERE untyCntrctNo=?", ukeys)
                     conn.commit()
 
                 df.to_sql(table_name, conn, if_exists='append', index=False)
