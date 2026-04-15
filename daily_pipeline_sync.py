@@ -600,12 +600,15 @@ PRESPEC_OPS = {
     '공사': 'getPublicPrcureThngInfoCnstwk',
     '용역': 'getPublicPrcureThngInfoServc',
 }
-# 보호제도 기준액 (부산시 소속기관 기준)
+# 보호제도 기준액 — 기관 유형별 차등
 PRESPEC_THRESHOLDS = {
-    '공사': 100e8,   # 종합 100억 (전문은 품명으로 구분 불가 → 보수적)
-    '용역': 3.3e8,   # 3.3억
+    # (부산시, 국가기관)
+    '공사_종합': (100e8, 88e8),
+    '공사_전문': (10e8, 10e8),
+    '용역':      (3.3e8, 2.2e8),
 }
 PRESPEC_SPECIALIZED_KW = ['전기', '통신', '소방', '기계설비', '정보통신']
+BUSAN_CATE = '부산광역시 및 소속기관'  # cate_lrg 값
 
 def sync_prespec(target_date, conn_path=None):
     """[Step 3.7] D-1 사전규격 수집 — 공사+용역, 부산 기관 필터"""
@@ -613,11 +616,11 @@ def sync_prespec(target_date, conn_path=None):
     end_dt = f"{target_date}2359"
     print(f"[사전규격 수집] {target_date} 공사/용역 사전규격 스캔 중...")
 
-    # agency_master에서 기관명 → 기관코드 매핑
+    # agency_master에서 기관명 → (기관코드, 기관유형) 매핑
     conn_ag = sqlite3.connect(AGENCY_DB_PATH)
-    ag_map = {}  # {기관명: dminsttCd}
-    for r in conn_ag.execute("SELECT dminsttCd, dminsttNm FROM agency_master").fetchall():
-        ag_map[r[1].strip()] = r[0]
+    ag_map = {}  # {기관명: (dminsttCd, cate_lrg)}
+    for r in conn_ag.execute("SELECT dminsttCd, dminsttNm, cate_lrg FROM agency_master").fetchall():
+        ag_map[r[1].strip()] = (r[0], r[2] or '')
     conn_ag.close()
 
     db_path = conn_path or DB_PATH
@@ -700,9 +703,10 @@ def sync_prespec(target_date, conn_path=None):
         for item in sector_items:
             order_nm = str(item.get('orderInsttNm', '')).strip()
             rl_nm = str(item.get('rlDminsttNm', '')).strip()
-            dm_cd = ag_map.get(order_nm) or ag_map.get(rl_nm)
-            if not dm_cd:
+            ag_info = ag_map.get(order_nm) or ag_map.get(rl_nm)
+            if not ag_info:
                 continue
+            dm_cd, cate_lrg = ag_info
 
             reg_no = str(item.get('bfSpecRgstNo', '')).strip()
             if not reg_no:
@@ -713,22 +717,27 @@ def sync_prespec(target_date, conn_path=None):
             except (ValueError, TypeError):
                 amt = 0
 
-            # 보호제도 대상 판별
-            threshold = PRESPEC_THRESHOLDS.get(sector, 0)
+            # 보호제도 대상 판별 — 기관유형별 기준 차등 적용
+            is_busan = (cate_lrg == BUSAN_CATE)
+            idx = 0 if is_busan else 1  # (부산, 국가) 튜플 인덱스
             is_target = 0
             target_type = ''
-            if amt > 0 and amt <= threshold:
-                is_target = 1
-                if sector == '공사':
-                    pname = str(item.get('prdctClsfcNoNm', ''))
-                    if any(kw in pname for kw in PRESPEC_SPECIALIZED_KW):
-                        target_type = '전문'
-                        threshold = 10e8
-                        is_target = 1 if amt <= threshold else 0
-                    else:
-                        target_type = '종합'
+            threshold = 0
+            if sector == '공사':
+                pname = str(item.get('prdctClsfcNoNm', ''))
+                if any(kw in pname for kw in PRESPEC_SPECIALIZED_KW):
+                    target_type = '전문'
+                    threshold = PRESPEC_THRESHOLDS['공사_전문'][idx]
                 else:
-                    target_type = '용역'
+                    target_type = '종합'
+                    threshold = PRESPEC_THRESHOLDS['공사_종합'][idx]
+                if amt > 0 and amt <= threshold:
+                    is_target = 1
+            else:  # 용역
+                target_type = '용역'
+                threshold = PRESPEC_THRESHOLDS['용역'][idx]
+                if amt > 0 and amt <= threshold:
+                    is_target = 1
 
             now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             conn.execute("""INSERT OR REPLACE INTO prespec_monitor
