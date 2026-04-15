@@ -4365,16 +4365,28 @@ elif page == "🔔 경보 현황":
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # 유형별 필터
-            alert_types = ['전체'] + [r[0] for r in conn_ah.execute("SELECT DISTINCT alert_type FROM alert_history ORDER BY alert_type").fetchall()]
-            fc1, fc2 = st.columns(2)
+            # 월 목록 조회
+            months_raw = conn_ah.execute(
+                "SELECT DISTINCT substr(alert_dt, 1, 7) AS ym FROM alert_history ORDER BY ym DESC"
+            ).fetchall()
+            month_list = ['전체'] + [r[0] for r in months_raw]
+
+            # 필터 행
+            fc1, fc2, fc3 = st.columns(3)
             with fc1:
-                sel_type = st.selectbox("경보 유형", alert_types, key="ah_type")
+                sel_month = st.selectbox("기간 (월)", month_list, key="ah_month")
             with fc2:
+                alert_types = ['전체'] + [r[0] for r in conn_ah.execute("SELECT DISTINCT alert_type FROM alert_history ORDER BY alert_type").fetchall()]
+                sel_type = st.selectbox("경보 유형", alert_types, key="ah_type")
+            with fc3:
                 sel_severity = st.selectbox("심각도", ["전체", "CRITICAL", "WARNING"], key="ah_sev")
 
+            # 쿼리 빌드
             where_parts = []
             params = []
+            if sel_month != "전체":
+                where_parts.append("substr(alert_dt, 1, 7) = ?")
+                params.append(sel_month)
             if sel_type != "전체":
                 where_parts.append("alert_type = ?")
                 params.append(sel_type)
@@ -4383,14 +4395,50 @@ elif page == "🔔 경보 현황":
                 params.append(sel_severity)
 
             where_sql = " AND ".join(where_parts) if where_parts else "1=1"
-            rows = conn_ah.execute(
-                f"SELECT alert_dt, severity, alert_type, detail FROM alert_history WHERE {where_sql} ORDER BY alert_dt DESC LIMIT 200",
-                params
-            ).fetchall()
 
-            if rows:
-                for row in rows:
-                    dt, sev, atype, detail = row
+            # 전체 데이터 조회 (다운로드용)
+            df_all = pd.read_sql_query(
+                f"SELECT alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, detail AS 내용 FROM alert_history WHERE {where_sql} ORDER BY alert_dt DESC",
+                conn_ah, params=params
+            )
+
+            # 다운로드 버튼
+            dl1, dl2, dl3 = st.columns([1, 1, 4])
+            with dl1:
+                label = f"📥 {sel_month} 다운로드" if sel_month != "전체" else "📥 전체 다운로드"
+                csv_data = df_all.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    label=label,
+                    data=csv_data,
+                    file_name=f"경보이력_{sel_month.replace('-','')}.csv" if sel_month != "전체" else "경보이력_전체.csv",
+                    mime="text/csv",
+                    key="ah_dl_filter"
+                )
+            with dl2:
+                if sel_month != "전체":
+                    df_full = pd.read_sql_query(
+                        "SELECT alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, detail AS 내용 FROM alert_history ORDER BY alert_dt DESC",
+                        conn_ah
+                    )
+                    csv_full = df_full.to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="📥 전체 다운로드",
+                        data=csv_full,
+                        file_name="경보이력_전체.csv",
+                        mime="text/csv",
+                        key="ah_dl_full"
+                    )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.caption(f"조회 결과: {len(df_all)}건")
+
+            # 카드형 표시
+            if not df_all.empty:
+                for _, row in df_all.iterrows():
+                    dt = row['발생일시']
+                    sev = row['심각도']
+                    atype = row['유형']
+                    detail = row['내용']
                     icon = "🚨" if sev == "CRITICAL" else "⚠️"
                     color = COLORS['danger'] if sev == "CRITICAL" else COLORS['warning']
                     badge_bg = COLORS['danger_pale'] if sev == "CRITICAL" else COLORS['warning_pale']
@@ -4403,10 +4451,10 @@ elif page == "🔔 경보 현황":
                         </div>
                         <div style="font-size:0.8rem; color:{COLORS['text_dark']};">{icon} {detail}</div>
                     </div>''', unsafe_allow_html=True)
-                st.caption(f"총 {len(rows)}건 표시 (최대 200건)")
             else:
                 st.info("해당 조건의 경보가 없습니다.")
 
         conn_ah.close()
     except Exception as e:
         st.error(f"DB 연결 오류: {e}")
+
