@@ -584,9 +584,11 @@ if page == "📊 종합현황":
 <div style="margin-top:6px; padding:8px 12px; background:transparent;">
 <div style="font-size:0.65rem; font-weight:700; color:#364a63; margin-bottom:3px;">📊 산출근거 (추정치)</div>
 <div style="font-size:0.58rem; color:#8094ae; line-height:1.7;">
-• 부가가치 = 지역업체 수주액 × 부가가치유발계수(0.467)<br>
-• 고용기여 = 지역업체 수주액(10억) × 취업유발계수(6.6명)<br>
-<span style="color:#999; font-size:0.55rem;">※ 한국은행 2020년 지역산업연관표(2025년 발행) 부산 전산업 평균 계수 활용 추정치</span>
+• 부가가치 = Σ(분야별 수주액 × 부가가치유발계수)<br>
+&nbsp;&nbsp;공사 0.472 / 용역 0.542 / 물품 0.385 / 쇼핑몰 0.495<br>
+• 고용기여 = Σ(분야별 수주액(10억) × 취업유발계수)<br>
+&nbsp;&nbsp;공사 10.8명 / 용역 16.5명 / 물품 6.4명 / 쇼핑몰 13.2명<br>
+<span style="color:#999; font-size:0.55rem;">※ 한국은행 2020년 지역산업연관표(2025년 발행) 부산 지역 산업별 계수 활용 추정치</span>
 </div>
 </div>''', unsafe_allow_html=True)
                 
