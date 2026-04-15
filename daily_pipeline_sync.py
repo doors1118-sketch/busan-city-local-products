@@ -594,6 +594,176 @@ def update_servc_site_matching():
     print(f"   -> 기술용역 {tech_count}건 + 일반용역 {gnrl_count}건 = {tech_count + gnrl_count}건 매칭")
 
 
+# ═══════════════ 사전규격 모니터링 수집 ═══════════════
+PRESPEC_BASE = 'http://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService'
+PRESPEC_OPS = {
+    '공사': 'getPublicPrcureThngInfoCnstwk',
+    '용역': 'getPublicPrcureThngInfoServc',
+}
+# 보호제도 기준액 (부산시 소속기관 기준)
+PRESPEC_THRESHOLDS = {
+    '공사': 100e8,   # 종합 100억 (전문은 품명으로 구분 불가 → 보수적)
+    '용역': 3.3e8,   # 3.3억
+}
+PRESPEC_SPECIALIZED_KW = ['전기', '통신', '소방', '기계설비', '정보통신']
+
+def sync_prespec(target_date, conn_path=None):
+    """[Step 3.7] D-1 사전규격 수집 — 공사+용역, 부산 기관 필터"""
+    bgn_dt = f"{target_date}0000"
+    end_dt = f"{target_date}2359"
+    print(f"[사전규격 수집] {target_date} 공사/용역 사전규격 스캔 중...")
+
+    # agency_master에서 기관명 → 기관코드 매핑
+    conn_ag = sqlite3.connect(AGENCY_DB_PATH)
+    ag_map = {}  # {기관명: dminsttCd}
+    for r in conn_ag.execute("SELECT dminsttCd, dminsttNm FROM agency_master").fetchall():
+        ag_map[r[1].strip()] = r[0]
+    conn_ag.close()
+
+    db_path = conn_path or DB_PATH
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("""CREATE TABLE IF NOT EXISTS prespec_monitor (
+        bfSpecRgstNo TEXT PRIMARY KEY,
+        bsnsDivNm TEXT,
+        prdctClsfcNoNm TEXT,
+        orderInsttNm TEXT,
+        rlDminsttNm TEXT,
+        dminsttCd TEXT,
+        asignBdgtAmt REAL,
+        rcptDt TEXT,
+        opninRgstClseDt TEXT,
+        bidNtceNoList TEXT,
+        rgstDt TEXT,
+        chgDt TEXT,
+        is_target INTEGER DEFAULT 0,
+        target_type TEXT,
+        threshold_amt REAL,
+        alert_sent INTEGER DEFAULT 0,
+        alert_sent_dt TEXT,
+        bid_linked INTEGER DEFAULT 0,
+        protection_applied TEXT,
+        collected_dt TEXT
+    )""")
+    # alert_history 테이블도 여기서 생성
+    conn.execute("""CREATE TABLE IF NOT EXISTS alert_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_dt TEXT,
+        alert_type TEXT,
+        severity TEXT,
+        title TEXT,
+        detail TEXT,
+        sector TEXT,
+        agency TEXT,
+        amount REAL,
+        ref_no TEXT,
+        resolved INTEGER DEFAULT 0,
+        resolved_dt TEXT,
+        resolved_note TEXT
+    )""")
+    conn.commit()
+
+    total_new = 0
+    for sector, op in PRESPEC_OPS.items():
+        page = 1
+        sector_items = []
+        while True:
+            url = (f"{PRESPEC_BASE}/{op}?serviceKey={SERVICE_KEY}"
+                   f"&pageNo={page}&numOfRows=999&type=json"
+                   f"&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}")
+            retry = 0
+            items = []
+            total_count = 0
+            while retry < 3:
+                try:
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, context=ctx, timeout=20) as res:
+                        data = json.loads(res.read().decode('utf-8'))
+                        hdr = data.get('response', {}).get('header', {})
+                        if hdr.get('resultCode') == '00':
+                            body = data.get('response', {}).get('body', {})
+                            items = body.get('items', [])
+                            total_count = int(body.get('totalCount', 0))
+                    break
+                except Exception:
+                    retry += 1
+                    time.sleep(1)
+
+            if items:
+                sector_items.extend(items)
+            if not items or page * 999 >= total_count:
+                break
+            page += 1
+            time.sleep(0.3)
+
+        # 부산 기관 필터 + DB 적재
+        new_count = 0
+        for item in sector_items:
+            order_nm = str(item.get('orderInsttNm', '')).strip()
+            rl_nm = str(item.get('rlDminsttNm', '')).strip()
+            dm_cd = ag_map.get(order_nm) or ag_map.get(rl_nm)
+            if not dm_cd:
+                continue
+
+            reg_no = str(item.get('bfSpecRgstNo', '')).strip()
+            if not reg_no:
+                continue
+
+            try:
+                amt = float(item.get('asignBdgtAmt', 0) or 0)
+            except (ValueError, TypeError):
+                amt = 0
+
+            # 보호제도 대상 판별
+            threshold = PRESPEC_THRESHOLDS.get(sector, 0)
+            is_target = 0
+            target_type = ''
+            if amt > 0 and amt <= threshold:
+                is_target = 1
+                if sector == '공사':
+                    pname = str(item.get('prdctClsfcNoNm', ''))
+                    if any(kw in pname for kw in PRESPEC_SPECIALIZED_KW):
+                        target_type = '전문'
+                        threshold = 10e8
+                        is_target = 1 if amt <= threshold else 0
+                    else:
+                        target_type = '종합'
+                else:
+                    target_type = '용역'
+
+            now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            conn.execute("""INSERT OR REPLACE INTO prespec_monitor
+                (bfSpecRgstNo, bsnsDivNm, prdctClsfcNoNm, orderInsttNm, rlDminsttNm,
+                 dminsttCd, asignBdgtAmt, rcptDt, opninRgstClseDt, bidNtceNoList,
+                 rgstDt, chgDt, is_target, target_type, threshold_amt, collected_dt)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                reg_no,
+                sector,
+                str(item.get('prdctClsfcNoNm', '')),
+                order_nm,
+                rl_nm,
+                dm_cd,
+                amt,
+                str(item.get('rcptDt', '')),
+                str(item.get('opninRgstClseDt', '')),
+                str(item.get('bidNtceNoList', '')),
+                str(item.get('rgstDt', '')),
+                str(item.get('chgDt', '')),
+                is_target,
+                target_type,
+                threshold if is_target else None,
+                now_str,
+            ))
+            new_count += 1
+
+        conn.commit()
+        total_new += new_count
+        print(f"   - [{sector}] 전국 {len(sector_items)}건 → 부산 {new_count}건 적재")
+
+    print(f"   -> 사전규격 총 {total_new}건 수집 완료")
+    conn.close()
+
+
 AWARD_APIS = {
     'busan_award_servc': 'https://apis.data.go.kr/1230000/as/ScsbidInfoService/getScsbidListSttusServcPPSSrch',
     'busan_award_cnstwk': 'https://apis.data.go.kr/1230000/as/ScsbidInfoService/getScsbidListSttusCnstwkPPSSrch',
@@ -924,6 +1094,12 @@ def sync_one_day(target_date):
                 if updated: print(f"   - {tbl}: {updated}건 파싱")
         # [Step 3.6] 용역 현장 매칭
         update_servc_site_matching()
+        # [Step 3.7] 사전규격 수집
+        try:
+            sync_prespec(target_date, conn_path=DB_PATH)
+        except Exception as e:
+            print(f"   [경고] 사전규격 수집 실패 (비핵심): {e}")
+            failed_steps.append('Step 3.7 사전규격')
         conn.close()
     except Exception as e:
         print(f"   [오류] DB 적재: {e}")

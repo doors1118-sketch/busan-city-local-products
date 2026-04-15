@@ -385,7 +385,7 @@ with st.sidebar:
     
     page = st.radio(
         "nav",
-        ["📊 종합현황", "🏆 기관별 순위", "🏠 구군·출자출연 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🛒 종합쇼핑몰", "🏢 지역업체 정보", "📜 면허업종 검색", "📈 종합분석"],
+        ["📊 종합현황", "🏆 기관별 순위", "🏠 구군·출자출연 순위", "🔍 기관별 실적 검색", "🔴 유출계약 분석", "🛡️ 지역업체 보호제도", "📝 수의계약", "🛒 종합쇼핑몰", "🏢 지역업체 정보", "📜 면허업종 검색", "📈 종합분석", "📋 사전규격 모니터링", "🔔 경보 현황"],
         label_visibility="collapsed",
     )
     
@@ -415,6 +415,8 @@ page_titles = {
     "🛒 종합쇼핑몰": "종합쇼핑몰 지역외 유출현황",
     "📜 면허업종 검색": "조달업체 면허업종 검색",
     "📈 종합분석": "월별 수주율 종합분석",
+    "📋 사전규격 모니터링": "사전규격 공개 모니터링",
+    "🔔 경보 현황": "경보 발생 현황",
 }
 st.markdown(f"""
 <div style="background:linear-gradient(90deg, #1a2b6d 0%, #3b4ab8 50%, #1a2b6d 100%); padding:10px 24px; border-radius:6px; margin-bottom:16px; text-align:center;">
@@ -4219,3 +4221,192 @@ elif page == "📈 종합분석":
         st.warning('월별 추이 데이터를 불러올 수 없습니다. 캐시를 먼저 생성해주세요.')
 
 
+# ═══════════════════════════════════════════════════════════════
+# 📋 사전규격 모니터링
+# ═══════════════════════════════════════════════════════════════
+elif page == "📋 사전규격 모니터링":
+    DB_SERVER = os.environ.get('DB_PATH', 'procurement_contracts.db')
+    try:
+        conn_ps = sqlite3.connect(DB_SERVER, timeout=10)
+        # 테이블 존재 확인
+        tbl_check = conn_ps.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='prespec_monitor'").fetchone()
+        if not tbl_check:
+            st.info("사전규격 데이터가 아직 수집되지 않았습니다. 파이프라인이 실행되면 자동으로 수집됩니다.")
+        else:
+            # 요약 카드
+            total = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor").fetchone()[0]
+            target_all = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE is_target=1").fetchone()[0]
+            target_active = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE is_target=1 AND opninRgstClseDt >= date('now')").fetchone()[0]
+            recent_7d = conn_ps.execute("SELECT COUNT(*) FROM prespec_monitor WHERE collected_dt >= date('now', '-7 days')").fetchone()[0]
+
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">전체 수집</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['primary']};">{total:,}</div>
+                </div>''', unsafe_allow_html=True)
+            with c2:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">최근 7일</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['info']};">{recent_7d:,}</div>
+                </div>''', unsafe_allow_html=True)
+            with c3:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">보호제도 대상</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['warning']};">{target_all:,}</div>
+                </div>''', unsafe_allow_html=True)
+            with c4:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">마감 전 대상</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['danger']};">{target_active:,}</div>
+                </div>''', unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # 필터
+            fc1, fc2, fc3 = st.columns([1, 1, 2])
+            with fc1:
+                ps_sector = st.selectbox("분야", ["전체", "공사", "용역"], key="ps_sector")
+            with fc2:
+                ps_target = st.selectbox("보호제도 대상", ["전체", "대상만", "비대상"], key="ps_target")
+            with fc3:
+                ps_search = st.text_input("품명 검색", key="ps_search", placeholder="검색어 입력...")
+
+            # 쿼리 빌드
+            where_clauses = []
+            params = []
+            if ps_sector != "전체":
+                where_clauses.append("bsnsDivNm = ?")
+                params.append(ps_sector)
+            if ps_target == "대상만":
+                where_clauses.append("is_target = 1")
+            elif ps_target == "비대상":
+                where_clauses.append("is_target = 0")
+            if ps_search:
+                where_clauses.append("prdctClsfcNoNm LIKE ?")
+                params.append(f"%{ps_search}%")
+
+            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+            query = f"""SELECT bfSpecRgstNo, bsnsDivNm, prdctClsfcNoNm, rlDminsttNm,
+                        asignBdgtAmt, opninRgstClseDt, is_target, target_type,
+                        threshold_amt, bidNtceNoList, rcptDt
+                        FROM prespec_monitor WHERE {where_sql}
+                        ORDER BY rcptDt DESC LIMIT 200"""
+            rows = conn_ps.execute(query, params).fetchall()
+
+            if rows:
+                df_ps = pd.DataFrame(rows, columns=[
+                    '등록번호', '분야', '품명', '수요기관', '배정예산', '의견마감',
+                    '보호대상', '구분', '기준액', '공고번호', '접수일'
+                ])
+                df_ps['배정예산(억)'] = (df_ps['배정예산'] / 1e8).round(1)
+                df_ps['기준액(억)'] = (df_ps['기준액'].fillna(0) / 1e8).round(0).astype(int)
+                df_ps['보호대상'] = df_ps['보호대상'].map({1: '⚠️ 대상', 0: '-'})
+                df_ps['의견마감'] = df_ps['의견마감'].str[:10]
+                df_ps['접수일'] = df_ps['접수일'].str[:10]
+
+                display_cols = ['분야', '품명', '수요기관', '배정예산(억)', '보호대상', '구분', '기준액(억)', '의견마감', '접수일']
+                st.dataframe(
+                    df_ps[display_cols],
+                    use_container_width=True,
+                    height=600,
+                    column_config={
+                        '배정예산(억)': st.column_config.NumberColumn(format="%.1f"),
+                        '품명': st.column_config.TextColumn(width="large"),
+                    }
+                )
+                st.caption(f"총 {len(rows)}건 표시 (최대 200건)")
+            else:
+                st.info("조건에 맞는 사전규격이 없습니다.")
+
+        conn_ps.close()
+    except Exception as e:
+        st.error(f"DB 연결 오류: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🔔 경보 현황
+# ═══════════════════════════════════════════════════════════════
+elif page == "🔔 경보 현황":
+    DB_SERVER = os.environ.get('DB_PATH', 'procurement_contracts.db')
+    try:
+        conn_ah = sqlite3.connect(DB_SERVER, timeout=10)
+        tbl_check = conn_ah.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='alert_history'").fetchone()
+        if not tbl_check:
+            st.info("경보 이력이 아직 없습니다. alert_check.py가 실행되면 자동으로 기록됩니다.")
+        else:
+            # 요약
+            total_alerts = conn_ah.execute("SELECT COUNT(*) FROM alert_history").fetchone()[0]
+            critical_cnt = conn_ah.execute("SELECT COUNT(*) FROM alert_history WHERE severity='CRITICAL'").fetchone()[0]
+            warning_cnt = conn_ah.execute("SELECT COUNT(*) FROM alert_history WHERE severity='WARNING'").fetchone()[0]
+            today_cnt = conn_ah.execute("SELECT COUNT(*) FROM alert_history WHERE alert_dt >= date('now')").fetchone()[0]
+
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">전체 경보</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['primary']};">{total_alerts:,}</div>
+                </div>''', unsafe_allow_html=True)
+            with c2:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">🚨 경보</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['danger']};">{critical_cnt:,}</div>
+                </div>''', unsafe_allow_html=True)
+            with c3:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">⚠️ 주의</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['warning']};">{warning_cnt:,}</div>
+                </div>''', unsafe_allow_html=True)
+            with c4:
+                st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']}; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="font-size:0.75rem; color:{COLORS['text_light']};">오늘</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{COLORS['info']};">{today_cnt:,}</div>
+                </div>''', unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # 유형별 필터
+            alert_types = ['전체'] + [r[0] for r in conn_ah.execute("SELECT DISTINCT alert_type FROM alert_history ORDER BY alert_type").fetchall()]
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                sel_type = st.selectbox("경보 유형", alert_types, key="ah_type")
+            with fc2:
+                sel_severity = st.selectbox("심각도", ["전체", "CRITICAL", "WARNING"], key="ah_sev")
+
+            where_parts = []
+            params = []
+            if sel_type != "전체":
+                where_parts.append("alert_type = ?")
+                params.append(sel_type)
+            if sel_severity != "전체":
+                where_parts.append("severity = ?")
+                params.append(sel_severity)
+
+            where_sql = " AND ".join(where_parts) if where_parts else "1=1"
+            rows = conn_ah.execute(
+                f"SELECT alert_dt, severity, alert_type, detail FROM alert_history WHERE {where_sql} ORDER BY alert_dt DESC LIMIT 200",
+                params
+            ).fetchall()
+
+            if rows:
+                for row in rows:
+                    dt, sev, atype, detail = row
+                    icon = "🚨" if sev == "CRITICAL" else "⚠️"
+                    color = COLORS['danger'] if sev == "CRITICAL" else COLORS['warning']
+                    badge_bg = COLORS['danger_pale'] if sev == "CRITICAL" else COLORS['warning_pale']
+                    st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']};
+                        border-left:4px solid {color}; border-radius:6px; padding:12px 16px; margin-bottom:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                            <span style="font-size:0.65rem; color:{COLORS['text_light']};">{dt}</span>
+                            <span style="font-size:0.6rem; background:{badge_bg}; color:{color};
+                                padding:2px 8px; border-radius:10px; font-weight:700;">{atype}</span>
+                        </div>
+                        <div style="font-size:0.8rem; color:{COLORS['text_dark']};">{icon} {detail}</div>
+                    </div>''', unsafe_allow_html=True)
+                st.caption(f"총 {len(rows)}건 표시 (최대 200건)")
+            else:
+                st.info("해당 조건의 경보가 없습니다.")
+
+        conn_ah.close()
+    except Exception as e:
+        st.error(f"DB 연결 오류: {e}")

@@ -550,6 +550,62 @@ def run_alert_check():
                 print(f"  ✅ 정상: 전체 발주액 변동 {amt_ratio*100:.1f}%")
 
     # ══════════════════════════════════════════════════════
+    # Part B-0: 사전규격 대형 건 알림 + 보호제도 대상 요약
+    # ══════════════════════════════════════════════════════
+    prespec_alerts = []
+    print(f"\n  {'─'*46}")
+    print(f"  📋 [사전규격] 대형 건 및 보호제도 대상 모니터링")
+    print(f"  {'─'*46}")
+
+    if os.path.exists(DB_PATH):
+        try:
+            conn_ps = sqlite3.connect(DB_PATH)
+            # 대형 건 알림 (미발송분): 공사 10억+, 용역 5억+
+            large_prespecs = conn_ps.execute("""
+                SELECT bfSpecRgstNo, bsnsDivNm, prdctClsfcNoNm, rlDminsttNm,
+                       asignBdgtAmt, opninRgstClseDt, is_target, target_type
+                FROM prespec_monitor
+                WHERE alert_sent = 0
+                AND ((bsnsDivNm = '공사' AND asignBdgtAmt >= 10e8)
+                  OR (bsnsDivNm = '용역' AND asignBdgtAmt >= 5e8))
+                ORDER BY asignBdgtAmt DESC
+            """).fetchall()
+
+            if large_prespecs:
+                print(f"  🔔 대형 사전규격 신규: {len(large_prespecs)}건")
+                for ps in large_prespecs[:5]:
+                    amt_억 = ps[4] / 1e8
+                    target_str = f" [보호대상:{ps[7]}]" if ps[6] else ""
+                    deadline = ps[5][:10] if ps[5] else "?"
+                    msg = (f"📋 [사전규격/{ps[1]}] \"{ps[2][:30]}\" "
+                           f"{amt_억:.1f}억 — {ps[3]} (마감:{deadline}){target_str}")
+                    alerts.append(('WARNING', msg))
+                    print(f"  {msg}")
+                if len(large_prespecs) > 5:
+                    print(f"     ... 외 {len(large_prespecs)-5}건")
+
+                # alert_sent 업데이트
+                ids = [ps[0] for ps in large_prespecs]
+                now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                for pid in ids:
+                    conn_ps.execute("UPDATE prespec_monitor SET alert_sent=1, alert_sent_dt=? WHERE bfSpecRgstNo=?",
+                                    (now_str, pid))
+                conn_ps.commit()
+            else:
+                print(f"  ✅ 정상: 대형 사전규격 신규 없음")
+
+            # 보호제도 대상 요약 (경보로는 안 보내고 로그만)
+            target_count = conn_ps.execute(
+                "SELECT COUNT(*) FROM prespec_monitor WHERE is_target=1 AND opninRgstClseDt >= date('now')"
+            ).fetchone()[0]
+            if target_count:
+                print(f"  ℹ️  보호제도 대상 사전규격 (마감 전): {target_count}건 (대시보드에서 확인)")
+
+            conn_ps.close()
+        except Exception as e:
+            print(f"  ⚠️ 사전규격 경보 오류: {e}")
+
+    # ══════════════════════════════════════════════════════
     # Part B-1: 공고 단계 사전 경보
     # ══════════════════════════════════════════════════════
     print(f"\n  {'─'*46}")
@@ -634,6 +690,44 @@ def run_alert_check():
             f.write(f"\n{'='*60}\n")
             f.write(f"총 경보: {critical}건, 주의: {warning}건\n")
         print(f"  📄 로그 저장: {log_file}")
+
+    # ────────── 경보 이력 DB 저장 ──────────
+    if alerts and os.path.exists(DB_PATH):
+        try:
+            conn_ah = sqlite3.connect(DB_PATH)
+            conn_ah.execute("""CREATE TABLE IF NOT EXISTS alert_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_dt TEXT, alert_type TEXT, severity TEXT,
+                title TEXT, detail TEXT, sector TEXT, agency TEXT,
+                amount REAL, ref_no TEXT,
+                resolved INTEGER DEFAULT 0, resolved_dt TEXT, resolved_note TEXT
+            )""")
+            now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for level, msg in alerts:
+                # 유형 분류
+                if '사전규격' in msg:
+                    atype = '사전규격'
+                elif '보호제도' in msg or '미적용' in msg:
+                    atype = '보호제도미적용'
+                elif '유출' in msg:
+                    atype = '대형유출'
+                elif '외지업체' in msg or '지분' in msg:
+                    atype = '지분초과'
+                elif '수주율' in msg:
+                    atype = '수주율변동'
+                elif '발주액' in msg:
+                    atype = '발주액변동'
+                else:
+                    atype = '기타'
+                conn_ah.execute(
+                    "INSERT INTO alert_history (alert_dt, alert_type, severity, title, detail) VALUES (?,?,?,?,?)",
+                    (now_str, atype, level, msg[:100], msg)
+                )
+            conn_ah.commit()
+            conn_ah.close()
+            print(f"  💾 경보 이력 DB 저장: {len(alerts)}건")
+        except Exception as e:
+            print(f"  ⚠️ 경보 이력 저장 실패: {e}")
 
     # ────────── 알림 발송 (텔레그램 + 이메일) ──────────
     config = load_config()
