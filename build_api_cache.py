@@ -283,7 +283,7 @@ def build_cache():
         is_busan_grp = '부산' in str(grp or '')
         
         if sector == '용역':
-            check_amt = tot_amt
+            check_amt = tot_amt if tot_amt > 0 else thtm_amt
             if is_busan_grp and check_amt < 330_000_000:
                 remark = "비정상(지역제한비적용)"
             elif not is_busan_grp and check_amt < 220_000_000:
@@ -306,7 +306,7 @@ def build_cache():
         else:
             # 단독계약 (유출건이므로 부산업체 지분 0%)
             if sector == '공사':
-                check_amt = tot_amt
+                check_amt = tot_amt if tot_amt > 0 else thtm_amt
                 if is_busan_grp:
                     if check_amt <= 10_000_000_000:
                         remark = "지역제한 미적용"
