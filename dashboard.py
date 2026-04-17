@@ -3081,6 +3081,175 @@ elif page == "🏢 지역업체 정보":
         make_search_donut(col_d2, "공사 업종별", 공사_total, 공사_업종, "search_공사")
         make_search_donut(col_d3, "용역 업종별", 용역_total, 용역_업종, "search_용역")
 
+        # ── 전체 업체 대표품목 검색 섹션 ──
+        st.markdown('<div style="margin-top:28px;"></div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(f'''<div style="padding:16px 0 8px;">
+<h3 style="margin:0; font-size:1.1rem; font-weight:700; color:{COLORS['text_dark']};">🔍 전체 업종 검색 (대표품목)</h3>
+<span style="font-size:0.72rem; color:{COLORS['text_light']};">부산 소재 전체 조달업체 {전체:,}개 · 대표품목(세부품명)으로 검색</span>
+</div>''', unsafe_allow_html=True)
+
+            try:
+                import io as _io_all
+                DB_ALL = os.path.join(os.path.dirname(__file__), "busan_companies_master.db")
+                conn_all = sqlite3.connect(DB_ALL)
+
+                all_prd_tab1, all_prd_tab2 = st.tabs(["📦 대표품명으로 검색", "📂 물품분류코드로 검색"])
+
+                # ── 탭1: 대표품명 검색 (전체 업체) ──
+                with all_prd_tab1:
+                    all_prd_q = st.text_input("대표품명 검색", key="all_prd_q", placeholder="대표품명을 입력하세요 (예: 컴퓨터, 사무용가구, 의료기기...)", label_visibility="collapsed")
+
+                    if all_prd_q and all_prd_q.strip():
+                        prd_list = pd.read_sql("""
+                            SELECT rprsntDtlPrdnm as prdnm, COUNT(*) as cnt
+                            FROM company_master
+                            WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+                            AND rprsntDtlPrdnm LIKE ?
+                            GROUP BY rprsntDtlPrdnm
+                            ORDER BY cnt DESC
+                        """, conn_all, params=(f"%{all_prd_q.strip()}%",))
+
+                        if len(prd_list) > 0:
+                            st.caption(f"🔎 '{all_prd_q.strip()}' 검색결과: {len(prd_list)}개 품목")
+                            prd_opts = [f"{row['prdnm']}  ({row['cnt']}개)" for _, row in prd_list.head(100).iterrows()]
+                            prd_sel = st.selectbox("품목 선택", prd_opts, key="all_prd_sel", label_visibility="collapsed")
+                            sel_prdnm = prd_sel.rsplit("  (", 1)[0] if prd_sel else None
+
+                            if sel_prdnm:
+                                all_df = pd.read_sql("""
+                                    SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs, c.dtlAdrs,
+                                           c.hdoffceDivNm, c.corpBsnsDivNm, c.mnfctDivNm,
+                                           c.rprsntDtlPrdnm, c.rprsntDtlPrdnmNo, c.opbizDt, c.rgstDt,
+                                           GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                                    FROM company_master c
+                                    LEFT JOIN company_industry i ON c.bizno = i.bizno
+                                    WHERE c.rprsntDtlPrdnm = ?
+                                    GROUP BY c.bizno ORDER BY c.corpNm
+                                """, conn_all, params=(sel_prdnm,))
+
+                                if len(all_df) > 0:
+                                    # 요약 카드
+                                    n_all = len(all_df)
+                                    n_mfg = (all_df['mnfctDivNm'] == '제조').sum()
+                                    n_main = (all_df['hdoffceDivNm'] == '본사').sum()
+                                    st.markdown(f'''<div style="display:flex; gap:12px; margin:12px 0;">
+<div style="flex:1; background:linear-gradient(135deg,#232e7a,#3b4ab8); border-radius:6px; padding:12px 16px; color:#fff;">
+<div style="font-size:0.68rem; opacity:0.7;">총 업체</div>
+<div style="font-size:1.5rem; font-weight:800; font-family:Nunito Sans;">{n_all:,}개</div>
+</div>
+<div style="flex:1; background:linear-gradient(135deg,#1c5d3a,#1ee0ac); border-radius:6px; padding:12px 16px; color:#fff;">
+<div style="font-size:0.68rem; opacity:0.7;">본사</div>
+<div style="font-size:1.5rem; font-weight:800; font-family:Nunito Sans;">{n_main:,}개</div>
+</div>
+<div style="flex:1; background:linear-gradient(135deg,#5a3e1b,#f4bd0e); border-radius:6px; padding:12px 16px; color:#fff;">
+<div style="font-size:0.68rem; opacity:0.7;">제조업체</div>
+<div style="font-size:1.5rem; font-weight:800; font-family:Nunito Sans;">{n_mfg:,}개</div>
+</div>
+</div>''', unsafe_allow_html=True)
+
+                                    show_all = all_df[['corpNm','ceoNm','rgnNm','hdoffceDivNm','corpBsnsDivNm','mnfctDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
+                                    show_all.columns = ['업체명','대표자','소재지','본사구분','업체구분','제조구분','대표품명','면허업종','개업일']
+                                    show_all['개업일'] = show_all['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
+                                    st.dataframe(show_all, use_container_width=True, height=400, hide_index=True)
+
+                                    # Excel 다운로드
+                                    dl_all_df = all_df[['corpNm','bizno','ceoNm','rgnNm','adrs','dtlAdrs','hdoffceDivNm','corpBsnsDivNm','mnfctDivNm','rprsntDtlPrdnm','rprsntDtlPrdnmNo','면허업종','opbizDt','rgstDt']].copy()
+                                    dl_all_df.columns = ['업체명','사업자번호','대표자','소재지','주소','상세주소','본사구분','업체구분','제조구분','대표품명','품명코드','면허업종','개업일','등록일']
+                                    buf_all_prd = _io_all.BytesIO()
+                                    with pd.ExcelWriter(buf_all_prd, engine='openpyxl') as writer:
+                                        dl_all_df.to_excel(writer, index=False, sheet_name='업체목록')
+                                    st.download_button(
+                                        label=f"📥 '{sel_prdnm}' 업체목록 다운로드 ({n_all}건, Excel)",
+                                        data=buf_all_prd.getvalue(),
+                                        file_name=f"부산업체_{sel_prdnm}.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        key="dl_all_prd"
+                                    )
+                                else:
+                                    st.info("해당 품목 업체가 없습니다.")
+                        else:
+                            st.info(f"'{all_prd_q.strip()}'에 해당하는 대표품명이 없습니다.")
+                    else:
+                        # 검색어 없을 때: 인기 품목 Top 20
+                        top_prdnm = pd.read_sql("""
+                            SELECT rprsntDtlPrdnm as prdnm, COUNT(*) as cnt
+                            FROM company_master
+                            WHERE rprsntDtlPrdnm IS NOT NULL AND rprsntDtlPrdnm != ''
+                            GROUP BY rprsntDtlPrdnm
+                            ORDER BY cnt DESC LIMIT 20
+                        """, conn_all)
+                        if len(top_prdnm) > 0:
+                            st.caption("📊 인기 대표품명 Top 20 (업체수 기준)")
+                            top_html = ""
+                            for idx, row in top_prdnm.iterrows():
+                                bg = "#fafbfe" if idx % 2 == 1 else "#fff"
+                                top_html += f'<div style="display:flex; justify-content:space-between; padding:6px 12px; background:{bg}; border-bottom:1px solid {COLORS["card_border"]}; font-size:0.82rem;"><span style="color:{COLORS["text_dark"]}; font-weight:600;">{row["prdnm"]}</span><span style="font-family:Nunito Sans; font-weight:700; color:{COLORS["primary"]};">{row["cnt"]:,}개</span></div>'
+                            st.markdown(f'<div style="border:1px solid {COLORS["card_border"]}; border-radius:6px; overflow:hidden; max-height:400px; overflow-y:auto;">{top_html}</div>', unsafe_allow_html=True)
+
+                # ── 탭2: 물품분류코드 검색 ──
+                with all_prd_tab2:
+                    all_cat_q = st.text_input("분류코드/분류명 검색", key="all_cat_q", placeholder="분류코드(예: 43) 또는 분류명(예: 정보통신, 식품, 의료...)", label_visibility="collapsed")
+
+                    if all_cat_q and all_cat_q.strip():
+                        q_c = all_cat_q.strip()
+                        # UNSPSC 분류 매칭
+                        from api_server import UNSPSC_CATEGORIES
+                        if q_c.isdigit():
+                            matched_cats = {k: v for k, v in UNSPSC_CATEGORIES.items() if k.startswith(q_c)}
+                        else:
+                            matched_cats = {k: v for k, v in UNSPSC_CATEGORIES.items() if q_c in v}
+
+                        if matched_cats:
+                            cat_opts = [f"{code} - {name}" for code, name in sorted(matched_cats.items())]
+                            st.caption(f"🔎 매칭 분류: {len(cat_opts)}건")
+                            cat_sel = st.selectbox("분류 선택", cat_opts, key="all_cat_sel", label_visibility="collapsed")
+                            sel_code = cat_sel.split(" - ")[0].strip() if cat_sel else None
+
+                            if sel_code:
+                                cat_df = pd.read_sql(f"""
+                                    SELECT DISTINCT c.corpNm, c.bizno, c.ceoNm, c.rgnNm, c.adrs, c.dtlAdrs,
+                                           c.hdoffceDivNm, c.corpBsnsDivNm, c.mnfctDivNm,
+                                           c.rprsntDtlPrdnm, c.rprsntDtlPrdnmNo, c.opbizDt, c.rgstDt,
+                                           GROUP_CONCAT(DISTINCT i.indstrytyNm) as 면허업종
+                                    FROM company_master c
+                                    LEFT JOIN company_industry i ON c.bizno = i.bizno
+                                    WHERE c.rprsntDtlPrdnm IS NOT NULL AND c.rprsntDtlPrdnm != ''
+                                    AND SUBSTR(c.rprsntDtlPrdnmNo, 1, 2) = ?
+                                    GROUP BY c.bizno ORDER BY c.corpNm
+                                """, conn_all, params=(sel_code,))
+
+                                cat_name = UNSPSC_CATEGORIES.get(sel_code, "")
+                                if len(cat_df) > 0:
+                                    st.caption(f"'{sel_code} - {cat_name}' 분류 업체: {len(cat_df):,}건")
+                                    show_cat = cat_df[['corpNm','ceoNm','rgnNm','hdoffceDivNm','mnfctDivNm','rprsntDtlPrdnm','면허업종','opbizDt']].copy()
+                                    show_cat.columns = ['업체명','대표자','소재지','본사구분','제조구분','대표품명','면허업종','개업일']
+                                    show_cat['개업일'] = show_cat['개업일'].astype(str).apply(lambda x: f"{x[:4]}-{x[4:6]}-{x[6:]}" if len(x)==8 and x.isdigit() else x)
+                                    st.dataframe(show_cat, use_container_width=True, height=400, hide_index=True)
+
+                                    dl_cat = cat_df[['corpNm','bizno','ceoNm','rgnNm','adrs','dtlAdrs','hdoffceDivNm','corpBsnsDivNm','mnfctDivNm','rprsntDtlPrdnm','rprsntDtlPrdnmNo','면허업종','opbizDt','rgstDt']].copy()
+                                    dl_cat.columns = ['업체명','사업자번호','대표자','소재지','주소','상세주소','본사구분','업체구분','제조구분','대표품명','품명코드','면허업종','개업일','등록일']
+                                    buf_cat = _io_all.BytesIO()
+                                    with pd.ExcelWriter(buf_cat, engine='openpyxl') as writer:
+                                        dl_cat.to_excel(writer, index=False, sheet_name='업체목록')
+                                    st.download_button(
+                                        label=f"📥 '{sel_code}-{cat_name}' 업체목록 다운로드 ({len(cat_df)}건, Excel)",
+                                        data=buf_cat.getvalue(),
+                                        file_name=f"부산업체_{sel_code}_{cat_name}.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        key="dl_all_cat"
+                                    )
+                                else:
+                                    st.info("해당 분류 업체가 없습니다.")
+                        else:
+                            st.info(f"'{q_c}'에 해당하는 분류가 없습니다.")
+                    else:
+                        st.caption("💡 물품 분류코드(UNSPSC) 또는 분류명을 입력하면 해당 분류에 등록된 전체 업체를 조회합니다.")
+
+                conn_all.close()
+            except Exception as e:
+                st.error(f"전체 업종 검색 오류: {e}")
+
         # ── 제조업체 검색 섹션 ──
         st.markdown('<div style="margin-top:28px;"></div>', unsafe_allow_html=True)
         with st.container(border=True):
