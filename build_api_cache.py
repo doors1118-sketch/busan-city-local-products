@@ -685,6 +685,13 @@ def build_cache():
         '부산광역시 및 소속기관': {'종합공사': 100e8, '전문공사': 10e8, '용역': 3.3e8},
         '정부 및 국가공공기관':  {'종합공사': 88e8,  '전문공사': 10e8, '용역': 2.2e8},
     }
+    # 사립대학 보호제도 제외: 국가계약법 비적용이므로 보호제도 분석 대상 아님
+    # 고등교육기관 중 국립대만 허용 (화이트리스트)
+    NATIONAL_UNIVERSITIES = {
+        '부산대학교', '부경대학교', '부산교육대학교', '한국해양대학교',
+        '한국방송통신대학교', '한국폴리텍7대학', '한국폴리텍VII대학',
+        '한국과학기술원부설한국과학영재학교',
+    }
     gov_stats = defaultdict(lambda: {'기준이하': 0, '지역제한': 0, '의무공동': 0, '미적용': 0, '미적용액': 0})
     bsn_stats = defaultdict(lambda: {'기준이하': 0, '지역제한': 0, '미적용': 0, '미적용액': 0})
     bsn_jnt = defaultdict(lambda: {'모수': 0, '의무공동': 0})
@@ -744,6 +751,8 @@ def build_cache():
             grp = inst_grp.get(matched_cd)
             unit = get_unit(matched_cd)
             if not grp or grp not in PROT_THRESHOLDS or not unit: continue
+            # 사립대학 제외 (국가계약법 비적용)
+            if inst_mid.get(matched_cd) == '고등교육기관' and unit not in NATIONAL_UNIVERSITIES: continue
 
             # 공사: 현장 타지역 배제 + 전화번호/키워드 필터 (수주율 계산과 동일)
             if sector == '공사':
@@ -895,6 +904,8 @@ def build_cache():
             if not grp or grp not in PROT_THRESHOLDS: continue
             unit = get_unit(inst_cd)
             if not unit: continue
+            # 사립대학 제외 (국가계약법 비적용)
+            if inst_mid.get(inst_cd) == '고등교육기관' and unit not in NATIONAL_UNIVERSITIES: continue
             lrg = inst_dict[inst_cd]['cate_lrg']
             if is_non_busan_contract(row, lrg):
                 ntce_no = str(row.get('ntceNo', '')).replace('-', '').strip()
