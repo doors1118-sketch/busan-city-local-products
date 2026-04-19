@@ -129,7 +129,7 @@ def build_monthly():
     # ── 공사 ──
     print("  [공사] 로딩...")
     df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsDate
+        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cnstrtsiteRgnNm
         FROM cnstwk_cntrct""", conn)
     df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     df = dedup_by_dcsn(df)
