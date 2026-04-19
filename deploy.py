@@ -18,13 +18,15 @@ PASSWORD = "U7$B%U5843m"
 REMOTE_DIR = "/opt/busan"
 LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 기본 업로드 파일 (코드만)
+# 기본 업로드 파일 (코드만 — api_cache.json은 서버에서 자동 생성)
 CODE_FILES = [
     "dashboard.py",
     "api_server.py",
     "build_api_cache.py",
     "core_calc.py",
-    "api_cache.json",
+    "daily_pipeline_sync.py",
+    "alert_check.py",
+    "alert_config.json",
 ]
 
 # --all 옵션 시 추가 업로드

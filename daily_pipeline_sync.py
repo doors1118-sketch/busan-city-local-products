@@ -8,6 +8,9 @@ import pandas as pd
 import datetime
 import sys
 import time
+import hmac
+import hashlib
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -22,6 +25,57 @@ SERVICE_KEY = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
 DB_PATH = 'procurement_contracts.db'
 AGENCY_DB_PATH = 'busan_agencies_master.db'
 SERVC_SITE_DB_PATH = 'servc_site.db'
+
+# === NCloud SENS SMS 알림 (alert_config.json에서 설정 로드) ===
+def send_sms(message):
+    """API 수집 실패 시 SMS 발송. 실패해도 파이프라인은 계속 진행."""
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alert_config.json')
+        if not os.path.exists(config_path):
+            print(f"   📱 SMS 설정 파일 없음: {config_path}")
+            return
+        with open(config_path, 'r', encoding='utf-8') as f:
+            sms_cfg = json.load(f).get('ncp_sms', {})
+        if not sms_cfg.get('enabled'):
+            return
+        
+        access_key = sms_cfg['access_key']
+        secret_key = sms_cfg['secret_key']
+        service_id = sms_cfg['service_id']
+        from_number = sms_cfg['from_number']
+        recipients = sms_cfg.get('recipients', [])
+        
+        timestamp = str(int(time.time() * 1000))
+        uri = f'/sms/v2/services/{service_id}/messages'
+        sign_str = f"POST {uri}\n{timestamp}\n{access_key}"
+        signature = base64.b64encode(
+            hmac.new(secret_key.encode('utf-8'), sign_str.encode('utf-8'), hashlib.sha256).digest()
+        ).decode('utf-8')
+        
+        body = json.dumps({
+            'type': 'SMS',
+            'from': from_number,
+            'content': message[:80],
+            'messages': [{'to': r.replace('-','')} for r in recipients],
+        }).encode('utf-8')
+        
+        req = urllib.request.Request(
+            f'https://sens.apigw.ntruss.com{uri}',
+            data=body,
+            headers={
+                'Content-Type': 'application/json; charset=utf-8',
+                'x-ncp-apigw-timestamp': timestamp,
+                'x-ncp-iam-access-key': access_key,
+                'x-ncp-apigw-signature-v2': signature,
+            },
+            method='POST'
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
+            result = json.loads(res.read().decode('utf-8'))
+            status = result.get('statusCode', '')
+            print(f"   📱 SMS 발송 {'성공' if status == '202' else f'응답:{status}'}: {message[:40]}")
+    except Exception as e:
+        print(f"   📱 SMS 발송 실패 (파이프라인 계속): {e}")
 
 def check_api_health():
     """조달청 API 서비스 상태 확인. 정상이면 True, 점검/장애 시 False."""
@@ -49,11 +103,11 @@ def check_api_health():
 
 APIS = {
     '공사_중앙': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListCnstwkPPSSrch',
-    '공사_자체': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListCnstwkSrch',
+    '공사_자체': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListCnstwk',
     '용역_중앙': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListServcPPSSrch',
-    '용역_자체': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListServcSrch',
+    '용역_자체': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListServc',
     '물품_중앙': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListThngPPSSrch',
-    '물품_자체': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListThngSrch',
+    '물품_자체': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListThng',
     '쇼핑몰': 'https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList'
 }
 
@@ -919,7 +973,15 @@ def update_bid_notices_price_daily(target_date):
     conn.close()
 
 def fetch_contract_data(api_url, bgn_date, end_date, page_no=1, num_of_rows=999):
-    query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDate={bgn_date}&inqryEndDate={end_date}&numOfRows={num_of_rows}&pageNo={page_no}&type=json"
+    # 자체계약 API(신규 URL): inqryBgnDt/inqryEndDt + YYYYMMDDHHmm 형식
+    # 중앙조달(PPSS) + 쇼핑몰: inqryBgnDate/inqryEndDate + YYYYMMDD 형식
+    is_new_self_api = api_url.endswith(('ListCnstwk', 'ListServc', 'ListThng'))
+    if is_new_self_api:
+        bgn_dt = bgn_date + '0000' if len(bgn_date) == 8 else bgn_date
+        end_dt = end_date + '2359' if len(end_date) == 8 else end_date
+        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows={num_of_rows}&pageNo={page_no}&type=json"
+    else:
+        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDate={bgn_date}&inqryEndDate={end_date}&numOfRows={num_of_rows}&pageNo={page_no}&type=json"
     url = api_url + query
     retry = 0
     while retry < 3:
@@ -970,6 +1032,7 @@ def sync_one_day(target_date):
     if not check_api_health():
         print("   🚫 조달청 API 서비스 점검 중 — 금일 수집을 건너뜁니다.")
         print("   → 점검 완료 후 다음 실행 시 자동 보충 수집됩니다.")
+        send_sms(f'[조달알림] {target_date} API 점검중 수집 건너뜀')
         return False
     print("   ✅ API 정상 응답 확인")
     print("\n--------------------------------------------------")
@@ -1046,6 +1109,7 @@ def sync_one_day(target_date):
     except Exception as e:
         print(f"   [오류] Step 2 계약 데이터 수집 실패: {e}")
         print(f"   → 핵심 데이터 수집 실패 — 전체 실패 처리 (추후 자동 보충)")
+        send_sms(f'[조달알림] {target_date} 계약수집 실패: {str(e)[:30]}')
         return False
 
     # [Step 3] 부산 수요기관 계약만 DB 저장
@@ -1062,6 +1126,25 @@ def sync_one_day(target_date):
                     if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
                         df[col] = df[col].astype(str)
                 n_before = len(df)
+                # [Step 3 사전처리] dminsttCd가 비어있으면 dminsttList에서 기관코드 파싱 (누락 방지)
+                # — API가 dminsttCd=None으로 내려주는 경우가 있어 필터 전에 보완 필요
+                if cat != '쇼핑몰' and 'dminsttList' in df.columns and 'dminsttCd' in df.columns:
+                    import re
+                    _null_mask = df['dminsttCd'].isna() | df['dminsttCd'].astype(str).str.strip().isin(['', 'None', 'nan'])
+                    if _null_mask.any():
+                        def _parse_dminstt_cd(dl):
+                            m = re.search(r'\[1\^(\w+)\^([^^]+)\^', str(dl))
+                            return m.group(1) if m else None
+                        def _parse_dminstt_nm(dl):
+                            m = re.search(r'\[1\^(\w+)\^([^^]+)\^', str(dl))
+                            return m.group(2) if m else None
+                        df.loc[_null_mask, 'dminsttCd'] = df.loc[_null_mask, 'dminsttList'].apply(_parse_dminstt_cd)
+                        if 'dminsttNm_req' not in df.columns:
+                            df['dminsttNm_req'] = None
+                        df.loc[_null_mask, 'dminsttNm_req'] = df.loc[_null_mask, 'dminsttList'].apply(_parse_dminstt_nm)
+                        _filled = int(_null_mask.sum() - df.loc[_null_mask, 'dminsttCd'].isna().sum())
+                        if _filled > 0:
+                            print(f"   - [{cat}] dminsttList→dminsttCd 사전파싱: {_filled}건 보완")
                 if 'dminsttCd' in df.columns:
                     df['_cd_clean'] = df['dminsttCd'].astype(str).str.strip()
                     df = df[df['_cd_clean'].isin(busan_codes)].drop(columns=['_cd_clean'])
@@ -1199,6 +1282,7 @@ def main():
     
     if not success_dates:
         print("\n[경고] 수집 성공한 날짜가 없습니다. 캐시 재생성을 건너뜁니다.")
+        send_sms(f'[조달알림] 수집 전체 실패! 대상: {date_range}')
         return
     target_date = success_dates[-1]  # 이후 Step 4/5에서 사용
     # [Step 4] API 캐시 재생성 (build_api_cache.py → api_cache.json)
