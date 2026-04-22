@@ -703,6 +703,17 @@ def run_alert_check():
                 resolved INTEGER DEFAULT 0, resolved_dt TEXT, resolved_note TEXT
             )""")
             now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # suspects/violations → ref_no 인덱스 구축
+            suspect_map = {}  # msg → suspect dict
+            for s in suspects:
+                key_prefix = f"{s['공고명'][:25]}"
+                suspect_map[key_prefix] = s
+            violation_map = {}
+            for v in violations:
+                key_prefix = f"{v['외지업체'][:15]}"
+                violation_map[key_prefix] = v
+
             for level, msg in alerts:
                 # 유형 분류
                 if '사전규격' in msg:
@@ -719,9 +730,65 @@ def run_alert_check():
                     atype = '발주액변동'
                 else:
                     atype = '기타'
+
+                # 구조화 필드 추출
+                _sector = ''
+                _agency = ''
+                _amount = 0
+                _ref_no = ''
+
+                import re as _re
+
+                # 대형유출: 🚨 [경보] 대형 유출 [공사]: "계약명" 50억 (기관명)
+                if atype == '대형유출':
+                    m = _re.search(r'\[(공사|용역|물품|쇼핑몰)\]', msg)
+                    if m: _sector = m.group(1)
+                    m2 = _re.search(r'\(([^)]+)\)\s*$', msg)
+                    if m2: _agency = m2.group(1)
+                    m3 = _re.search(r'(\d+(?:\.\d+)?)억', msg)
+                    if m3: _amount = float(m3.group(1)) * 1e8
+
+                # 사전규격: 📋 [사전규격/공사] "품명" 6.2억 — 수요기관 (마감:...)
+                elif atype == '사전규격':
+                    m = _re.search(r'\[(사전규격)/(공사|용역)\]', msg)
+                    if m: _sector = m.group(2)
+                    m2 = _re.search(r'— (.+?)(?:\s*\(마감|$)', msg)
+                    if m2: _agency = m2.group(1).strip()
+                    m3 = _re.search(r'(\d+(?:\.\d+)?)억', msg)
+                    if m3: _amount = float(m3.group(1)) * 1e8
+
+                # 보호제도미적용: ⚠️ [공사/종합] "공고명" 6.2억 — 수요기관 [...]
+                elif atype == '보호제도미적용':
+                    m = _re.search(r'\[(공사|용역)/(종합|전문|용역)\]', msg)
+                    if m: _sector = m.group(1)
+                    m2 = _re.search(r'— (.+?)(?:\s*\[|$)', msg)
+                    if m2: _agency = m2.group(1).strip()
+                    m3 = _re.search(r'(\d+(?:\.\d+)?)억', msg)
+                    if m3: _amount = float(m3.group(1)) * 1e8
+                    # ref_no from suspects
+                    for sk, sv in suspect_map.items():
+                        if sk in msg:
+                            _ref_no = sv.get('공고번호', '')
+                            break
+
+                # 지분초과: 🚨 [공사] "외지업체" 지분 65% (12.3억) — 수요기관 [계약번호]
+                elif atype == '지분초과':
+                    _sector = '공사'
+                    m2 = _re.search(r'— (.+?)(?:\s*\[|$)', msg)
+                    if m2: _agency = m2.group(1).strip()
+                    m3 = _re.search(r'(\d+(?:\.\d+)?)억', msg)
+                    if m3: _amount = float(m3.group(1)) * 1e8
+                    m4 = _re.search(r'\[([^\]]+)\]\s*$', msg)
+                    if m4: _ref_no = m4.group(1)
+
+                # 수주율/발주액 변동: 전체 지표
+                elif atype in ('수주율변동', '발주액변동'):
+                    m = _re.search(r'\[(공사|용역|물품|쇼핑몰)\]', msg)
+                    if m: _sector = m.group(1)
+
                 conn_ah.execute(
-                    "INSERT INTO alert_history (alert_dt, alert_type, severity, title, detail) VALUES (?,?,?,?,?)",
-                    (now_str, atype, level, msg[:100], msg)
+                    "INSERT INTO alert_history (alert_dt, alert_type, severity, title, detail, sector, agency, amount, ref_no) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (now_str, atype, level, msg[:100], msg, _sector, _agency, _amount, _ref_no)
                 )
             conn_ah.commit()
             conn_ah.close()

@@ -1112,6 +1112,17 @@ def sync_one_day(target_date):
         send_sms(f'[조달알림] {target_date} 계약수집 실패: {str(e)[:30]}')
         return False
 
+    # [Step 2.5] 수집 건수 0건 경보 (API 엔드포인트 변경/장애 감지)
+    total_collected = sum(len(v) for v in all_data.values())
+    # 주말(토·일)은 0건이 정상일 수 있으므로 평일만 경보
+    target_dt = datetime.datetime.strptime(target_date, '%Y%m%d')
+    is_weekday = target_dt.weekday() < 5  # 0=월 ~ 4=금
+    if total_collected == 0 and is_weekday:
+        msg = f'[조달경보] {target_date} 전체 0건 수집! API 엔드포인트 변경 의심'
+        print(f"   🚨 {msg}")
+        send_sms(msg)
+        return False  # catch-up 대상으로 남김
+
     # [Step 3] 부산 수요기관 계약만 DB 저장
     print(f"\n[로컬 DB 저장] {target_date} 부산 필터 후 저장 중...")
     _conn_ag = sqlite3.connect(AGENCY_DB_PATH)

@@ -1624,6 +1624,63 @@ elif page == "🛡️ 지역업체 보호제도":
         st.caption(f"📅 생성: {data_prot.get('generated_at', '')}")
         현황 = data_prot.get("현황", {})
 
+        # ── 보호제도 판정 기준 안내 ──
+        with st.expander("ℹ️ 지역업체 보호제도 판정 기준 안내", expanded=False):
+            st.markdown(f"""
+<div style="font-size:0.78rem; line-height:1.8; color:{COLORS['text_dark']};">
+
+**보호제도란?**
+
+지역 중소기업의 공공조달 참여 기회를 보장하기 위한 제도입니다. 일정 금액 이하의 계약에 대해 **지역제한경쟁입찰** 또는 **의무공동도급**을 적용하여 지역업체가 수주할 수 있도록 합니다.
+
+---
+
+**적용 대상 (분석 모수)**
+
+일반경쟁·제한경쟁 입찰 건 중, 추정가격이 아래 기준 이하인 계약만 분석 대상입니다.  
+(수의계약은 별도 탭에서 분석)
+
+| 구분 | 국가계약법<br>(정부기관) | 공기업·준정부기관<br>계약사무규칙 | 지방계약법<br>(부산시 산하) |
+|:---:|:---:|:---:|:---:|
+| **종합공사** | 88억 | ~~88억~~ → **150억** (4/21~) | ~~100억~~ → **150억** (4/24~) |
+| **전문공사** | 10억 | 10억 | 10억 |
+| **용역** | 2.2억 | 2.2억 | 3.3억 |
+
+---
+
+**판정 흐름**
+
+```
+기준이하 계약 발생
+  ├─ 계약방식이 "제한경쟁" → ✅ 지역제한 적용
+  ├─ 부산업체 지분 100% → ✅ 적용 (실질적 보호)
+  └─ 위 둘 다 아님 → ❌ 미적용
+```
+
+공사 100억 초과 건은 **의무공동도급** 기준 적용:
+```
+100억 초과 공사
+  ├─ 부산업체 지분 40% 이상 → ✅ 의무공동 적용
+  └─ 40% 미만 → ❌ 미적용 (의무공동도급 위반)
+```
+
+---
+
+**용어 설명**
+
+| 용어 | 의미 |
+|------|------|
+| **지역제한 적용** | 제한경쟁입찰로 진행되어 지역업체만 참여 가능했던 건, 또는 의무공동도급이 적용된 건 |
+| **미적용** | 기준이하인데 일반경쟁으로 발주하여 타지역 업체도 참여 가능했던 건 |
+| **미적용 기관** | 미적용 건이 1건 이상 존재하는 발주기관 (보호제도 활용 개선 필요) |
+| **적용률** | 기준이하 대상 건 중 지역제한이 적용된 비율 |
+| **미적용액** | 미적용 건들의 추정가격 합계 (지역업체가 보호받지 못한 계약 규모) |
+
+> ⚠️ "제한경쟁"에는 부산 지역제한 외에 기술·실적 제한도 포함되어, 적용률이 다소 과대 계상될 수 있습니다.
+
+</div>
+""", unsafe_allow_html=True)
+
         def make_donut_card(title, icon, gradient, data_dict, criteria=""):
             if not data_dict:
                 return
@@ -1708,22 +1765,25 @@ elif page == "🛡️ 지역업체 보호제도":
 </div>''', unsafe_allow_html=True)
                 return title
 
-        국가 = 현황.get("정부 및 국가공공기관", {})
-        gov_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">국가계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>88억</b> 이하<br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>2.2억</b> 이하</div>'
-        gov_card_title = make_donut_card("정부 및 국가공공기관", '<img src="https://www.mois.go.kr/frt2022/main/img/common/logo.png" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #364a63 0%, #526484 100%)", 국가, gov_criteria)
+        # ── ① 정부기관 (국가계약법) ──
+        정부기관 = 현황.get("정부기관", 현황.get("정부 및 국가공공기관", {}))
+        법령기준 = 현황.get("_법령기준", {})
+        gov_law = 법령기준.get("국가계약법", {})
+        gov_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">국가계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>88억</b> 이하<br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>2.2억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 중앙행정기관, 국립대학</div>'
+        gov_card_title = make_donut_card("정부기관 (국가계약법)", '<img src="https://www.mois.go.kr/frt2022/main/img/common/logo.png" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #364a63 0%, #526484 100%)", 정부기관, gov_criteria)
 
-        # ── 정부 미적용 계약 상세 조회 ──
+        # ── 정부기관 미적용 계약 상세 ──
         주요미적용_all = data_prot.get("미적용_건", [])
-        if 주요미적용_all and 국가:
+        if 주요미적용_all and 정부기관:
             gov_미적용 = []
             for c in 주요미적용_all:
                 vals = list(c.values())
                 grp_val = str(vals[4]) if len(vals) > 4 else ""
-                if "정부" in grp_val or "국가" in grp_val:
+                if "정부기관" in grp_val:
                     gov_미적용.append(vals)
             gov_미적용.sort(key=lambda v: v[3] if len(v) > 3 else 0, reverse=True)
             if gov_미적용:
-                with st.expander(f"🔍 정부 및 국가공공기관 미적용 계약 상세 ({len(gov_미적용)}건)", expanded=False):
+                with st.expander(f"🔍 정부기관 미적용 계약 상세 ({len(gov_미적용)}건)", expanded=False):
                     for vi, vals in enumerate(gov_미적용[:30]):
                         ct_name = str(vals[2]) if len(vals) > 2 else ""
                         ct_amt = vals[3] if len(vals) > 3 else 0
@@ -1740,9 +1800,52 @@ elif page == "🛡️ 지역업체 보호제도":
 </div>''', unsafe_allow_html=True)
 
         st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
+
+        # ── ② 국가공공기관 (공기업·준정부기관 계약사무규칙) ──
+        국가공공 = 현황.get("국가공공기관", {})
+        pub_law = 법령기준.get("공기업·준정부기관 계약사무규칙", {})
+        pub_change_dt = pub_law.get("변경일", "2026-04-21")
+        pub_old_amt = pub_law.get("종합공사_구", 88)
+        pub_new_amt = pub_law.get("종합공사", 150)
+        pub_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">공기업·준정부기관 계약사무규칙</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>{pub_new_amt}억</b> 이하<br>  <span style="font-size:0.72rem; color:{COLORS["text_light"]};">({pub_change_dt} 이전: {pub_old_amt}억)</span><br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>2.2억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 공기업, 준정부기관 등 국가공공기관</div>'
+        if 국가공공:
+            pub_card_title = make_donut_card("국가공공기관 (계약사무규칙)", '🏛️', "linear-gradient(135deg, #526484 0%, #7B8DA0 100%)", 국가공공, pub_criteria)
+
+            # ── 국가공공기관 미적용 계약 상세 ──
+            if 주요미적용_all:
+                pub_미적용 = []
+                for c in 주요미적용_all:
+                    vals = list(c.values())
+                    grp_val = str(vals[4]) if len(vals) > 4 else ""
+                    if "국가공공" in grp_val:
+                        pub_미적용.append(vals)
+                pub_미적용.sort(key=lambda v: v[3] if len(v) > 3 else 0, reverse=True)
+                if pub_미적용:
+                    with st.expander(f"🔍 국가공공기관 미적용 계약 상세 ({len(pub_미적용)}건)", expanded=False):
+                        for vi, vals in enumerate(pub_미적용[:30]):
+                            ct_name = str(vals[2]) if len(vals) > 2 else ""
+                            ct_amt = vals[3] if len(vals) > 3 else 0
+                            ct_agency = str(vals[6]) if len(vals) > 6 else (str(vals[5]) if len(vals) > 5 else "")
+                            ct_sector = str(vals[0]) if len(vals) > 0 else ""
+                            rbg = "#fafbfe" if vi % 2 == 1 else COLORS["card_bg"]
+                            st.markdown(f'''<div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid {COLORS['card_border']}; background:{rbg};">
+<div style="flex:0.3; font-size:0.82rem; font-weight:600; color:{COLORS['text_light']};">{vi+1}</div>
+<div style="flex:3; font-size:0.88rem; font-weight:600; color:{COLORS['text_dark']};">{ct_name}</div>
+<div style="flex:1.2; font-size:0.82rem; font-weight:600; color:{COLORS['text_dark']};">{ct_agency}</div>
+<div style="flex:0.6;"><span style="padding:2px 8px; border-radius:3px; background:#f0f0f0; color:#526484; font-size:0.75rem; font-weight:600;">{ct_sector}</span></div>
+<div style="flex:1; text-align:right; font-size:0.95rem; font-weight:700; color:#e85347; font-family:Nunito Sans,sans-serif;">{format_억(ct_amt)}</div>
+</div>''', unsafe_allow_html=True)
+
+        st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
+
+        # ── ③ 부산시 및 소관기관 (지방계약법) ──
         부산 = 현황.get("부산시 및 소관기관_지역제한", {})
-        busan_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">지방계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>100억</b> 이하<br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>3.3억</b> 이하</div>'
-        busan_card_title = make_donut_card("부산시 및 소관기관", '<img src="https://www.busan.go.kr/humanframe/global/assets/img/common/busan_logo.svg" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #6576ff 0%, #8B5CF6 100%)", 부산, busan_criteria)
+        bsn_law = 법령기준.get("지방계약법", {})
+        bsn_change_dt = bsn_law.get("변경일", "2026-04-24")
+        bsn_old_amt = bsn_law.get("종합공사_구", 100)
+        bsn_new_amt = bsn_law.get("종합공사", 150)
+        busan_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">지방계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>{bsn_new_amt}억</b> 이하<br>  <span style="font-size:0.72rem; color:{COLORS["text_light"]};">({bsn_change_dt} 이전: {bsn_old_amt}억)</span><br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>3.3억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 부산광역시 및 소속기관</div>'
+        busan_card_title = make_donut_card("부산시 및 소관기관 (지방계약법)", '<img src="https://www.busan.go.kr/humanframe/global/assets/img/common/busan_logo.svg" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #6576ff 0%, #8B5CF6 100%)", 부산, busan_criteria)
 
         # ── 부산시 미적용 계약 상세 조회 ──
         if 주요미적용_all and 부산:
@@ -4555,6 +4658,10 @@ elif page == "🔔 경보 현황":
         if not tbl_check:
             st.info("경보 이력이 아직 없습니다. alert_check.py가 실행되면 자동으로 기록됩니다.")
         else:
+            # 컬럼 존재 확인 (기존 DB에 sector/agency 컬럼이 없을 수 있음)
+            cols_info = [r[1] for r in conn_ah.execute("PRAGMA table_info(alert_history)").fetchall()]
+            has_structured = 'agency' in cols_info and 'sector' in cols_info
+
             # 요약
             total_alerts = conn_ah.execute("SELECT COUNT(*) FROM alert_history").fetchone()[0]
             critical_cnt = conn_ah.execute("SELECT COUNT(*) FROM alert_history WHERE severity='CRITICAL'").fetchone()[0]
@@ -4585,6 +4692,38 @@ elif page == "🔔 경보 현황":
 
             st.markdown("<br>", unsafe_allow_html=True)
 
+            # ── 경보 기준 안내 ──
+            with st.expander("ℹ️ 경보 발생 기준 안내", expanded=False):
+                st.markdown(f"""
+<div style="font-size:0.78rem; line-height:1.7; color:{COLORS['text_dark']};">
+
+**심각도 구분**
+
+| 등급 | 의미 | 발생 조건 |
+|:---:|------|---------|
+| 🚨 **경보** (CRITICAL) | 즉시 확인 필요 | 수주율 3%p 이상 급락, 대형 유출계약 신규 발생, 발주액 10% 이상 급변, 외지업체 지분 60% 초과 |
+| ⚠️ **주의** (WARNING) | 모니터링 필요 | 분야별 수주율 5%p 이상 변동, 보호제도 미적용 의심, 사전규격 대형 건 |
+
+---
+
+**경보 유형별 발생 기준**
+
+| 유형 | 기준 | 설명 |
+|------|------|------|
+| **수주율변동** | 전체 수주율이 전일 대비 **3%p 이상 하락** | 전체 수주율이 급격히 떨어졌을 때 발생 |
+| **대형유출** | 신규 유출계약 발생 (공사 **50억↑**, 용역·물품 **5억↑**, 쇼핑몰 **3억↑**) | 이전 캐시에 없던 대형 유출계약이 새로 감지되었을 때 |
+| **발주액변동** | 전체 발주액이 전일 대비 **10% 이상** 증감 | 데이터 이상이나 대규모 계약 변동을 감지 |
+| **지분초과** | 부산시 소속기관 공사에서 **외지업체 지분 60% 초과** | 의무공동도급 위반 의심 건 (부산 40% 미달) |
+| **보호제도미적용** | 기준액 이하인데 **지역제한경쟁·의무공동도급 미적용** | 공사 종합 ≤100억, 전문 ≤10억, 용역 ≤3.3억 |
+| **사전규격** | 대형 사전규격 신규 등록 (공사 **10억↑**, 용역 **5억↑**) | 입찰 전 단계에서 대형 건을 사전 모니터링 |
+
+---
+
+**분야별 수주율 급변**: 공사·용역·물품·쇼핑몰 각각 전일 대비 **5%p 이상** 변동 시 주의 발생  
+**보호제도 미적용 증가**: 미적용 건수가 전일 대비 **10건 이상** 증가 시 주의 발생
+</div>
+""", unsafe_allow_html=True)
+
             # 월 목록 조회
             months_raw = conn_ah.execute(
                 "SELECT DISTINCT substr(alert_dt, 1, 7) AS ym FROM alert_history ORDER BY ym DESC"
@@ -4592,7 +4731,11 @@ elif page == "🔔 경보 현황":
             month_list = ['전체'] + [r[0] for r in months_raw]
 
             # 필터 행
-            fc1, fc2, fc3 = st.columns(3)
+            if has_structured:
+                fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 2])
+            else:
+                fc1, fc2, fc3 = st.columns(3)
+                fc4 = None
             with fc1:
                 sel_month = st.selectbox("기간 (월)", month_list, key="ah_month")
             with fc2:
@@ -4600,6 +4743,9 @@ elif page == "🔔 경보 현황":
                 sel_type = st.selectbox("경보 유형", alert_types, key="ah_type")
             with fc3:
                 sel_severity = st.selectbox("심각도", ["전체", "CRITICAL", "WARNING"], key="ah_sev")
+            if has_structured and fc4:
+                with fc4:
+                    agency_search = st.text_input("수요기관 검색", key="ah_agency", placeholder="기관명 입력...")
 
             # 쿼리 빌드
             where_parts = []
@@ -4613,33 +4759,46 @@ elif page == "🔔 경보 현황":
             if sel_severity != "전체":
                 where_parts.append("severity = ?")
                 params.append(sel_severity)
+            if has_structured and fc4 and agency_search:
+                where_parts.append("agency LIKE ?")
+                params.append(f"%{agency_search}%")
 
             where_sql = " AND ".join(where_parts) if where_parts else "1=1"
 
-            # 전체 데이터 조회 (다운로드용)
+            # 전체 데이터 조회
+            if has_structured:
+                query_cols = "alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, sector AS 분야, agency AS 수요기관, amount AS 금액, detail AS 내용, ref_no AS 참조번호"
+            else:
+                query_cols = "alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, '' AS 분야, '' AS 수요기관, 0 AS 금액, detail AS 내용, '' AS 참조번호"
+
             df_all = pd.read_sql_query(
-                f"SELECT alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, detail AS 내용 FROM alert_history WHERE {where_sql} ORDER BY alert_dt DESC",
+                f"SELECT {query_cols} FROM alert_history WHERE {where_sql} ORDER BY alert_dt DESC",
                 conn_ah, params=params
             )
 
             # 다운로드 버튼
             dl1, dl2, dl3 = st.columns([1, 1, 4])
             with dl1:
-                label = f"📥 {sel_month} 다운로드" if sel_month != "전체" else "📥 전체 다운로드"
-                csv_data = df_all.to_csv(index=False, encoding='utf-8-sig')
-                st.download_button(
-                    label=label,
-                    data=csv_data,
-                    file_name=f"경보이력_{sel_month.replace('-','')}.csv" if sel_month != "전체" else "경보이력_전체.csv",
-                    mime="text/csv",
-                    key="ah_dl_filter"
-                )
-            with dl2:
-                if sel_month != "전체":
-                    df_full = pd.read_sql_query(
-                        "SELECT alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, detail AS 내용 FROM alert_history ORDER BY alert_dt DESC",
-                        conn_ah
+                if not df_all.empty:
+                    dl_df = df_all.copy()
+                    dl_df['금액(억)'] = (dl_df['금액'].fillna(0) / 1e8).round(1)
+                    dl_cols = ['발생일시', '심각도', '유형', '분야', '수요기관', '금액(억)', '내용', '참조번호']
+                    label = f"📥 {sel_month} 다운로드" if sel_month != "전체" else "📥 전체 다운로드"
+                    csv_data = dl_df[dl_cols].to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label=label,
+                        data=csv_data,
+                        file_name=f"경보이력_{sel_month.replace('-','')}.csv" if sel_month != "전체" else "경보이력_전체.csv",
+                        mime="text/csv",
+                        key="ah_dl_filter"
                     )
+            with dl2:
+                if sel_month != "전체" and not df_all.empty:
+                    if has_structured:
+                        q_full = f"SELECT alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, sector AS 분야, agency AS 수요기관, amount/1e8 AS '금액(억)', detail AS 내용, ref_no AS 참조번호 FROM alert_history ORDER BY alert_dt DESC"
+                    else:
+                        q_full = "SELECT alert_dt AS 발생일시, severity AS 심각도, alert_type AS 유형, detail AS 내용 FROM alert_history ORDER BY alert_dt DESC"
+                    df_full = pd.read_sql_query(q_full, conn_ah)
                     csv_full = df_full.to_csv(index=False, encoding='utf-8-sig')
                     st.download_button(
                         label="📥 전체 다운로드",
@@ -4658,19 +4817,47 @@ elif page == "🔔 경보 현황":
                     dt = row['발생일시']
                     sev = row['심각도']
                     atype = row['유형']
-                    detail = row['내용']
+                    detail = str(row['내용'] or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    agency = str(row.get('수요기관', '') or '').strip()
+                    sector = str(row.get('분야', '') or '').strip()
+                    amt = float(row.get('금액', 0) or 0)
+                    ref_no = str(row.get('참조번호', '') or '').strip()
                     icon = "🚨" if sev == "CRITICAL" else "⚠️"
                     color = COLORS['danger'] if sev == "CRITICAL" else COLORS['warning']
                     badge_bg = COLORS['danger_pale'] if sev == "CRITICAL" else COLORS['warning_pale']
-                    st.markdown(f'''<div style="background:{COLORS['card_bg']}; border:1px solid {COLORS['card_border']};
-                        border-left:4px solid {color}; border-radius:6px; padding:12px 16px; margin-bottom:8px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                            <span style="font-size:0.65rem; color:{COLORS['text_light']};">{dt}</span>
-                            <span style="font-size:0.6rem; background:{badge_bg}; color:{color};
-                                padding:2px 8px; border-radius:10px; font-weight:700;">{atype}</span>
-                        </div>
-                        <div style="font-size:0.8rem; color:{COLORS['text_dark']};">{icon} {detail}</div>
-                    </div>''', unsafe_allow_html=True)
+
+                    # 수요기관 뱃지
+                    agency_html = ''
+                    if agency:
+                        agency_html = f'<span style="font-size:0.68rem; background:rgba(101,118,255,0.1); color:#6576ff; padding:2px 8px; border-radius:10px; font-weight:600; margin-left:6px;">{agency}</span>'
+
+                    # 분야+금액 뱃지
+                    meta_html = ''
+                    meta_parts = []
+                    if sector:
+                        sec_colors_map = {'공사': '#1ee0ac', '용역': '#6576ff', '물품': '#f4bd0e', '쇼핑몰': '#e85347'}
+                        sc = sec_colors_map.get(sector, COLORS['text_light'])
+                        meta_parts.append(f'<span style="font-size:0.62rem; color:#fff; background:{sc}; padding:1px 6px; border-radius:3px; font-weight:700;">{sector}</span>')
+                    if amt > 0:
+                        meta_parts.append(f'<span style="font-size:0.68rem; font-weight:700; color:{COLORS["text_dark"]}; font-family:Nunito Sans;">{amt/1e8:,.1f}억</span>')
+                    if ref_no:
+                        meta_parts.append(f'<span style="font-size:0.6rem; color:{COLORS["text_light"]};">#{ref_no}</span>')
+                    if meta_parts:
+                        meta_html = f'<div style="display:flex; align-items:center; gap:6px; margin-top:4px;">{"".join(meta_parts)}</div>'
+
+                    # 카드 HTML 조립 (들여쓰기 없이)
+                    card = f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["card_border"]}; border-left:4px solid {color}; border-radius:6px; padding:12px 16px; margin-bottom:8px;">'
+                    card += f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">'
+                    card += f'<div style="display:flex; align-items:center;">'
+                    card += f'<span style="font-size:0.65rem; color:{COLORS["text_light"]};">{dt}</span>'
+                    card += agency_html
+                    card += '</div>'
+                    card += f'<span style="font-size:0.6rem; background:{badge_bg}; color:{color}; padding:2px 8px; border-radius:10px; font-weight:700;">{atype}</span>'
+                    card += '</div>'
+                    card += f'<div style="font-size:0.8rem; color:{COLORS["text_dark"]};">{icon} {detail}</div>'
+                    card += meta_html
+                    card += '</div>'
+                    st.markdown(card, unsafe_allow_html=True)
             else:
                 st.info("해당 조건의 경보가 없습니다.")
 

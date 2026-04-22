@@ -338,6 +338,16 @@ def build_shopping_site_index(conn, busan_agency_cds):
             "SELECT bidNtceNm, dminsttCd, cnstrtsiteRgnNm FROM bid_notices_raw"
             " WHERE dminsttCd IS NOT NULL AND dminsttCd != ''", conn)
     
+    # 공사 계약 현장 데이터도 추가 (엑셀 보강분 활용)
+    try:
+        cntrct_site = pd.read_sql(
+            "SELECT cnstwkNm as bidNtceNm, dminsttCd, cnstrtsiteRgnNm FROM cnstwk_cntrct "
+            "WHERE cnstrtsiteRgnNm IS NOT NULL AND cnstrtsiteRgnNm != '' "
+            "AND dminsttCd IS NOT NULL AND dminsttCd != ''", conn)
+        notices = pd.concat([notices, cntrct_site], ignore_index=True)
+    except Exception:
+        pass  # cnstwk_cntrct 없어도 기존 로직 유지
+    
     agency_sites = defaultdict(lambda: {'busan': 0, 'other': 0})
     for _, r in notices.iterrows():
         cd = str(r['dminsttCd']).strip()

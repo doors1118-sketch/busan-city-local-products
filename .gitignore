@@ -58,3 +58,6 @@ tmp_skills/
 
 # Office temp files
 ~$*
+
+chk.py
+_test_sms.py

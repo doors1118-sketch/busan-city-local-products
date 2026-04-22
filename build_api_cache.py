@@ -681,10 +681,46 @@ def build_cache():
                        '조경', '실내건축', '철근·콘크리트', '상하수도', '포장',
                        '철강구조물', '금속구조물창호', '도장', '습식방수', '석공사',
                        '비계', '지반조성', '철도궤도']
+    # ═══ 법령별 지역제한경쟁입찰 기준 ═══
+    # 국가계약법 (정부기관: 중앙행정기관, 국립대학)
+    PROT_GOV = {'종합공사': 88e8, '전문공사': 10e8, '용역': 2.2e8}
+    # 공기업·준정부기관 계약사무규칙 (국가공공기관)
+    # 2026-04-20 공포: 종합공사 88억→150억 (4/21 계약분부터 적용)
+    PROT_PUB_OLD = {'종합공사': 88e8, '전문공사': 10e8, '용역': 2.2e8}
+    PROT_PUB_NEW = {'종합공사': 150e8, '전문공사': 10e8, '용역': 2.2e8}
+    PUB_NEW_DATE = '2026-04-21'  # 신규 기준 적용 시작일
+    # 지방계약법 (부산시 및 산하기관)
+    # 2026-04-24 공포: 종합공사 100억→150억 (4/24 계약분부터 적용)
+    PROT_BSN_OLD = {'종합공사': 100e8, '전문공사': 10e8, '용역': 3.3e8}
+    PROT_BSN_NEW = {'종합공사': 150e8, '전문공사': 10e8, '용역': 3.3e8}
+    BSN_NEW_DATE = '2026-04-24'  # 신규 기준 적용 시작일
+
+    # 통합 threshold lookup (하위호환용)
     PROT_THRESHOLDS = {
-        '부산광역시 및 소속기관': {'종합공사': 100e8, '전문공사': 10e8, '용역': 3.3e8},
-        '정부 및 국가공공기관':  {'종합공사': 88e8,  '전문공사': 10e8, '용역': 2.2e8},
+        '부산광역시 및 소속기관': PROT_BSN_OLD,
+        '정부 및 국가공공기관': PROT_GOV,
     }
+
+    def get_prot_threshold(grp, mid, sub, cntrct_date_str):
+        """법령·날짜에 따른 기준액 반환"""
+        dt = str(cntrct_date_str or '')[:10]  # 'YYYY-MM-DD'
+        if grp == '정부 및 국가공공기관':
+            if mid == '국가공공기관':  # 공기업·준정부기관 규칙
+                tbl = PROT_PUB_NEW if dt >= PUB_NEW_DATE else PROT_PUB_OLD
+            else:  # 중앙행정기관, 고등교육기관 → 국가계약법
+                tbl = PROT_GOV
+        elif grp == '부산광역시 및 소속기관':
+            tbl = PROT_BSN_NEW if dt >= BSN_NEW_DATE else PROT_BSN_OLD
+        else:
+            return None
+        return tbl.get(sub)
+
+    def get_law_name(grp, mid):
+        """법령명 반환"""
+        if grp == '정부 및 국가공공기관':
+            return '공기업·준정부기관 계약사무규칙' if mid == '국가공공기관' else '국가계약법'
+        return '지방계약법'
+
     # 사립대학 보호제도 제외: 국가계약법 비적용이므로 보호제도 분석 대상 아님
     # 고등교육기관 중 국립대만 허용 (화이트리스트)
     NATIONAL_UNIVERSITIES = {
@@ -692,7 +728,8 @@ def build_cache():
         '한국방송통신대학교', '한국폴리텍7대학', '한국폴리텍VII대학',
         '한국과학기술원부설한국과학영재학교',
     }
-    gov_stats = defaultdict(lambda: {'기준이하': 0, '지역제한': 0, '의무공동': 0, '미적용': 0, '미적용액': 0})
+    gov_stats = defaultdict(lambda: {'기준이하': 0, '지역제한': 0, '의무공동': 0, '미적용': 0, '미적용액': 0})  # 정부(국가계약법)
+    pub_stats = defaultdict(lambda: {'기준이하': 0, '지역제한': 0, '의무공동': 0, '미적용': 0, '미적용액': 0})  # 국가공공기관(계약사무규칙)
     bsn_stats = defaultdict(lambda: {'기준이하': 0, '지역제한': 0, '미적용': 0, '미적용액': 0})
     bsn_jnt = defaultdict(lambda: {'모수': 0, '의무공동': 0})
     prot_by_agency = defaultdict(lambda: {'total': 0, 'applied': 0, 'unapplied': 0, 'unapplied_amt': 0, 'grp': ''})
@@ -714,14 +751,15 @@ def build_cache():
         'cnstwk_cntrct': ('공사', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
             dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
             cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
-            cnstwkTypeLrg, cnstwkTypeDtl
+            cnstwkTypeLrg, cnstwkTypeDtl, cntrctCnclsDate
             FROM [cnstwk_cntrct]
-            WHERE cntrctCnclsMthdNm IN ('일반경쟁', '제한경쟁')"""),
+            WHERE cntrctCnclsMthdNm != '수의계약'"""),
         'servc_cntrct': ('용역', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
             dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
-            cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm
+            cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
+            cntrctCnclsDate
             FROM [servc_cntrct]
-            WHERE cntrctCnclsMthdNm IN ('일반경쟁', '제한경쟁')"""),
+            WHERE cntrctCnclsMthdNm != '수의계약'"""),
     }
 
     for tbl, (sector, query) in prot_contract_queries.items():
@@ -789,7 +827,9 @@ def build_cache():
             # 장기계속계약은 당해(thtmCntrctAmt)가 작으므로 총계약액(totCntrctAmt) 우선
             tot_amt = float(row.get('totCntrctAmt', 0) or 0)
             est_price = price_map.get(ntce_clean, None) or tot_amt or amt
-            threshold = PROT_THRESHOLDS[grp].get(sub)
+            cntrct_dt = str(row.get('cntrctCnclsDate', '') or '')
+            mid = inst_mid.get(matched_cd, '')
+            threshold = get_prot_threshold(grp, mid, sub, cntrct_dt)
             if not threshold: continue
 
             # 낙찰업체 지분 확인
@@ -801,28 +841,34 @@ def build_cache():
             corp_names = [parts[3].strip() for chunk in str(row.get('corpList', '')).split('[')[1:] if len((parts := chunk.split(']')[0].split('^'))) >= 4]
             corp_nm = corp_names[0] if corp_names else ""
 
+            # 적용 법령 식별
+            law_name = get_law_name(grp, mid)
+            is_pub = (grp == '정부 및 국가공공기관' and mid == '국가공공기관')
+
             # ===== 판정 로직 =====
             if est_price < 1_000_000: continue  # 100만원 미만 이상 데이터 제외
             if grp == '정부 및 국가공공기관':
                 if est_price > threshold: continue  # 기준 초과 → 대상 아님
-                gov_stats[sub]['기준이하'] += 1
+                target_stats = pub_stats if is_pub else gov_stats
+                target_stats[sub]['기준이하'] += 1
                 prot_by_agency[unit]['total'] += 1
-                prot_by_agency[unit]['grp'] = grp
+                prot_by_agency[unit]['grp'] = '국가공공기관' if is_pub else '정부기관'
                 if method == '제한경쟁':
-                    gov_stats[sub]['지역제한'] += 1
+                    target_stats[sub]['지역제한'] += 1
                     prot_by_agency[unit]['applied'] += 1
                 elif local_share >= 30:
-                    gov_stats[sub]['의무공동'] += 1  # 30%+ 지역 → 보호 작동
+                    target_stats[sub]['의무공동'] += 1  # 30%+ 지역 → 보호 작동
                     prot_by_agency[unit]['applied'] += 1
                 else:
-                    gov_stats[sub]['미적용'] += 1
-                    gov_stats[sub]['미적용액'] += est_price
+                    target_stats[sub]['미적용'] += 1
+                    target_stats[sub]['미적용액'] += est_price
                     prot_by_agency[unit]['unapplied'] += 1
                     prot_by_agency[unit]['unapplied_amt'] += est_price
                     prot_violations.append({"분야": sub, "계약방식": method,
                         "공고명": name[:55], "추정가격": round(est_price),
-                        "기관그룹": grp, "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
-                        "비교단위": unit, "수주업체": corp_nm, "비고": "비정상(지역제한 미적용)"})
+                        "기관그룹": '국가공공기관' if is_pub else '정부기관',
+                        "수요기관": str(row.get('dminsttNm', '') or inst_dict.get(matched_cd,{}).get('dminsttNm',''))[:25],
+                        "비교단위": unit, "수주업체": corp_nm, "비고": f"미적용({law_name})"})
 
             elif grp == '부산광역시 및 소속기관':
                 if sector == '공사' and est_price > threshold:
@@ -964,10 +1010,23 @@ def build_cache():
     prot_violations = [v for v in prot_violations if v['추정가격'] >= 1_000_000]  # 100만원 미만 이상 데이터 제외
 
     protection_summary = {
-        "정부 및 국가공공기관": {sub: dict(gov_stats[sub]) for sub in gov_stats},
+        "정부기관": {sub: dict(gov_stats[sub]) for sub in gov_stats},
+        "국가공공기관": {sub: dict(pub_stats[sub]) for sub in pub_stats},
+        "정부 및 국가공공기관": {  # 하위호환: 합산
+            sub: {k: gov_stats[sub].get(k, 0) + pub_stats[sub].get(k, 0)
+                  for k in ('기준이하', '지역제한', '의무공동', '미적용', '미적용액')}
+            for sub in set(list(gov_stats.keys()) + list(pub_stats.keys()))
+        },
         "부산시 및 소관기관_지역제한": {sub: dict(bsn_stats[sub]) for sub in bsn_stats},
         "부산시 및 소관기관_의무공동": {sec: dict(bsn_jnt[sec]) for sec in bsn_jnt},
         "수의계약": {key: dict(suui_stats[key]) for key in suui_stats},
+        "_법령기준": {
+            "국가계약법": {"종합공사": 88, "전문공사": 10, "용역": 2.2, "대상": "정부기관(중앙행정기관, 국립대학)"},
+            "공기업·준정부기관 계약사무규칙": {"종합공사": 150, "종합공사_구": 88, "전문공사": 10, "용역": 2.2,
+                "대상": "국가공공기관(공기업, 준정부기관 등)", "변경일": "2026-04-21"},
+            "지방계약법": {"종합공사": 150, "종합공사_구": 100, "전문공사": 10, "용역": 3.3,
+                "대상": "부산광역시 및 소속기관", "변경일": "2026-04-24"},
+        },
     }
     prot_agency_ranking = sorted(
         [{"기관": u, "기관그룹": d['grp'], "기준이하": d['total'], "적용": d['applied'],
@@ -976,12 +1035,17 @@ def build_cache():
          for u, d in prot_by_agency.items() if d['total'] > 0],
         key=lambda x: x['미적용'], reverse=True)
 
-    print("    ■ 국가:")
+    print("    ■ 정부기관 (국가계약법):")
     for sub in ['종합공사', '전문공사', '용역']:
         s = gov_stats.get(sub, {})
         if s.get('기준이하', 0) > 0:
             print(f"      {sub}: 기준이하 {s['기준이하']:,} → 지역제한 {s['지역제한']:,} / 의무공동 {s['의무공동']:,} / 미적용 {s['미적용']:,}")
-    print("    ■ 부산시 [지역제한]:")
+    print("    ■ 국가공공기관 (계약사무규칙):")
+    for sub in ['종합공사', '전문공사', '용역']:
+        s = pub_stats.get(sub, {})
+        if s.get('기준이하', 0) > 0:
+            print(f"      {sub}: 기준이하 {s['기준이하']:,} → 지역제한 {s['지역제한']:,} / 의무공동 {s['의무공동']:,} / 미적용 {s['미적용']:,}")
+    print("    ■ 부산시 [지역제한] (지방계약법):")
     for sub in ['종합공사', '전문공사', '용역']:
         s = bsn_stats.get(sub, {})
         if s.get('기준이하', 0) > 0:

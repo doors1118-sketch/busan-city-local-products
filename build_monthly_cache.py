@@ -26,6 +26,7 @@ DB_COMPANIES = 'busan_companies_master.db'
 MONTHLY_CACHE = 'monthly_cache.json'
 
 CURRENT_YEAR = str(datetime.now().year)
+CURRENT_MONTH = datetime.now().strftime('%m')  # "04"
 
 
 def pct(t, l):
@@ -129,7 +130,7 @@ def build_monthly():
     # ── 공사 ──
     print("  [공사] 로딩...")
     df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cnstrtsiteRgnNm
+        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate, cnstrtsiteRgnNm
         FROM cnstwk_cntrct""", conn)
     df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     df = dedup_by_dcsn(df)
@@ -151,8 +152,12 @@ def build_monthly():
             continue
         dt = str(row.get('cntrctCnclsDate', '') or '')[:7]  # "2026-01"
         if not dt.startswith(CURRENT_YEAR):
-            continue
+            dt = str(row.get('cntrctDate', '') or '')[:7]  # fallback
+        if not dt.startswith(CURRENT_YEAR):
+            dt = f"{CURRENT_YEAR}-04"  # 날짜 없는 건은 최신 월 배정
         month = dt[5:7]  # "01"
+        if month > CURRENT_MONTH:
+            month = CURRENT_MONTH  # 미래 월은 현재 월로 제한
         nm = str(row.get('cnstwkNm', '') or row.get('cntrctNm', '') or '')[:50]
         records.append(('공사', month, cd, unit, lrg, amt, loc, nm))
 
@@ -163,7 +168,7 @@ def build_monthly():
         print(f"  [{name}] 로딩...")
         extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
         df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-            corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
+            corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate{extra_col}
             FROM [{tbl}]""", conn)
         df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         df = dedup_by_dcsn(df)
@@ -186,8 +191,12 @@ def build_monthly():
                 continue
             dt = str(row.get('cntrctCnclsDate', '') or '')[:7]
             if not dt.startswith(CURRENT_YEAR):
-                continue
+                dt = str(row.get('cntrctDate', '') or '')[:7]
+            if not dt.startswith(CURRENT_YEAR):
+                dt = f"{CURRENT_YEAR}-04"
             month = dt[5:7]
+            if month > CURRENT_MONTH:
+                month = CURRENT_MONTH
             nm = str(row.get('cntrctNm', '') or '')[:50]
             records.append((name, month, cd, unit, lrg, amt, loc, nm))
 
@@ -216,8 +225,10 @@ def build_monthly():
             continue
         dt = str(row.get('dlvrReqRcptDate', '') or '')[:7]
         if not dt.startswith(CURRENT_YEAR):
-            continue
+            dt = f"{CURRENT_YEAR}-04"
         month = dt[5:7]
+        if month > CURRENT_MONTH:
+            month = CURRENT_MONTH
         nm = str(row.get('dlvrReqNm', '') or '')[:50]
         records.append(('쇼핑몰', month, cd, unit, lrg, amt, loc, nm))
 
