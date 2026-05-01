@@ -125,9 +125,10 @@ procurement_contracts.db (전국 83만건)
 | `alert_config.json` | 알림 채널 설정 (`.gitignore` — 서버에만 존재) |
 | `alert_log/` | 경보 로그 파일 (`.gitignore`) |
 
-#### 2단계 모니터링 (부산시 소속기관 대상)
+#### 3단계 모니터링 (부산시 소속기관 대상)
 | 단계 | 시점 | 감지 항목 |
 |:---:|:---:|---------|
+| **Part A-0** | **수집 확인** | **sync_log 테이블에서 전일 수집 완료 여부 확인 (CRITICAL)** |
 | Part A | 캐시 비교 | 수주율 급변, 대형유출 신규, 발주액 이상 등 5개 |
 | Part B-1 | 공고 단계 | 지역제한/의무공동도급 미적용 사전 경보 |
 | Part B-2 | 계약 단계 | 외지업체 지분 60% 초과 (의무도급 위반) |
@@ -141,13 +142,13 @@ procurement_contracts.db (전국 83만건)
 
 | 텔레그램 | 봇 API → 푸시 알림 | ⏳ 봇 토큰 필요 |
 | Gmail | SMTP (`doors1118@gmail.com`) | ⏳ 앱 비밀번호 필요 |
-| NCP SMS | SENS API (`busanlocalproduct`) | ✅ 운영 중 (발신: 051-888-7694, 수신: 3명) |
+| NCP SMS | SENS API (`busanlocalproduct`) | ✅ 운영 중 (발신: 051-888-7694, 수신: 4명) |
 | 파일 로그 | `alert_log/` 자동 저장 | ✅ 운영 중 |
 
 #### 크론 자동 실행 (2026-04-05 설정)
 | 시간 | 작업 | 요일 |
 |------|------|------|
-| 03:00 | `daily_pipeline_sync.py` 데이터 동기화 | 매일 |
+| 03:00 | `mkdir -p sync_log` → `daily_pipeline_sync.py` 데이터 동기화 | 매일 |
 | 04:00 | `api_cache_prev.json` 백업 → `build_api_cache.py` 캐시 빌드 → `systemctl restart` | 매일 |
 | 09:00 | `alert_check.py` 경보 체크 → SMS 발송 | 평일(월~금) |
 
@@ -239,13 +240,13 @@ cd /opt/busan && git pull origin main --ff-only && systemctl restart busan-api
 
 #### 집에서 서버 배포 (paramiko SSH — 2026-03-28 확인)
 - Windows SSH 클라이언트는 stdin 비밀번호 입력 불가 → **paramiko** 사용
-- 접속: `root@49.50.133.160:22`, 비밀번호 `U7$B%U5843m`
+- 접속: `root@49.50.133.160:22`, 비밀번호 `back9900@@`
 - **AI가 배포 시 반드시 아래 패턴 사용**:
 ```python
 import paramiko
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect('49.50.133.160', port=22, username='root', password='U7$B%U5843m', timeout=10)
+client.connect('49.50.133.160', port=22, username='root', password='back9900@@', timeout=10)
 # 명령 실행
 stdin, stdout, stderr = client.exec_command('cd /opt/busan && git pull origin main --ff-only')
 print(stdout.read().decode('utf-8'))
