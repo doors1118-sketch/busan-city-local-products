@@ -34,6 +34,7 @@ openapi.html
 # Alert config (contains API keys/tokens)
 alert_config.json
 alert_log/
+sync_log/
 
 # API cache (server-generated, must not be overwritten by git)
 api_cache.json

@@ -453,6 +453,54 @@ def check_construction_share_violation(target_date=None):
     return violations
 
 
+def check_pipeline_sync():
+    """파이프라인 수집 실패 감지: sync_log 테이블에서 전일 수집 기록 확인"""
+    alerts = []
+    if not os.path.exists(DB_PATH):
+        return alerts
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS sync_log (sync_date TEXT PRIMARY KEY, completed_at TEXT)")
+        # 어제 날짜 (평일 기준 — 주말이면 금요일)
+        now = datetime.datetime.now()
+        yesterday = now - datetime.timedelta(days=1)
+        # 주말 보정: 일요일(6) → 금요일, 토요일(5) → 금요일
+        if yesterday.weekday() == 6:  # 일요일
+            yesterday = now - datetime.timedelta(days=2)
+        elif yesterday.weekday() == 5:  # 토요일
+            yesterday = now - datetime.timedelta(days=1)
+        target_date = yesterday.strftime('%Y%m%d')
+
+        row = conn.execute("SELECT sync_date, completed_at FROM sync_log WHERE sync_date = ?",
+                           (target_date,)).fetchone()
+
+        # 최근 수집 성공 날짜도 확인
+        last_row = conn.execute("SELECT sync_date, completed_at FROM sync_log ORDER BY sync_date DESC LIMIT 1").fetchone()
+        last_date = last_row[0] if last_row else 'N/A'
+        last_completed = last_row[1] if last_row else 'N/A'
+
+        conn.close()
+
+        if not row:
+            # 미수집 일수 계산
+            if last_row:
+                last_dt = datetime.datetime.strptime(last_date, '%Y%m%d')
+                gap_days = (now - last_dt).days
+            else:
+                gap_days = -1
+            msg = (f"🚨 [경보] 일일 데이터 수집 실패: {target_date} 미수집 "
+                   f"(마지막 성공: {last_date}, {gap_days}일 경과)")
+            alerts.append(('CRITICAL', msg))
+            print(f"  {msg}")
+        else:
+            print(f"  ✅ 정상: 데이터 수집 {target_date} 완료 ({row[1]})")
+    except Exception as e:
+        msg = f"⚠️ [주의] 수집 상태 확인 오류: {e}"
+        alerts.append(('WARNING', msg))
+        print(f"  {msg}")
+    return alerts
+
+
 def run_alert_check():
     """경보 체크 메인 함수"""
     print("\n==================================================")
@@ -465,6 +513,15 @@ def run_alert_check():
 
     alerts = []
     today = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+
+    # ══════════════════════════════════════════════════════
+    # Part A-0: 파이프라인 수집 실패 감지
+    # ══════════════════════════════════════════════════════
+    print(f"  {'─'*46}")
+    print(f"  🔄 [수집 상태] 일일 파이프라인 적재 확인")
+    print(f"  {'─'*46}")
+    sync_alerts = check_pipeline_sync()
+    alerts.extend(sync_alerts)
 
     # ══════════════════════════════════════════════════════
     # Part A: 캐시 비교 (사후 분석)
