@@ -39,6 +39,7 @@ sync_log/
 # API cache (server-generated, must not be overwritten by git)
 api_cache.json
 api_cache_prev.json
+monthly_cache.json
 
 # Deploy files
 deploy/
