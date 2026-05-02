@@ -12,7 +12,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-SK = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+SK = os.environ.get('SERVICE_KEY', '')
 
 APIS = [
     ('Cnstwk', 'https://apis.data.go.kr/1230000/ao/PrcrmntReqInfoService/getPrcrmntReqInfoListCnstwk'),

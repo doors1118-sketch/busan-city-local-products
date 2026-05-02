@@ -1,3 +1,4 @@
+import os
 import urllib.request
 import json
 import ssl
@@ -6,7 +7,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-service_key = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+service_key = os.environ.get('SERVICE_KEY', '')
 base_url = 'https://apis.data.go.kr/1230000/ao/UsrInfoService02/getDminsttInfo02'
 
 query_params = f'?serviceKey={service_key}&inqryDiv=1&inqryBgnDt=202401010000&inqryEndDt=202401312359&numOfRows=10&pageNo=1&type=json'

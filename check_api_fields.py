@@ -1,3 +1,4 @@
+import os
 import urllib.request
 import json
 import ssl
@@ -10,7 +11,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-SERVICE_KEY = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+SERVICE_KEY = os.environ.get('SERVICE_KEY', '')
 
 apis = {
     '용역(중앙)': 'https://apis.data.go.kr/1230000/ao/CntrctInfoService/getCntrctInfoListServcPPSSrch',

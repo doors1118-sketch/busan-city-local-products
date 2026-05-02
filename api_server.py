@@ -635,22 +635,19 @@ def get_monthly_trend_agency(q: str = Query(..., min_length=1, description="검�
         "검색결과": results
     }
 
-if __name__ == '__main__':
-    import uvicorn
-    print("[API] 부산 조달 모니터링 API 서버 시작")
-    print("   http://localhost:8000/docs")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 
+# ════════════════════════════════════════════
+#   챗봇 업체 검색 API (chatbot_company.db)
+# ════════════════════════════════════════════
 
-
-
-from typing import Literal
-from fastapi import Query, Request
-from pydantic import BaseModel, Field
-import sqlite3
+import logging
 import datetime
+from typing import Literal
+from fastapi import Request
 
-CHATBOT_DB = "procurement_contracts.db"
+logger = logging.getLogger("chatbot_api")
+
+CHATBOT_DB = os.environ.get("CHATBOT_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chatbot_company.db'))
 
 def _get_chatbot_db():
     conn = sqlite3.connect(CHATBOT_DB)
@@ -666,7 +663,7 @@ def _get_status_filter_sql(status_filter: str) -> str:
         return " AND (IFNULL(cbs.business_status, 'unknown') IN ('unknown', 'api_failed', 'quota_exceeded') OR IFNULL(cbs.business_status_freshness, 'not_checked') != 'fresh') "
     return " AND NOT (IFNULL(cbs.business_status, 'unknown') IN ('closed', 'suspended') AND IFNULL(cbs.business_status_freshness, 'not_checked') = 'fresh') "
 
-def _build_chatbot_response(rows, meta=None, error=None):
+def _build_chatbot_response(rows, meta=None, error=None, validity_filter="valid_only"):
     if error:
         return {
             "meta": {},
@@ -677,21 +674,20 @@ def _build_chatbot_response(rows, meta=None, error=None):
             "company_search_status": "failed",
             "error": error
         }
-    
+
     candidates = []
     counts_by_type = {}
     latest_refresh = {}
-    
+
     for r in rows:
         c_raw = dict(r)
-        
+
         for list_field in ["license_or_business_type", "main_products"]:
             if c_raw.get(list_field):
                 c_raw[list_field] = c_raw[list_field].split("|")
             else:
                 c_raw[list_field] = []
-                
-        import json
+
         for json_field in ["candidate_types", "source_refs"]:
             if c_raw.get(json_field):
                 try:
@@ -705,9 +701,13 @@ def _build_chatbot_response(rows, meta=None, error=None):
         if "policy_subtypes_raw" in c_raw:
             del c_raw["policy_subtypes_raw"]
             
+        c_raw["sme_competition_product"] = bool(c_raw.get("is_sme_competition_product", 0))
+        if "is_sme_competition_product" in c_raw:
+            del c_raw["is_sme_competition_product"]
+
         c_raw["policy_subtypes"] = []
         c_raw["policy_validity_summary"] = {}
-        
+
         if raw_policies:
             for cert in set(raw_policies.split("|")):
                 if ":" in cert:
@@ -717,23 +717,135 @@ def _build_chatbot_response(rows, meta=None, error=None):
                         c_raw["policy_subtypes"].append(subtype)
                 else:
                     c_raw["policy_subtypes"].append(cert)
-            
+
             if c_raw["policy_subtypes"] or c_raw["policy_validity_summary"]:
                 if "policy_company_certification" not in c_raw["source_refs"]:
                     c_raw["source_refs"].append("policy_company_certification")
-                    
+
             if c_raw["policy_subtypes"] and "policy_company" not in c_raw["candidate_types"]:
                 c_raw["candidate_types"].append("policy_company")
+
+        raw_certified_types = c_raw.get("certified_product_types_raw")
+        raw_certified_summary = c_raw.get("certified_product_summary_raw")
         
+        if "certified_product_types_raw" in c_raw:
+            del c_raw["certified_product_types_raw"]
+        if "certified_product_summary_raw" in c_raw:
+            del c_raw["certified_product_summary_raw"]
+
+        c_raw["certified_product_types"] = []
+        c_raw["certified_product_summary"] = []
+
+        if raw_certified_types:
+            for cert in set(raw_certified_types.split("|")):
+                if not cert: continue
+                parts = cert.split(":")
+                if len(parts) == 5:
+                    ctype, is_priority, is_innov, is_exc, status = parts
+                    if status == "valid":
+                        c_raw["certified_product_types"].append(ctype)
+                        if is_priority == '1' and "priority_purchase_product" not in c_raw["candidate_types"]:
+                            c_raw["candidate_types"].append("priority_purchase_product")
+                        if is_innov == '1' and "innovation_product" not in c_raw["candidate_types"]:
+                            c_raw["candidate_types"].append("innovation_product")
+                        if is_exc == '1' and "excellent_procurement_product" not in c_raw["candidate_types"]:
+                            c_raw["candidate_types"].append("excellent_procurement_product")
+
+        if raw_certified_summary:
+            items = []
+            for cert in raw_certified_summary.split("|||"):
+                if not cert: continue
+                parts = cert.split("^^")
+                if len(parts) == 5:
+                    ctype, pname, status, exp_date, src = parts
+                    # validity_filter에 따른 필터링 로직 추가
+                    if validity_filter == "valid_only" and status != "valid":
+                        continue
+                    if validity_filter == "include_unknown" and status not in ("valid", "unknown"):
+                        continue
+                        
+                    items.append({
+                        "certification_type": ctype,
+                        "product_name": pname,
+                        "validity_status": status,
+                        "expiration_date": exp_date if exp_date else None,
+                        "source_name": src
+                    })
+            # Sort valid first
+            items.sort(key=lambda x: (x["validity_status"] != "valid", x["expiration_date"] or ""))
+            c_raw["certified_product_summary"] = items[:5] # Max 5
+            
+            if items and "certified_product" not in c_raw["source_refs"]:
+                c_raw["source_refs"].append("certified_product")
+
+        raw_shopping_flags = c_raw.get("shopping_mall_flags_raw")
+        raw_mas_summary = c_raw.get("mas_product_summary_raw")
+        
+        if "shopping_mall_flags_raw" in c_raw:
+            del c_raw["shopping_mall_flags_raw"]
+        if "mas_product_summary_raw" in c_raw:
+            del c_raw["mas_product_summary_raw"]
+
+        c_raw["shopping_mall_flags"] = []
+        c_raw["mas_product_summary"] = []
+
+        if raw_shopping_flags == "mas_registered":
+            c_raw["shopping_mall_flags"].append("mas_registered")
+            if "shopping_mall_supplier" not in c_raw["candidate_types"]:
+                c_raw["candidate_types"].append("shopping_mall_supplier")
+                
+        if raw_mas_summary:
+            items = []
+            for mas in raw_mas_summary.split("|||"):
+                if not mas: continue
+                parts = mas.split("^^")
+                if len(parts) == 7:
+                    pname, dcode, status, end_date, price, unit, src = parts
+                    # 뷰에서 이미 active만 제한하여 반환하므로 필터 로직 불필요
+                    items.append({
+                        "product_name": pname,
+                        "detail_product_code": dcode if dcode else None,
+                        "contract_status": status,
+                        "contract_end_date": end_date if end_date else None,
+                        "price_amount": float(price) if price else None,
+                        "price_unit": unit if unit else None,
+                        "source_name": src
+                    })
+            c_raw["mas_product_summary"] = items
+            if items and "mas_product" not in c_raw["source_refs"]:
+                c_raw["source_refs"].append("mas_product")
+
+        # Phase 6-D-2: 업체/정책 속성 파싱
+        raw_procurement_attrs = c_raw.get("procurement_attributes_raw")
+        if "procurement_attributes_raw" in c_raw:
+            del c_raw["procurement_attributes_raw"]
+        c_raw["procurement_attributes"] = []
+        if raw_procurement_attrs:
+            c_raw["procurement_attributes"] = [a for a in raw_procurement_attrs.split("|") if a]
+
+        # Phase 6-D-2: 일반 인증/기타 파싱
+        raw_general_certs = c_raw.get("general_certifications_raw")
+        if "general_certifications_raw" in c_raw:
+            del c_raw["general_certifications_raw"]
+        c_raw["general_certifications"] = []
+        if raw_general_certs:
+            c_raw["general_certifications"] = [g for g in raw_general_certs.split("|") if g]
+
+        # Phase 6-D-2: source_refs 보강
+        if c_raw["procurement_attributes"] and "company_procurement_attribute" not in c_raw.get("source_refs", []):
+            c_raw.setdefault("source_refs", []).append("company_procurement_attribute")
+        if c_raw["general_certifications"] and "product_general_certification" not in c_raw.get("source_refs", []):
+            c_raw.setdefault("source_refs", []).append("product_general_certification")
+
         for ctype in c_raw.get("candidate_types", []):
             counts_by_type[ctype] = counts_by_type.get(ctype, 0) + 1
-            
+
         for ref in c_raw.get("source_refs", []):
             t = c_raw.get("source_refreshed_at")
             if t:
                 if ref not in latest_refresh or t > latest_refresh[ref]:
                     latest_refresh[ref] = t
-                    
+
         ALLOWED_CANDIDATE_FIELDS = [
             "company_id", "company_name", "representative_name", "corporate_phone",
             "location", "detail_address", "is_busan_company", "is_headquarters",
@@ -741,23 +853,26 @@ def _build_chatbot_response(rows, meta=None, error=None):
             "primary_candidate_type", "manufacturer_type", "business_status",
             "business_status_freshness", "business_status_checked_at", "business_status_source", "display_status",
             "contract_possible_auto_promoted", "source_refs", "source_refreshed_at",
-            "policy_subtypes", "policy_validity_summary"
+            "policy_subtypes", "policy_validity_summary",
+            "certified_product_types", "certified_product_summary",
+            "shopping_mall_flags", "mas_product_summary", "sme_competition_product",
+            "procurement_attributes", "general_certifications"
         ]
-        
+
         filtered = {k: v for k, v in c_raw.items() if k in ALLOWED_CANDIDATE_FIELDS}
-        
+
         if "actual_business_status" in c_raw and c_raw["actual_business_status"] is not None:
             filtered["business_status"] = c_raw["actual_business_status"]
         if "actual_business_status_freshness" in c_raw and c_raw["actual_business_status_freshness"] is not None:
             filtered["business_status_freshness"] = c_raw["actual_business_status_freshness"]
-            
+
         candidates.append(filtered)
-        
+
     final_meta = meta or {}
     final_meta["candidate_counts_by_type"] = counts_by_type
     if "source_refreshed_at" not in final_meta:
         final_meta["source_refreshed_at"] = latest_refresh
-        
+
     return {
         "meta": final_meta,
         "candidates": candidates,
@@ -768,9 +883,22 @@ def _build_chatbot_response(rows, meta=None, error=None):
     }
 
 ChatbotStatusFilter = Literal["exclude_closed", "all", "active_only", "needs_check"]
+ChatbotValidityFilter = Literal["valid_only", "include_unknown", "all"]
+ChatbotPolicySubtype = Literal[
+    "women_company", "disabled_company", "social_enterprise",
+    "preliminary_social_enterprise", "severe_disabled_production"
+]
+ChatbotCertificationType = Literal[
+    "performance_certification", "excellent_procurement_product", "nep_product",
+    "gs_certified_product", "net_certified_product", "innovation_product",
+    "excellent_rnd_innovation_product", "innovation_prototype_product",
+    "other_innovation_product", "disaster_safety_certified_product",
+    "green_technology_product", "industrial_convergence_new_product",
+    "excellent_procurement_joint_brand"
+]
 
 @app.get("/api/chatbot/company/license-list", tags=["챗봇"])
-def get_chatbot_license_list(limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_license_list(limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         query = f'''
@@ -794,11 +922,12 @@ def get_chatbot_license_list(limit: int = Query(50, ge=1, le=5000), offset: int 
             "company_cache_used": True,
             "company_cache_mode": "database"
         }
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: license-list")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/product-list", tags=["챗봇"])
-def get_chatbot_product_list(limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_product_list(limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         query = f'''
@@ -822,11 +951,12 @@ def get_chatbot_product_list(limit: int = Query(50, ge=1, le=5000), offset: int 
             "company_cache_used": True,
             "company_cache_mode": "database"
         }
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: product-list")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/category-list", tags=["챗봇"])
-def get_chatbot_category_list(limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_category_list(limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         query = f'''
@@ -851,11 +981,12 @@ def get_chatbot_category_list(limit: int = Query(50, ge=1, le=5000), offset: int
             "company_cache_used": True,
             "company_cache_mode": "database"
         }
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: category-list")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/manufacturers", tags=["챗봇"])
-def get_chatbot_manufacturers(limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_manufacturers(limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         query = f'''
@@ -871,11 +1002,12 @@ def get_chatbot_manufacturers(limit: int = Query(50, ge=1, le=5000), offset: int
         rows = conn.execute(query, (limit, offset)).fetchall()
         conn.close()
         return _build_chatbot_response(rows, meta={"query": {"limit": limit, "offset": offset}})
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: manufacturers")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/license-search", tags=["챗봇"])
-def get_chatbot_license_search(license_name: str, status_filter: ChatbotStatusFilter = "exclude_closed", limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_license_search(license_name: str, status_filter: ChatbotStatusFilter = "exclude_closed", limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         query = f'''
@@ -894,11 +1026,12 @@ def get_chatbot_license_search(license_name: str, status_filter: ChatbotStatusFi
         rows = conn.execute(query, (p, p, limit, offset)).fetchall()
         conn.close()
         return _build_chatbot_response(rows, meta={"query": {"keyword": license_name, "limit": limit, "offset": offset, "status_filter": status_filter}})
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: license-search")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/product-search", tags=["챗봇"])
-def get_chatbot_product_search(product_name: str, status_filter: ChatbotStatusFilter = "exclude_closed", limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_product_search(product_name: str, status_filter: ChatbotStatusFilter = "exclude_closed", limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         query = f'''
@@ -917,11 +1050,12 @@ def get_chatbot_product_search(product_name: str, status_filter: ChatbotStatusFi
         rows = conn.execute(query, (p, p, limit, offset)).fetchall()
         conn.close()
         return _build_chatbot_response(rows, meta={"query": {"keyword": product_name, "limit": limit, "offset": offset, "status_filter": status_filter}})
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: product-search")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/category-search", tags=["챗봇"])
-def get_chatbot_category_search(category_name: str, status_filter: ChatbotStatusFilter = "exclude_closed", limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_category_search(category_name: str, status_filter: ChatbotStatusFilter = "exclude_closed", limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         query = f'''
@@ -941,24 +1075,23 @@ def get_chatbot_category_search(category_name: str, status_filter: ChatbotStatus
         rows = conn.execute(query, (p, category_name, limit, offset)).fetchall()
         conn.close()
         return _build_chatbot_response(rows, meta={"query": {"keyword": category_name, "limit": limit, "offset": offset, "status_filter": status_filter}})
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: category-search")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/detail", tags=["챗봇"])
 def get_chatbot_company_detail(company_id: str, request: Request):
     try:
         conn = _get_chatbot_db()
-        # On-Demand 영업상태 체크 로직 (Phase 3)
         row = conn.execute("SELECT company_internal_id FROM company_identity WHERE company_id = ?", (company_id,)).fetchone()
         if not row:
             conn.close()
             return _build_chatbot_response([], error="유효하지 않거나 만료된 업체 식별자입니다.")
-        
+
         internal_id = row["company_internal_id"]
-        
-        # Check cache
+
         cache_row = conn.execute("SELECT business_status, checked_at, business_status_source, business_status_freshness FROM company_business_status WHERE company_internal_id = ?", (internal_id,)).fetchone()
-        
+
         now = datetime.datetime.now()
         should_fetch = False
         if not cache_row:
@@ -974,7 +1107,7 @@ def get_chatbot_company_detail(company_id: str, request: Request):
                         should_fetch = True
                 except Exception:
                     should_fetch = True
-                    
+
         if should_fetch:
             import nts_business_status_client
             b_row = conn.execute("SELECT canonical_business_no FROM company_identity WHERE company_internal_id = ?", (internal_id,)).fetchone()
@@ -985,7 +1118,7 @@ def get_chatbot_company_detail(company_id: str, request: Request):
                 if res.get("success") and res["results"].get(b_no):
                     r = res["results"][b_no]
                     conn.execute('''
-                        INSERT INTO company_business_status 
+                        INSERT INTO company_business_status
                         (company_internal_id, business_status, business_status_freshness, tax_type, closed_at, api_result_code, checked_at, business_status_source)
                         VALUES (?, ?, 'fresh', ?, ?, ?, ?, 'nts_api')
                         ON CONFLICT(company_internal_id) DO UPDATE SET
@@ -1000,9 +1133,8 @@ def get_chatbot_company_detail(company_id: str, request: Request):
                     ''', (internal_id, r["business_status"], r.get("tax_type"), r.get("closed_at"), r.get("api_result_code"), now_str))
                     conn.commit()
                 else:
-                    # fetch failed
                     conn.execute('''
-                        INSERT INTO company_business_status 
+                        INSERT INTO company_business_status
                         (company_internal_id, business_status, business_status_freshness, checked_at, business_status_source)
                         VALUES (?, 'unknown', 'api_failed', ?, 'nts_api')
                         ON CONFLICT(company_internal_id) DO UPDATE SET
@@ -1011,8 +1143,7 @@ def get_chatbot_company_detail(company_id: str, request: Request):
                             updated_at=CURRENT_TIMESTAMP
                     ''', (internal_id, now_str))
                     conn.commit()
-                    
-        # Now fetch the final view
+
         query = '''
             SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
             FROM chatbot_company_candidate_view v
@@ -1021,32 +1152,20 @@ def get_chatbot_company_detail(company_id: str, request: Request):
             WHERE v.company_id = ?
         '''
         rows = conn.execute(query, (company_id,)).fetchall()
-        
-        # Add sensitive info if authorized
-        if request.headers.get("X-Internal-Auth") == "INTERNAL_VALID_TOKEN" and rows:
-            # We would add representative_name, corporate_phone here, but the view doesn't have it currently
-            # For this test, we just set them to None in _build_chatbot_response
-            pass
-            
         conn.close()
-        
+
         resp = _build_chatbot_response(rows, meta={"query": {"company_id": company_id}})
         if resp["candidates"]:
             resp["candidates"][0]["representative_name"] = None
             resp["candidates"][0]["corporate_phone"] = None
-            
-        return resp
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
 
-ChatbotValidityFilter = Literal["valid_only", "all"]
-ChatbotPolicySubtype = Literal[
-    "women_company", "disabled_company", "social_enterprise", 
-    "heavy_disabled_product", "standard_workplace", "veteran_company"
-]
+        return resp
+    except Exception:
+        logger.exception("챗봇 API 오류: company-detail")
+        return _build_chatbot_response([], error="업체 목록 조회 실패")
 
 @app.get("/api/chatbot/company/policy-search", tags=["챗봇"])
-def get_chatbot_policy_search(policy_subtype: ChatbotPolicySubtype = None, status_filter: ChatbotStatusFilter = "exclude_closed", validity_filter: ChatbotValidityFilter = "valid_only", limit: int = Query(50, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def get_chatbot_policy_search(policy_subtype: ChatbotPolicySubtype = None, status_filter: ChatbotStatusFilter = "exclude_closed", validity_filter: ChatbotValidityFilter = "valid_only", limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
         if policy_subtype:
@@ -1077,21 +1196,22 @@ def get_chatbot_policy_search(policy_subtype: ChatbotPolicySubtype = None, statu
                 LIMIT ? OFFSET ?
             '''
             rows = conn.execute(query, (limit, offset)).fetchall()
-            
+
         conn.close()
-        resp = _build_chatbot_response(rows, meta={"query": {"policy_subtype": policy_subtype, "limit": limit, "offset": offset}})
+        resp = _build_chatbot_response(rows, meta={"query": {"policy_subtype": policy_subtype, "limit": limit, "offset": offset}}, validity_filter=validity_filter)
         for c in resp["candidates"]:
             c["primary_candidate_type"] = "policy_company"
         return resp
-    except Exception as e:
-        return _build_chatbot_response([], error=str(e))
+    except Exception:
+        logger.exception("챗봇 API 오류: policy-search")
+        return _build_chatbot_response([], error="정책기업 조회 실패")
 
 @app.get("/api/chatbot/company/policy-list", tags=["챗봇"])
 def get_chatbot_policy_list():
     try:
         conn = _get_chatbot_db()
         query = '''
-            SELECT 
+            SELECT
                 pcc.policy_subtype,
                 COUNT(DISTINCT pcc.company_internal_id) as candidate_count,
                 SUM(CASE WHEN pcc.validity_status = 'valid' THEN 1 ELSE 0 END) as valid_count,
@@ -1128,12 +1248,550 @@ def get_chatbot_policy_list():
             "company_cache_used": False,
             "company_cache_mode": "none"
         }
-    except Exception as e:
-        import logging
-        logging.exception("Chatbot API Policy List Error")
-        return _build_chatbot_response([], error="Internal Server Error")
+    except Exception:
+        logger.exception("챗봇 API 오류: policy-list")
+        return _build_chatbot_response([], error="정책기업 조회 실패")
+
+# ==========================================
+# Phase 5: 인증제품 연동 API
+# ==========================================
+
+@app.get("/api/chatbot/product/certified-search", tags=["챗봇"])
+def get_chatbot_certified_search(
+    certification_type: Optional[ChatbotCertificationType] = None,
+    product_name: Optional[str] = None,
+    company_keyword: Optional[str] = None,
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    validity_filter: ChatbotValidityFilter = "valid_only",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    try:
+        conn = _get_chatbot_db()
+        where_clauses = ["v.is_busan_company = 1"]
+        params = []
+        
+        if certification_type:
+            where_clauses.append("cp.certification_type = ?")
+            params.append(certification_type)
+        if product_name:
+            where_clauses.append("(cp.product_name LIKE ? OR cp.product_name_normalized LIKE ?)")
+            params.extend([f"%{product_name}%", f"%{product_name}%"])
+        if company_keyword:
+            where_clauses.append("(v.company_name LIKE ? OR v.company_id = ?)")
+            params.extend([f"%{company_keyword}%", company_keyword])
+            
+        if validity_filter == "valid_only":
+            where_clauses.append("cp.validity_status = 'valid'")
+        elif validity_filter == "include_unknown":
+            where_clauses.append("cp.validity_status IN ('valid', 'unknown')")
+            
+        status_sql = _get_status_filter_sql(status_filter)
+        where_sql = " AND ".join(where_clauses)
+        
+        query = f'''
+            SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
+            FROM chatbot_company_candidate_view v
+            JOIN company_identity i ON v.company_id = i.company_id
+            JOIN certified_product cp ON i.company_internal_id = cp.company_internal_id
+            LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
+            WHERE {where_sql} {status_sql}
+            GROUP BY v.company_id
+            ORDER BY v.company_id
+            LIMIT ? OFFSET ?
+        '''
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        
+        return _build_chatbot_response(rows, meta={
+            "query": {
+                "certification_type": certification_type,
+                "product_name": product_name,
+                "company_keyword": company_keyword,
+                "limit": limit,
+                "offset": offset
+            }
+        }, validity_filter=validity_filter)
+    except Exception:
+        logger.exception("챗봇 API 오류: certified-search")
+        return _build_chatbot_response([], error="인증제품 조회 실패")
+
+@app.get("/api/chatbot/product/innovation-search", tags=["챗봇"])
+def get_chatbot_innovation_search(
+    product_name: Optional[str] = None,
+    innovation_type: Literal["all", "excellent_rnd", "prototype", "other"] = "all",
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    validity_filter: ChatbotValidityFilter = "valid_only",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    try:
+        conn = _get_chatbot_db()
+        where_clauses = ["v.is_busan_company = 1"]
+        params = []
+        
+        type_in = []
+        if innovation_type == "all":
+            type_in = ["innovation_product", "excellent_rnd_innovation_product", "innovation_prototype_product", "other_innovation_product"]
+        elif innovation_type == "excellent_rnd":
+            type_in = ["excellent_rnd_innovation_product"]
+        elif innovation_type == "prototype":
+            type_in = ["innovation_prototype_product"]
+        else:
+            type_in = ["other_innovation_product"]
+            
+        placeholders = ",".join(["?"] * len(type_in))
+        where_clauses.append(f"cp.certification_type IN ({placeholders})")
+        params.extend(type_in)
+        
+        if product_name:
+            where_clauses.append("(cp.product_name LIKE ? OR cp.product_name_normalized LIKE ?)")
+            params.extend([f"%{product_name}%", f"%{product_name}%"])
+            
+        if validity_filter == "valid_only":
+            where_clauses.append("cp.validity_status = 'valid'")
+        elif validity_filter == "include_unknown":
+            where_clauses.append("cp.validity_status IN ('valid', 'unknown')")
+            
+        status_sql = _get_status_filter_sql(status_filter)
+        where_sql = " AND ".join(where_clauses)
+        
+        query = f'''
+            SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
+            FROM chatbot_company_candidate_view v
+            JOIN company_identity i ON v.company_id = i.company_id
+            JOIN certified_product cp ON i.company_internal_id = cp.company_internal_id
+            LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
+            WHERE {where_sql} {status_sql}
+            GROUP BY v.company_id
+            ORDER BY v.company_id
+            LIMIT ? OFFSET ?
+        '''
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        
+        return _build_chatbot_response(rows, meta={
+            "query": {
+                "product_name": product_name,
+                "innovation_type": innovation_type,
+                "limit": limit,
+                "offset": offset
+            }
+        }, validity_filter=validity_filter)
+    except Exception:
+        logger.exception("챗봇 API 오류: innovation-search")
+        return _build_chatbot_response([], error="혁신제품 조회 실패")
+
+@app.get("/api/chatbot/product/priority-purchase-search", tags=["챗봇"])
+def get_chatbot_priority_purchase_search(
+    product_name: Optional[str] = None,
+    certification_type: Optional[ChatbotCertificationType] = None,
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    validity_filter: ChatbotValidityFilter = "valid_only",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    try:
+        conn = _get_chatbot_db()
+        where_clauses = ["v.is_busan_company = 1", "map.is_priority_purchase_product = 1"]
+        params = []
+        
+        if certification_type:
+            where_clauses.append("cp.certification_type = ?")
+            params.append(certification_type)
+        if product_name:
+            where_clauses.append("(cp.product_name LIKE ? OR cp.product_name_normalized LIKE ?)")
+            params.extend([f"%{product_name}%", f"%{product_name}%"])
+            
+        if validity_filter == "valid_only":
+            where_clauses.append("cp.validity_status = 'valid'")
+        elif validity_filter == "include_unknown":
+            where_clauses.append("cp.validity_status IN ('valid', 'unknown')")
+            
+        status_sql = _get_status_filter_sql(status_filter)
+        where_sql = " AND ".join(where_clauses)
+        
+        query = f'''
+            SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
+            FROM chatbot_company_candidate_view v
+            JOIN company_identity i ON v.company_id = i.company_id
+            JOIN certified_product cp ON i.company_internal_id = cp.company_internal_id
+            JOIN certified_product_type_map map ON cp.certification_type = map.normalized_certification_type
+            LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
+            WHERE {where_sql} {status_sql}
+            GROUP BY v.company_id
+            ORDER BY v.company_id
+            LIMIT ? OFFSET ?
+        '''
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        
+        return _build_chatbot_response(rows, meta={
+            "query": {
+                "product_name": product_name,
+                "certification_type": certification_type,
+                "limit": limit,
+                "offset": offset
+            }
+        }, validity_filter=validity_filter)
+    except Exception:
+        logger.exception("챗봇 API 오류: priority-purchase-search")
+        return _build_chatbot_response([], error="기술개발제품(우선구매) 조회 실패")
+
+@app.get("/api/chatbot/product/excellent-procurement-search", tags=["챗봇"])
+def get_chatbot_excellent_procurement_search(
+    product_name: Optional[str] = None,
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    validity_filter: ChatbotValidityFilter = "valid_only",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    try:
+        conn = _get_chatbot_db()
+        where_clauses = ["v.is_busan_company = 1", "cp.certification_type = 'excellent_procurement_product'"]
+        params = []
+        
+        if product_name:
+            where_clauses.append("(cp.product_name LIKE ? OR cp.product_name_normalized LIKE ?)")
+            params.extend([f"%{product_name}%", f"%{product_name}%"])
+            
+        if validity_filter == "valid_only":
+            where_clauses.append("cp.validity_status = 'valid'")
+        elif validity_filter == "include_unknown":
+            where_clauses.append("cp.validity_status IN ('valid', 'unknown')")
+            
+        status_sql = _get_status_filter_sql(status_filter)
+        where_sql = " AND ".join(where_clauses)
+        
+        query = f'''
+            SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
+            FROM chatbot_company_candidate_view v
+            JOIN company_identity i ON v.company_id = i.company_id
+            JOIN certified_product cp ON i.company_internal_id = cp.company_internal_id
+            LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
+            WHERE {where_sql} {status_sql}
+            GROUP BY v.company_id
+            ORDER BY v.company_id
+            LIMIT ? OFFSET ?
+        '''
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        
+        return _build_chatbot_response(rows, meta={
+            "query": {
+                "product_name": product_name,
+                "limit": limit,
+                "offset": offset
+            }
+        }, validity_filter=validity_filter)
+    except Exception:
+        logger.exception("챗봇 API 오류: excellent-procurement-search")
+        return _build_chatbot_response([], error="우수조달물품 조회 실패")
+
+@app.get("/api/chatbot/product/certified-list", tags=["챗봇"])
+def get_chatbot_certified_list():
+    try:
+        conn = _get_chatbot_db()
+        query = '''
+            SELECT
+                cp.certification_type,
+                COUNT(DISTINCT cp.company_internal_id) as candidate_count,
+                SUM(CASE WHEN cp.validity_status = 'valid' THEN 1 ELSE 0 END) as valid_count,
+                SUM(CASE WHEN cp.validity_status = 'expired' THEN 1 ELSE 0 END) as expired_count,
+                MAX(cp.source_refreshed_at) as refreshed_at
+            FROM certified_product cp
+            JOIN company_master m ON cp.company_internal_id = m.company_internal_id
+            WHERE m.is_busan_company = 1
+            GROUP BY cp.certification_type
+        '''
+        rows = conn.execute(query).fetchall()
+        conn.close()
+
+        candidates = []
+        latest = None
+        for r in rows:
+            candidates.append({
+                "certification_type": r["certification_type"],
+                "candidate_count": r["candidate_count"],
+                "valid_count": r["valid_count"],
+                "expired_count": r["expired_count"]
+            })
+            if r["refreshed_at"]:
+                if latest is None or r["refreshed_at"] > latest:
+                    latest = r["refreshed_at"]
+
+        return {
+            "meta": {
+                "source_refreshed_at": {"certified_product": latest} if latest else {}
+            },
+            "candidates": candidates,
+            "company_source_status": "success",
+            "company_search_status": "success",
+            "company_cache_used": False,
+            "company_cache_mode": "none",
+            "error": None
+        }
+    except Exception:
+        logger.exception("챗봇 API 오류: certified-list")
+        return _build_chatbot_response([], error="인증제품 목록 조회 실패")
+
+# ==========================================
+# Phase 6-C: MAS 쇼핑몰 연동 API
+# ==========================================
+
+MasContractStatusFilter = Literal["active_only", "include_unknown", "all"]
+
+def _get_mas_status_filter_sql(status_filter: str) -> str:
+    if status_filter == "all":
+        return ""
+    elif status_filter == "include_unknown":
+        return " AND mp.contract_status IN ('active', 'unknown') "
+    return " AND mp.contract_status = 'active' "
+
+@app.get("/api/chatbot/mas/search", tags=["챗봇"])
+def get_chatbot_mas_search(
+    product_name: Optional[str] = None,
+    detail_product_code: Optional[str] = None,
+    company_keyword: Optional[str] = None,
+    contract_status_filter: MasContractStatusFilter = "active_only",
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    """
+    MAS 종합 검색. 
+    주의: active_only는 종합쇼핑몰에서의 당장 구매 가능을 의미하지 않습니다.
+    """
+    try:
+        conn = _get_chatbot_db()
+        where_clauses = ["v.is_busan_company = 1"]
+        params = []
+        
+        if product_name:
+            where_clauses.append("(mp.product_name LIKE ? OR mp.product_name_normalized LIKE ? OR mp.detail_product_name LIKE ?)")
+            params.extend([f"%{product_name}%", f"%{product_name}%", f"%{product_name}%"])
+        if detail_product_code:
+            where_clauses.append("mp.detail_product_code = ?")
+            params.append(detail_product_code)
+        if company_keyword:
+            where_clauses.append("(v.company_name LIKE ? OR v.company_id = ?)")
+            params.extend([f"%{company_keyword}%", company_keyword])
+            
+        where_clauses.append(_get_mas_status_filter_sql(contract_status_filter).strip(" AND"))
+        
+        status_sql = _get_status_filter_sql(status_filter)
+        where_sql = " AND ".join([w for w in where_clauses if w])
+        
+        query = f'''
+            SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
+            FROM chatbot_company_candidate_view v
+            JOIN company_identity i ON v.company_id = i.company_id
+            JOIN mas_product mp ON i.company_internal_id = mp.company_internal_id
+            LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
+            WHERE {where_sql} {status_sql}
+            GROUP BY v.company_id
+            ORDER BY v.company_id
+            LIMIT ? OFFSET ?
+        '''
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        
+        # Note: 뷰가 반환하는 mas_product_summary는 active만 포함하지만,
+        # 이 MAS 전용 API에서는 뷰 결과를 그대로 제공하되, 향후 필요시 직접 조인 결과로 오버라이드할 수 있습니다.
+        # 현재 요구사항인 "include_unknown/all에서는 mas_product_summary에만 표시할 수 있다"에 따라,
+        # mas_product_summary를 다시 쿼리하여 오버라이드합니다.
+        
+        resp = _build_chatbot_response(rows, meta={
+            "query": {
+                "product_name": product_name,
+                "detail_product_code": detail_product_code,
+                "company_keyword": company_keyword,
+                "contract_status_filter": contract_status_filter,
+                "limit": limit,
+                "offset": offset
+            }
+        })
+        
+        if contract_status_filter != "active_only" and resp["candidates"]:
+            # Re-fetch mas products for the candidates to include non-active ones
+            cids = [c["company_id"] for c in resp["candidates"]]
+            conn = _get_chatbot_db()
+            placeholders = ",".join("?" * len(cids))
+            
+            mas_q = f'''
+                SELECT i.company_id, mp.product_name, mp.detail_product_code, mp.contract_status, mp.contract_end_date, mp.price_amount, mp.price_unit, mp.source_name
+                FROM mas_product mp
+                JOIN company_identity i ON mp.company_internal_id = i.company_internal_id
+                WHERE i.company_id IN ({placeholders}) {_get_mas_status_filter_sql(contract_status_filter)}
+                ORDER BY mp.contract_end_date DESC
+            '''
+            mas_rows = conn.execute(mas_q, cids).fetchall()
+            conn.close()
+            
+            mas_map = {}
+            for r in mas_rows:
+                cid = r["company_id"]
+                if cid not in mas_map:
+                    mas_map[cid] = []
+                mas_map[cid].append({
+                    "product_name": r["product_name"],
+                    "detail_product_code": r["detail_product_code"],
+                    "contract_status": r["contract_status"],
+                    "contract_end_date": r["contract_end_date"],
+                    "price_amount": float(r["price_amount"]) if r["price_amount"] is not None else None,
+                    "price_unit": r["price_unit"],
+                    "source_name": r["source_name"]
+                })
+            
+            for c in resp["candidates"]:
+                c["mas_product_summary"] = mas_map.get(c["company_id"], [])[:5] # Limit to 5
+                
+        return resp
+    except Exception:
+        logger.exception("챗봇 API 오류: mas-search")
+        return _build_chatbot_response([], error="MAS 제품 조회 실패")
 
 
-@app.get('/api/debug/db-status', tags=['디버그'])
-def get_debug_db_status():
-    return {'용역': True, '공사': True, 'db': CHATBOT_DB}
+@app.get("/api/chatbot/mas/product-search", tags=["챗봇"])
+def get_chatbot_mas_product_search(
+    product_name: str,
+    detail_product_code: Optional[str] = None,
+    contract_status_filter: MasContractStatusFilter = "active_only",
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    """
+    MAS 제품 검색.
+    """
+    return get_chatbot_mas_search(
+        product_name=product_name,
+        detail_product_code=detail_product_code,
+        contract_status_filter=contract_status_filter,
+        status_filter=status_filter,
+        limit=limit,
+        offset=offset
+    )
+
+
+@app.get("/api/chatbot/mas/supplier-search", tags=["챗봇"])
+def get_chatbot_mas_supplier_search(
+    company_keyword: Optional[str] = None,
+    is_busan_company: bool = True,
+    contract_status_filter: MasContractStatusFilter = "active_only",
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    """
+    MAS 공급업체 검색.
+    """
+    try:
+        conn = _get_chatbot_db()
+        where_clauses = []
+        if is_busan_company:
+            where_clauses.append("v.is_busan_company = 1")
+            
+        params = []
+        if company_keyword:
+            where_clauses.append("(v.company_name LIKE ? OR v.company_id = ?)")
+            params.extend([f"%{company_keyword}%", company_keyword])
+            
+        where_clauses.append(_get_mas_status_filter_sql(contract_status_filter).strip(" AND"))
+        
+        status_sql = _get_status_filter_sql(status_filter)
+        where_sql = " AND ".join([w for w in where_clauses if w])
+        
+        query = f'''
+            SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
+            FROM chatbot_company_candidate_view v
+            JOIN company_identity i ON v.company_id = i.company_id
+            JOIN mas_product mp ON i.company_internal_id = mp.company_internal_id
+            LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
+            WHERE {where_sql} {status_sql}
+            GROUP BY v.company_id
+            ORDER BY v.company_id
+            LIMIT ? OFFSET ?
+        '''
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        
+        resp = _build_chatbot_response(rows, meta={
+            "query": {
+                "company_keyword": company_keyword,
+                "is_busan_company": is_busan_company,
+                "contract_status_filter": contract_status_filter,
+                "limit": limit,
+                "offset": offset
+            }
+        })
+        return resp
+    except Exception:
+        logger.exception("챗봇 API 오류: mas-supplier-search")
+        return _build_chatbot_response([], error="MAS 공급업체 조회 실패")
+
+
+@app.get("/api/chatbot/mas/list", tags=["챗봇"])
+def get_chatbot_mas_list():
+    """
+    MAS 통계/집계 목록.
+    """
+    try:
+        conn = _get_chatbot_db()
+        query = '''
+            SELECT
+                mp.detail_product_code,
+                MAX(mp.product_name) as product_name,
+                COUNT(DISTINCT mp.company_internal_id) as supplier_count,
+                SUM(CASE WHEN mp.contract_status = 'active' THEN 1 ELSE 0 END) as active_contract_count,
+                SUM(CASE WHEN mp.contract_status = 'expired' THEN 1 ELSE 0 END) as expired_contract_count,
+                MAX(mp.source_refreshed_at) as refreshed_at
+            FROM mas_product mp
+            JOIN company_master m ON mp.company_internal_id = m.company_internal_id
+            WHERE m.is_busan_company = 1
+            GROUP BY mp.detail_product_code
+        '''
+        rows = conn.execute(query).fetchall()
+        conn.close()
+
+        candidates = []
+        latest = None
+        for r in rows:
+            candidates.append({
+                "detail_product_code": r["detail_product_code"],
+                "product_name": r["product_name"],
+                "supplier_count": r["supplier_count"],
+                "active_contract_count": r["active_contract_count"],
+                "expired_contract_count": r["expired_contract_count"]
+            })
+            if r["refreshed_at"]:
+                if latest is None or r["refreshed_at"] > latest:
+                    latest = r["refreshed_at"]
+
+        return {
+            "meta": {
+                "source_refreshed_at": {"mas_product": latest} if latest else {}
+            },
+            "candidates": candidates,
+            "company_source_status": "live_company_lookup",
+            "company_search_status": "success",
+            "company_cache_used": False,
+            "company_cache_mode": "live_only",
+            "error": None
+        }
+    except Exception:
+        logger.exception("챗봇 API 오류: mas-list")
+        return _build_chatbot_response([], error="MAS 목록 조회 실패")
+
+if __name__ == '__main__':
+    import uvicorn
+    print("[API] 부산 조달 모니터링 API 서버 시작")
+    print("   http://localhost:8000/docs")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+

@@ -1,3 +1,4 @@
+import os
 """
 historical_load_companies.py
 ===========================
@@ -25,7 +26,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-SERVICE_KEY = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+SERVICE_KEY = os.environ.get('SERVICE_KEY', '')
 BASE_URL = 'https://apis.data.go.kr/1230000/ao/UsrInfoService02/getPrcrmntCorpBasicInfo02'
 DB_PATH = 'busan_companies_master.db'
 CSV_PATH = '조달업체 등록 내역.csv'

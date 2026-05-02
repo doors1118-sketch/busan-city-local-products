@@ -1,3 +1,4 @@
+import os
 import urllib.request
 import json
 import ssl
@@ -9,7 +10,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-service_key = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+service_key = os.environ.get('SERVICE_KEY', '')
 base_url = 'https://apis.data.go.kr/1741000/StanOrgCd2/getStanOrgCdList2'
 
 test_cases = [('부산본청', '1613281'), ('포항사무소', '1613306'), ('진주사무소', '1613305'), ('항공철도사고조사위', '1613432')]

@@ -1,3 +1,4 @@
+import os
 """용역 조달요청 API에서 현장지역(cnstrtsiteRgnNm) 수집 → DB 저장"""
 import urllib.request, json, ssl, sqlite3, sys, time
 from datetime import datetime, timedelta
@@ -7,7 +8,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-SK = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+SK = os.environ.get('SERVICE_KEY', '')
 BASE = 'https://apis.data.go.kr/1230000/ao/PrcrmntReqInfoService/getPrcrmntReqInfoListTechServc'
 DB = 'servc_site.db'
 

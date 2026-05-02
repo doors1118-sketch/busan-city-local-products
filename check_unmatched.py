@@ -1,32 +1,31 @@
-import pandas as pd
 import sqlite3
-import sys
+conn = sqlite3.connect('staging_chatbot_company.db')
 
-sys.stdout.reconfigure(encoding='utf-8')
+print("=== Unmatched labels from MAS ===")
+rows = conn.execute("""
+    SELECT raw_product_name, COUNT(*) 
+    FROM certified_product_unmatched 
+    WHERE source_name='mas_excel_bootstrap' 
+    GROUP BY raw_product_name 
+    ORDER BY COUNT(*) DESC
+""").fetchall()
+for r in rows:
+    print(f"  {r[0]}: {r[1]}")
 
-EXCEL_PATH = r'C:\Users\COMTREE\Desktop\연습\해운대구용역 계약업체 내역.xlsx'
-df = pd.read_excel(EXCEL_PATH, header=7)
+print(f"\nTotal unmatched: {sum(r[1] for r in rows)}")
 
-conn = sqlite3.connect('procurement_contracts.db')
-df_db = pd.read_sql("""
-    SELECT untyCntrctNo, cntrctRefNo, cntrctNm, totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctInsttCd
-    FROM servc_cntrct WHERE cntrctDate >= '2026-01-01' AND cntrctDate <= '2026-02-28'
-""", conn)
+print("\n=== Current certified_product certification_types ===")
+rows2 = conn.execute("""
+    SELECT certification_type, COUNT(*) 
+    FROM certified_product 
+    GROUP BY certification_type 
+    ORDER BY COUNT(*) DESC
+""").fetchall()
+for r in rows2:
+    print(f"  {r[0]}: {r[1]}")
+
+print(f"\n=== manual_review check ===")
+mr = conn.execute("SELECT COUNT(*) FROM certified_product WHERE certification_type='manual_review'").fetchone()[0]
+print(f"  manual_review in certified_product: {mr}")
+
 conn.close()
-
-mask = (df_db['cntrctInsttCd'].astype(str).str.strip() == '3330000') | df_db['dminsttList'].apply(lambda x: '3330000' in str(x))
-df_db_hae = df_db[mask].drop_duplicates(subset=['untyCntrctNo'], keep='last').copy()
-db_refs = df_db_hae['cntrctRefNo'].dropna().astype(str).str.strip().tolist()
-
-# 매칭 안 되는 엑셀 건 찾기
-unmatched = []
-for i, row in df.iterrows():
-    ek = str(row['계약납품통합번호']).strip()
-    found = any(ek in dr for dr in db_refs)
-    if not found:
-        unmatched.append(row)
-
-print(f"매칭 안 되는 건: {len(unmatched)}건")
-print()
-for row in unmatched:
-    print(f"  {row['계약납품통합번호']} | {row.get('계약명', '')[:40]} | 총부기={row.get('총부기계약금액', 0):,.0f}")

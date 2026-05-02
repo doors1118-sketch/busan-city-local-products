@@ -1,3 +1,4 @@
+import os
 """공사 공고 API 응답에서 업종분류 필드 확인"""
 import urllib.request, json, ssl, sys
 sys.stdout.reconfigure(encoding='utf-8')
@@ -5,7 +6,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-KEY = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+KEY = os.environ.get('SERVICE_KEY', '')
 
 # 기존 스크립트와 동일한 URL 사용
 url = (f'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoCnstwk'

@@ -15,7 +15,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-KEY = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+KEY = os.environ.get('SERVICE_KEY', '')
 DB = 'procurement_contracts.db'
 
 SLEEP_BETWEEN_PAGES = 1.2

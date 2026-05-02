@@ -11,10 +11,12 @@ import time
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PolicyImport")
 
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chatbot_company.db')
-SMPP_SERVICE_KEY = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
-# API endpoint base (placeholder, assuming standard pattern)
+DB_FILE = os.environ.get("CHATBOT_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chatbot_company.db'))
+# API key는 환경변수에서만 로드. 하드코딩 금지.
+# 기존 하드코딩된 키는 폐기·재발급 대상. 절대 소스에 키를 기록하지 말 것.
+SMPP_SERVICE_KEY = os.environ.get('SMPP_CERT_INFO_SERVICE_KEY') or os.environ.get('SMPP_SERVICE_KEY')
 SMPP_BASE_URL = 'https://apis.data.go.kr/B550598/smppCertInfo'
+SMPP_OPERATION = 'getSmppCertInfoList'
 
 def hash_business_no(b_no: str) -> str:
     if not b_no:
@@ -28,8 +30,12 @@ def map_cert_name_to_subtype(cert_name: str) -> str:
         return "women_company"
     elif "장애인기업" in cert_name:
         return "disabled_company"
-    elif "직접생산" in cert_name:
-        return "direct_production"
+    elif "예비사회적기업" in cert_name:
+        return "preliminary_social_enterprise"
+    elif "사회적기업" in cert_name:
+        return "social_enterprise"
+    elif "중증장애인생산품" in cert_name:
+        return "severe_disabled_production"
     return "unknown"
 
 def fetch_smpp_certs(b_no: str, use_mock=False):
@@ -50,50 +56,51 @@ def fetch_smpp_certs(b_no: str, use_mock=False):
             ]
         return []
 
+    # 환경변수에 serviceKey가 없으면 API 호출 없이 안전하게 빈 결과 반환
+    if not SMPP_SERVICE_KEY:
+        logger.warning("SMPP_SERVICE_KEY 환경변수 미설정 — API 호출 건너뜀")
+        return []
+
     results = []
-    # Probe commonly used operation names since exact name is unknown
-    operations = ['getSmppCertInfoList', 'getSmppCertList', 'getCertInfoList']
-    for op in operations:
-        url = f"{SMPP_BASE_URL}/{op}"
-        params = {
-            'serviceKey': SMPP_SERVICE_KEY,
-            'bzno': b_no,
-            'pageNo': 1,
-            'numOfRows': 100
-        }
-        try:
-            resp = requests.get(url, params=params, timeout=5.0)
-            if resp.status_code == 200:
-                # Try to parse XML
-                try:
-                    root = ET.fromstring(resp.content)
-                    items = root.findall('.//item')
-                    if items:
-                        for item in items:
-                            cert_nm = item.findtext('certNm') or ''
-                            v_bgn = item.findtext('vldBgnDt') or item.findtext('vldPrdBgnDt') or ''
-                            v_end = item.findtext('vldEndDt') or item.findtext('vldPrdEndDt') or ''
-                            cert_no = item.findtext('certNo') or item.findtext('certNum') or ''
-                            
-                            # Normalize dates from YYYYMMDD to YYYY-MM-DD if needed
-                            if len(v_bgn) == 8:
-                                v_bgn = f"{v_bgn[:4]}-{v_bgn[4:6]}-{v_bgn[6:]}"
-                            if len(v_end) == 8:
-                                v_end = f"{v_end[:4]}-{v_end[4:6]}-{v_end[6:]}"
-                                
-                            subtype = map_cert_name_to_subtype(cert_nm)
-                            if subtype != "unknown":
-                                results.append({
-                                    "type": subtype,
-                                    "cert_no": cert_no,
-                                    "v_from": v_bgn,
-                                    "v_to": v_end
-                                })
-                        return results
-                except ET.ParseError:
-                    pass
-        except requests.RequestException:
-            continue
+    url = f"{SMPP_BASE_URL}/{SMPP_OPERATION}"
+    params = {
+        'serviceKey': SMPP_SERVICE_KEY,
+        'bzno': b_no,
+        'pageNo': 1,
+        'numOfRows': 100
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=5.0)
+        if resp.status_code == 200:
+            try:
+                root = ET.fromstring(resp.content)
+                items = root.findall('.//item')
+                for item in items:
+                    cert_nm = item.findtext('certNm') or ''
+                    v_bgn = item.findtext('vldBgnDt') or ''
+                    v_end = item.findtext('vldEndDt') or ''
+                    cert_no = item.findtext('certNo') or ''
+
+                    # YYYYMMDD → YYYY-MM-DD
+                    if len(v_bgn) == 8:
+                        v_bgn = f"{v_bgn[:4]}-{v_bgn[4:6]}-{v_bgn[6:]}"
+                    if len(v_end) == 8:
+                        v_end = f"{v_end[:4]}-{v_end[4:6]}-{v_end[6:]}"
+
+                    subtype = map_cert_name_to_subtype(cert_nm)
+                    if subtype != "unknown":
+                        results.append({
+                            "type": subtype,
+                            "cert_no": cert_no,
+                            "v_from": v_bgn,
+                            "v_to": v_end
+                        })
+            except ET.ParseError:
+                logger.warning("SMPP API 응답 XML 파싱 실패")
+        else:
+            logger.warning(f"SMPP API HTTP {resp.status_code}")
+    except requests.RequestException:
+        logger.warning("SMPP API 요청 실패")
     return results
 
 def run_import(dry_run=False, use_mock=False):
@@ -213,11 +220,72 @@ def run_import(dry_run=False, use_mock=False):
     conn.close()
     logger.info(f"Import Finished. Processed BNOs: {total_count}, Inserted Certs: {inserted_count}, Unmatched: {unmatched_count}")
 
+def source_probe(limit=5):
+    """
+    Source Smoke Test용: 실제 SMPP API에 1~limit건만 호출하여 연결성 및 파싱 검증
+    """
+    logger.info(f"Starting SMPP source_probe with limit={limit}")
+    if not SMPP_SERVICE_KEY:
+        logger.error("SMPP_SERVICE_KEY is missing!")
+        return {"success": False, "error": "Missing SMPP_SERVICE_KEY"}
+        
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT m.company_internal_id, i.canonical_business_no FROM company_master m JOIN company_identity i ON m.company_internal_id = i.company_internal_id WHERE m.is_busan_company = 1 LIMIT ?", (limit,)).fetchall()
+    
+    success_count = 0
+    parsed_items = 0
+    error_message = None
+    
+    try:
+        for r in rows:
+            b_no = r['canonical_business_no']
+            if not b_no: continue
+            certs = fetch_smpp_certs(b_no, use_mock=False)
+            success_count += 1
+            parsed_items += len(certs)
+            time.sleep(0.1)
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"SMPP probe failed: {e}")
+        
+    status = 'success'
+    if error_message:
+        status = 'failed'
+    elif parsed_items == 0 and success_count > 0:
+        # 호출은 성공했으나 파싱된 데이터가 없는 경우
+        status = 'success'
+        
+    # etl_job_log 기록
+    conn.execute('''
+        INSERT INTO etl_job_log (job_name, source_name, started_at, finished_at, status, input_row_count, inserted_count, skipped_count, error_count, error_message)
+        VALUES (?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?)
+    ''', ('smpp_source_probe', 'smpp_api_probe', status, success_count, parsed_items, 0, 1 if error_message else 0, error_message))
+    
+    # source_manifest 기록
+    conn.execute('''
+        INSERT INTO source_manifest (source_name, source_refreshed_at, row_count, status)
+        VALUES (?, datetime('now'), ?, ?)
+        ON CONFLICT(source_name) DO UPDATE SET row_count=excluded.row_count, status=excluded.status, source_refreshed_at=datetime('now')
+    ''', ('smpp_api_probe', success_count, status))
+    
+    conn.commit()
+    conn.close()
+    
+    logger.info(f"source_probe finished. Called: {success_count}, Parsed items: {parsed_items}")
+    return {"success": not bool(error_message), "called": success_count, "parsed": parsed_items}
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--use-mock", action="store_true")
+    parser.add_argument("--probe", action="store_true", help="Run source smoke test probe")
     args = parser.parse_args()
     
-    run_import(dry_run=args.dry_run, use_mock=args.use_mock)
+    if args.probe:
+        res = source_probe(limit=5)
+        if not res["success"]:
+            exit(1)
+    else:
+        run_import(dry_run=args.dry_run, use_mock=args.use_mock)

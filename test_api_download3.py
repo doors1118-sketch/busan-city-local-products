@@ -1,3 +1,4 @@
+import os
 import urllib.request
 import json
 import pandas as pd
@@ -12,7 +13,7 @@ ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
-service_key = 'c551b235466f84865b201c21869bc5b08cdf0633cdb4a3105dfb1e19c6427865'
+service_key = os.environ.get('SERVICE_KEY', '')
 
 bgn_dt = '20260101'
 end_dt = '20260131'
