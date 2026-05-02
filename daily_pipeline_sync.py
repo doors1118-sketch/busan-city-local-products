@@ -1096,6 +1096,50 @@ def sync_one_day(target_date):
         failed_steps.append('Step2.0_추정가격')
     print("\n--------------------------------------------------")
 
+    # [Step 2.1] NTS 사업자등록상태 야간 배치 (매일)
+    try:
+        print(f"[휴폐업 동기화] {target_date} NTS 사업자등록상태 배치 갱신 중...")
+        import subprocess
+        res = subprocess.run(
+            [sys.executable, 'nts_batch_sync.py'],
+            capture_output=True, text=True, encoding='utf-8'
+        )
+        if res.returncode == 0:
+            lines = res.stdout.strip().split('\n')
+            for line in lines[-2:]:
+                print(f"   {line}")
+        else:
+            print(f"   [오류] NTS 배치 실패: {res.stderr[-200:]}")
+            failed_steps.append('Step2.1_NTS휴폐업')
+    except Exception as e:
+        print(f"   [오류] Step 2.1 NTS 휴폐업 동기화 실패: {e}")
+        failed_steps.append('Step2.1_NTS휴폐업')
+    print("\n--------------------------------------------------")
+
+    # [Step 2.2] 인증제품 API 수집 (주 1회 - 일요일)
+    try:
+        dt_obj = datetime.datetime.strptime(target_date, '%Y%m%d')
+        if dt_obj.weekday() == 6:  # 6 = 일요일
+            print(f"[인증제품 동기화] {target_date} 주 1회 기술개발제품 및 혁신제품 스냅샷 갱신 중...")
+            import subprocess
+            res1 = subprocess.run([sys.executable, 'import_certified_product_api.py'], capture_output=True, text=True, encoding='utf-8')
+            res2 = subprocess.run([sys.executable, 'import_innovation_product_api.py'], capture_output=True, text=True, encoding='utf-8')
+            if res1.returncode == 0:
+                print(f"   ✅ 기술개발제품 API 완료")
+            else:
+                print(f"   ❌ 기술개발제품 API 실패: {res1.stderr[-100:]}")
+            if res2.returncode == 0:
+                print(f"   ✅ 혁신제품 API 완료")
+            else:
+                print(f"   ❌ 혁신제품 API 실패: {res2.stderr[-100:]}")
+        else:
+            # 일요일이 아니면 패스
+            pass
+    except Exception as e:
+        print(f"   [오류] Step 2.2 인증제품 동기화 실패: {e}")
+        failed_steps.append('Step2.2_인증제품')
+    print("\n--------------------------------------------------")
+
     # [Step 2] 전국 4개 조달계약 다운로드 (★ 핵심 — 실패 시 전체 실패)
     print(f"[전국 계약 동기화] {target_date} 계약 정보 수집 중...")
     all_data = {k: [] for k in APIS.keys()}
