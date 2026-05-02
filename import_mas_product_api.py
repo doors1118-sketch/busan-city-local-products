@@ -33,14 +33,18 @@ def get_internal_id_by_bizno(conn, bizno):
     res = cur.fetchone()
     return res[0] if res else None
 
-def fetch_mas_data():
+def fetch_mas_data(target_date_str=None):
     if not SERVICE_KEY:
         print("ERROR: SHOPPING_MALL_PRDCT_SERVICE_KEY is missing.")
         return
         
     conn = sqlite3.connect(TARGET_DB)
     
-    end_date = datetime.now()
+    if target_date_str:
+        end_date = datetime.strptime(target_date_str, "%Y%m%d")
+    else:
+        end_date = datetime.now()
+        
     start_date = end_date - timedelta(days=7)
     
     bgn_dt = start_date.strftime("%Y%m%d")
@@ -188,4 +192,9 @@ def fetch_mas_data():
     conn.close()
 
 if __name__ == "__main__":
-    fetch_mas_data()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target-date", help="YYYYMMDD", default=None)
+    args = parser.parse_args()
+    
+    fetch_mas_data(args.target_date)

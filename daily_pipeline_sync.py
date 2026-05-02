@@ -1140,6 +1140,26 @@ def sync_one_day(target_date):
         failed_steps.append('Step2.2_인증제품')
     print("\n--------------------------------------------------")
 
+    # [Step 2.3] MAS 종합쇼핑몰 상품 목록 증분 동기화
+    try:
+        print(f"[MAS 상품 동기화] {target_date} MAS 종합쇼핑몰 계약/상품 정보 증분 수집 중...")
+        import subprocess
+        res = subprocess.run(
+            [sys.executable, 'import_mas_product_api.py', '--target-date', target_date],
+            capture_output=True, text=True, encoding='utf-8'
+        )
+        if res.returncode == 0:
+            lines = res.stdout.strip().split('\n')
+            for line in lines[-2:]:
+                print(f"   {line}")
+        else:
+            print(f"   [오류] MAS 상품 API 실패: {res.stderr[-200:]}")
+            failed_steps.append('Step2.3_MAS상품')
+    except Exception as e:
+        print(f"   [오류] Step 2.3 MAS 상품 동기화 실패: {e}")
+        failed_steps.append('Step2.3_MAS상품')
+    print("\n--------------------------------------------------")
+
     # [Step 2] 전국 4개 조달계약 다운로드 (★ 핵심 — 실패 시 전체 실패)
     print(f"[전국 계약 동기화] {target_date} 계약 정보 수집 중...")
     all_data = {k: [] for k in APIS.keys()}
