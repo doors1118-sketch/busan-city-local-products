@@ -23,13 +23,9 @@ def log_etl(conn, job_name, source_name, input_count, inserted_count, skipped_co
 
 def get_internal_id_by_bizno(conn, bizno):
     cur = conn.cursor()
-    import hmac
-    SECRET = os.environ.get("COMPANY_ID_HMAC_SECRET")
-    if not SECRET: return None
     bno_clean = str(bizno).replace('-', '').replace('.0', '').strip()
-    h = hmac.new(SECRET.encode('utf-8'), bno_clean.encode('utf-8'), hashlib.sha256).hexdigest()[:32]
     
-    cur.execute("SELECT company_internal_id FROM company_identity WHERE company_id = ?", (h,))
+    cur.execute("SELECT company_internal_id FROM company_identity WHERE canonical_business_no = ?", (bno_clean,))
     res = cur.fetchone()
     return res[0] if res else None
 

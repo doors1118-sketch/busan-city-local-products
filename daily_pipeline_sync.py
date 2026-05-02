@@ -1360,6 +1360,23 @@ def main():
         send_sms(f'[조달알림] 수집 전체 실패! 대상: {date_range}')
         return
     target_date = success_dates[-1]  # 이후 Step 4/5에서 사용
+
+    # [Step 3.5] 챗봇 DB(staging_chatbot_company.db) 형상 동기화 (migrate_chatbot_db.py)
+    print("\n--------------------------------------------------")
+    print(f"[챗봇 DB 동기화] 마스터 DB 변경분 챗봇 DB 반영 중...")
+    try:
+        import subprocess
+        res = subprocess.run(
+            [sys.executable, 'migrate_chatbot_db.py'],
+            capture_output=True, text=True, encoding='utf-8'
+        )
+        if res.returncode == 0:
+            print("   -> 챗봇 DB 동기화 완료 ✅")
+        else:
+            print(f"   [오류] migrate_chatbot_db.py 실패: {res.stderr[-200:]}")
+    except Exception as e:
+        print(f"   [오류] 챗봇 DB 동기화 실행 중 예외: {e}")
+
     # [Step 4] API 캐시 재생성 (build_api_cache.py → api_cache.json)
     print("\n--------------------------------------------------")
     
