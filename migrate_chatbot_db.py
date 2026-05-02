@@ -394,7 +394,13 @@ def migrate():
         ('재난안전제품인증', 'disaster_safety_certified_product', 'priority_purchase', 1, 0, 0),
         ('녹색기술제품', 'green_technology_product', 'priority_purchase', 1, 0, 0),
         ('산업융합 신제품 적합성 인증', 'industrial_convergence_new_product', 'priority_purchase', 1, 0, 0),
-        ('우수조달공동상표', 'excellent_procurement_joint_brand', 'priority_purchase', 1, 0, 0)
+        ('우수조달공동상표', 'excellent_procurement_joint_brand', 'priority_purchase', 1, 0, 0),
+        ('물산업 우수제품 등 지정', 'water_industry_excellent_product', 'priority_purchase', 1, 0, 0),
+        ('산업융합품목', 'industrial_convergence_item', 'priority_purchase', 1, 0, 0),
+        ('수요처 지정형 기술개발제품', 'demand_designated_tech_product', 'priority_purchase', 1, 0, 0),
+        ('구매조건부신기술개발', 'demand_designated_tech_product', 'priority_purchase', 1, 0, 0),
+        ('중소기업융복합기술개발', 'demand_designated_tech_product', 'priority_purchase', 1, 0, 0),
+        ('우수산업디자인(GD)', 'excellent_industrial_design', 'priority_purchase', 1, 0, 0)
     ''')
 
     cursor.execute('''
