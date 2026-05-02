@@ -9,10 +9,9 @@ import sys
 TARGET_DB = os.environ.get("CHATBOT_DB", "staging_chatbot_company.db")
 SECRET_KEY = os.environ.get("COMPANY_ID_HMAC_SECRET")
 
-def hash_business_no(bno: str) -> str:
+def clean_business_no(bno: str) -> str:
     if not bno: return ""
-    bno = str(bno).replace('-', '').replace('.0', '').strip()
-    return hmac.new(SECRET_KEY.encode('utf-8'), bno.encode('utf-8'), hashlib.sha256).hexdigest()[:32]
+    return str(bno).replace('-', '').replace('.0', '').strip()
 
 def log_etl(conn, job_name, source_name, input_count, inserted_count, skipped_count=0, msg=""):
     conn.execute("""
@@ -37,9 +36,10 @@ def find_header_row(file_path, key_column="사업자등록번호"):
         print(f"Error reading {file_path}: {e}")
     return 0
 
-def get_internal_id_by_hash(conn, comp_hash):
+def get_internal_id_by_bizno(conn, bizno):
     cur = conn.cursor()
-    cur.execute("SELECT company_internal_id FROM company_identity WHERE company_id = ?", (comp_hash,))
+    bno_clean = clean_business_no(bizno)
+    cur.execute("SELECT company_internal_id FROM company_identity WHERE canonical_business_no = ?", (bno_clean,))
     res = cur.fetchone()
     return res[0] if res else None
 
@@ -64,8 +64,8 @@ def load_policy(conn, file_path, policy_subtype, source_name):
     for _, row in df.iterrows():
         bno = str(row['사업자등록번호'])
         if bno == 'nan' or not bno.strip(): continue
-        comp_hash = hash_business_no(bno)
-        internal_id = get_internal_id_by_hash(conn, comp_hash)
+        bno_clean = clean_business_no(bno)
+        internal_id = get_internal_id_by_bizno(conn, bno_clean)
         
         if not internal_id:
             continue
@@ -104,8 +104,8 @@ def load_manufacturer(conn, file_path, source_name):
     for _, row in df.iterrows():
         bno = str(row['사업자등록번호'])
         if bno == 'nan' or not bno.strip(): continue
-        comp_hash = hash_business_no(bno)
-        internal_id = get_internal_id_by_hash(conn, comp_hash)
+        bno_clean = clean_business_no(bno)
+        internal_id = get_internal_id_by_bizno(conn, bno_clean)
         
         if not internal_id:
             continue
@@ -178,8 +178,8 @@ def load_innovation(conn, file_path, source_name):
         try:
             bno = str(row.get('업체사업자등록번호', '')).strip()
             if bno == 'nan' or not bno: continue
-            comp_hash = hash_business_no(bno)
-            internal_id = get_internal_id_by_hash(conn, comp_hash)
+            bno_clean = clean_business_no(bno)
+            internal_id = get_internal_id_by_bizno(conn, bno_clean)
             if not internal_id: continue
             
             p_name = str(row.get('세부품명', '')).strip()
@@ -227,8 +227,8 @@ def load_mas(conn, file_path, source_name):
         try:
             bno = str(row.get('업체사업자등록번호', '')).strip()
             if bno == 'nan' or not bno: continue
-            comp_hash = hash_business_no(bno)
-            internal_id = get_internal_id_by_hash(conn, comp_hash)
+            bno_clean = clean_business_no(bno)
+            internal_id = get_internal_id_by_bizno(conn, bno_clean)
             if not internal_id: continue
             
             contract_no = str(row.get('계약번호', '')).strip()
@@ -272,6 +272,38 @@ def load_mas(conn, file_path, source_name):
 
             if c_status == "active":
                 active_count += 1
+                
+            # Phase 6-G: shopping_mall_contract_type 산정
+            sm_type = 'unknown'
+            is_mas = str(row.get('MAS여부', '')).strip().upper()
+            is_exc = str(row.get('우수제품여부', '')).strip().upper()
+            contract_type_raw = str(row.get('계약구분', '')).strip()
+            
+            if is_mas == 'Y':
+                sm_type = 'mas'
+            elif is_exc == 'Y':
+                sm_type = 'excellent_procurement'
+            elif contract_type_raw == '제3자단가계약':
+                sm_type = 'third_party_unit_price'
+            elif contract_type_raw == '일반단가계약':
+                sm_type = 'general_unit_price'
+                
+            # Phase 6-G: shopping_mall_product 동시 적재
+            conn.execute("""
+                INSERT INTO shopping_mall_product (
+                    company_internal_id, product_name, product_name_normalized, product_code,
+                    detail_product_name, detail_product_code, g2b_category_code, 
+                    shopping_mall_registered, shopping_mall_contract_type, contract_no_hash,
+                    contract_start_date, contract_end_date, contract_status, order_path_available,
+                    price_amount, price_unit, source_name, source_refreshed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(company_internal_id, contract_no_hash, product_name_normalized, detail_product_code, source_name) 
+                DO UPDATE SET 
+                    contract_status=excluded.contract_status,
+                    price_amount=excluded.price_amount,
+                    shopping_mall_contract_type=excluded.shopping_mall_contract_type,
+                    source_refreshed_at=excluded.source_refreshed_at
+            """, (internal_id, p_name, p_name_norm, p_code, dp_name, dp_code, g2b_cat, sm_type, cno_hash, contract_start, contract_end, c_status, price_val, unit, source_name, now))
             
             # mas_product (ON CONFLICT)
             conn.execute("""
@@ -379,6 +411,8 @@ def load_mas(conn, file_path, source_name):
                         
         except Exception as e:
             print("Error parsing row:", e)
+            import traceback
+            traceback.print_exc()
             continue
             
     conn.commit()

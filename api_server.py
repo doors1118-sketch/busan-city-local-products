@@ -780,19 +780,51 @@ def _build_chatbot_response(rows, meta=None, error=None, validity_filter="valid_
 
         raw_shopping_flags = c_raw.get("shopping_mall_flags_raw")
         raw_mas_summary = c_raw.get("mas_product_summary_raw")
+        raw_sm_summary = c_raw.get("shopping_mall_product_summary_raw")
         
         if "shopping_mall_flags_raw" in c_raw:
             del c_raw["shopping_mall_flags_raw"]
         if "mas_product_summary_raw" in c_raw:
             del c_raw["mas_product_summary_raw"]
+        if "shopping_mall_product_summary_raw" in c_raw:
+            del c_raw["shopping_mall_product_summary_raw"]
 
         c_raw["shopping_mall_flags"] = []
         c_raw["mas_product_summary"] = []
+        c_raw["shopping_mall_product_summary"] = []
 
-        if raw_shopping_flags == "mas_registered":
-            c_raw["shopping_mall_flags"].append("mas_registered")
-            if "shopping_mall_supplier" not in c_raw["candidate_types"]:
+        if raw_shopping_flags:
+            flags = set()
+            for group in raw_shopping_flags.split(","):
+                for flag in group.split("|"):
+                    if flag: flags.add(flag)
+            
+            c_raw["shopping_mall_flags"] = list(flags)
+            
+            if "shopping_mall_registered" in flags and "shopping_mall_supplier" not in c_raw["candidate_types"]:
                 c_raw["candidate_types"].append("shopping_mall_supplier")
+
+        if raw_sm_summary:
+            items = []
+            for sm in raw_sm_summary.split("|||"):
+                if not sm: continue
+                parts = sm.split("^^")
+                if len(parts) == 9:
+                    pname, dcode, sm_type, status, end_date, price, unit, path_avail, src = parts
+                    items.append({
+                        "product_name": pname,
+                        "detail_product_code": dcode if dcode else None,
+                        "shopping_mall_contract_type": sm_type,
+                        "contract_status": status,
+                        "contract_end_date": end_date if end_date else None,
+                        "price_amount": float(price) if price else None,
+                        "price_unit": unit if unit else None,
+                        "order_path_available": True if path_avail == '1' else False,
+                        "source_name": src
+                    })
+            c_raw["shopping_mall_product_summary"] = items
+            if items and "shopping_mall_product" not in c_raw.get("source_refs", []):
+                c_raw.setdefault("source_refs", []).append("shopping_mall_product")
                 
         if raw_mas_summary:
             items = []
@@ -855,7 +887,7 @@ def _build_chatbot_response(rows, meta=None, error=None, validity_filter="valid_
             "contract_possible_auto_promoted", "source_refs", "source_refreshed_at",
             "policy_subtypes", "policy_validity_summary",
             "certified_product_types", "certified_product_summary",
-            "shopping_mall_flags", "mas_product_summary", "sme_competition_product",
+            "shopping_mall_flags", "shopping_mall_product_summary", "mas_product_summary", "sme_competition_product",
             "procurement_attributes", "general_certifications"
         ]
 
@@ -896,6 +928,57 @@ ChatbotCertificationType = Literal[
     "green_technology_product", "industrial_convergence_new_product",
     "excellent_procurement_joint_brand"
 ]
+
+@app.get("/api/chatbot/health", tags=["챗봇"])
+def get_chatbot_health():
+    try:
+        conn = _get_chatbot_db()
+        cm_count = conn.execute("SELECT COUNT(*) FROM company_master").fetchone()[0]
+        cp_count = conn.execute("SELECT COUNT(*) FROM company_product").fetchone()[0]
+        cl_count = conn.execute("SELECT COUNT(*) FROM company_license").fetchone()[0]
+        pol_count = conn.execute("SELECT COUNT(*) FROM policy_company_certification").fetchone()[0]
+        mas_count = conn.execute("SELECT COUNT(*) FROM mas_product").fetchone()[0]
+        attr_count = conn.execute("SELECT COUNT(*) FROM company_procurement_attribute").fetchone()[0]
+        cert_count = conn.execute("SELECT COUNT(*) FROM product_general_certification").fetchone()[0]
+        conn.close()
+        return {
+            "status": "ok",
+            "db": {
+                "chatbot_db_connected": True,
+                "company_master_count": cm_count,
+                "company_product_count": cp_count,
+                "company_license_count": cl_count,
+                "policy_company_count": pol_count,
+                "mas_product_count": mas_count,
+                "procurement_attribute_count": attr_count,
+                "general_certification_count": cert_count
+            },
+            "production_deployment": "HOLD"
+        }
+    except Exception as e:
+        logger.exception("챗봇 API 오류: health")
+        return {"status": "error", "production_deployment": "HOLD"}
+
+@app.get("/api/chatbot/version", tags=["챗봇"])
+def get_chatbot_version():
+    return {
+        "service": "busan-procurement-monitoring-chatbot-api",
+        "api_version": "phase-6e-final-staging",
+        "schema_version": "chatbot_company_v6d2",
+        "production_deployment": "HOLD",
+        "features": [
+            "company_search",
+            "license_search",
+            "product_search",
+            "manufacturer_search",
+            "policy_company",
+            "certified_product",
+            "mas_product",
+            "sme_competition_product",
+            "procurement_attributes",
+            "general_certifications"
+        ]
+    }
 
 @app.get("/api/chatbot/company/license-list", tags=["챗봇"])
 def get_chatbot_license_list(limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):

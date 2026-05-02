@@ -127,6 +127,22 @@ def fetch_mas_data(target_date_str=None):
                 except:
                     price_val = 0
                     
+                # Phase 6-G: shopping_mall_product (MAS API is always 'mas')
+                conn.execute("""
+                    INSERT INTO shopping_mall_product (
+                        company_internal_id, product_name, product_name_normalized, product_code,
+                        detail_product_name, detail_product_code, g2b_category_code, 
+                        shopping_mall_registered, shopping_mall_contract_type, contract_no_hash,
+                        contract_start_date, contract_end_date, contract_status, order_path_available,
+                        price_amount, price_unit, source_name, source_refreshed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'mas', ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                    ON CONFLICT(company_internal_id, contract_no_hash, product_name_normalized, detail_product_code, source_name) 
+                    DO UPDATE SET 
+                        contract_status=excluded.contract_status,
+                        price_amount=excluded.price_amount,
+                        source_refreshed_at=excluded.source_refreshed_at
+                """, (internal_id, p_name, p_name.replace(' ', ''), p_code, dp_name, dp_code, g2b_cat, cno_hash, c_start, c_end, c_status, price_val, unit, source_name, now_str))
+
                 # ON CONFLICT for mas_product
                 conn.execute("""
                     INSERT INTO mas_product (

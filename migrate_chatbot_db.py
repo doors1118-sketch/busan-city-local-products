@@ -460,6 +460,35 @@ def migrate():
     ''')
 
     cursor.execute('''
+    CREATE TABLE IF NOT EXISTS shopping_mall_product (
+        shopping_mall_product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_internal_id INTEGER,
+        product_name TEXT NOT NULL,
+        product_name_normalized TEXT,
+        product_code TEXT,
+        detail_product_name TEXT,
+        detail_product_code TEXT,
+        g2b_category_code TEXT,
+        shopping_mall_registered INTEGER DEFAULT 0,
+        shopping_mall_contract_type TEXT DEFAULT 'unknown',
+        contract_no_hash TEXT,
+        contract_start_date DATE,
+        contract_end_date DATE,
+        contract_status TEXT NOT NULL DEFAULT 'unknown',
+        order_path_available INTEGER DEFAULT 0,
+        price_amount REAL,
+        price_unit TEXT,
+        currency TEXT DEFAULT 'KRW',
+        source_name TEXT,
+        source_refreshed_at DATETIME,
+        match_method TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_shopping_mall_product_uniq ON shopping_mall_product(company_internal_id, contract_no_hash, product_name_normalized, detail_product_code, source_name)')
+
+    cursor.execute('''
     CREATE TABLE IF NOT EXISTS mas_product (
         mas_product_id INTEGER PRIMARY KEY AUTOINCREMENT,
         company_internal_id INTEGER,
@@ -759,19 +788,46 @@ def migrate():
             cp.source_name, '|||') 
          FROM certified_product cp WHERE cp.company_internal_id = m.company_internal_id) AS certified_product_summary_raw,
         
-        -- Phase 6-C: MAS 쇼핑몰 연동
-        -- active 계약이 존재하면 mas_registered 플래그 포함.
-        (SELECT CASE WHEN COUNT(*) > 0 THEN 'mas_registered' ELSE '' END 
-         FROM mas_product mp 
-         WHERE mp.company_internal_id = m.company_internal_id AND mp.contract_status = 'active') AS shopping_mall_flags_raw,
+        -- Phase 6-G: 종합쇼핑몰 연동 (MAS 포함)
+        (SELECT GROUP_CONCAT(DISTINCT 
+            CASE WHEN contract_status = 'active' THEN 'shopping_mall_registered' ELSE '' END || '|' ||
+            CASE 
+                WHEN contract_status = 'active' AND shopping_mall_contract_type = 'mas' THEN 'mas_registered'
+                WHEN contract_status = 'active' AND shopping_mall_contract_type = 'third_party_unit_price' THEN 'third_party_unit_price_registered'
+                WHEN contract_status = 'active' AND shopping_mall_contract_type = 'general_unit_price' THEN 'general_unit_price_registered'
+                WHEN contract_status = 'active' AND shopping_mall_contract_type = 'excellent_procurement' THEN 'excellent_procurement_registered'
+                ELSE '' 
+            END
+         ) 
+         FROM shopping_mall_product smp 
+         WHERE smp.company_internal_id = m.company_internal_id) AS shopping_mall_flags_raw,
          
         (SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END 
          FROM company_product cp 
          JOIN ref_sme_competition_product r ON cp.product_code = r.detail_category_code
          WHERE cp.company_internal_id = m.company_internal_id) AS is_sme_competition_product,
          
-        -- active 상태인 MAS 제품을 최대 5개까지만 노출하도록 제한 처리된 서브쿼리 사용 (SQLite GROUP_CONCAT 제약 우회를 위해 ORDER BY 사용 불가할 수 있으므로 기본 스칼라 연결)
-        -- SQLite에서 LIMIT을 적용한 GROUP_CONCAT은 서브쿼리 활용.
+        -- 신규: shopping_mall_product_summary_raw (최대 5개)
+        (SELECT GROUP_CONCAT(
+            smp_sub.product_name || '^^' || 
+            IFNULL(smp_sub.detail_product_code, '') || '^^' || 
+            IFNULL(smp_sub.shopping_mall_contract_type, 'unknown') || '^^' || 
+            smp_sub.contract_status || '^^' || 
+            IFNULL(smp_sub.contract_end_date, '') || '^^' || 
+            IFNULL(smp_sub.price_amount, '') || '^^' || 
+            IFNULL(smp_sub.price_unit, '') || '^^' || 
+            IFNULL(smp_sub.order_path_available, 0) || '^^' || 
+            smp_sub.source_name, '|||')
+         FROM (
+            SELECT product_name, detail_product_code, shopping_mall_contract_type, contract_status, contract_end_date, price_amount, price_unit, order_path_available, source_name
+            FROM shopping_mall_product
+            WHERE company_internal_id = m.company_internal_id AND contract_status = 'active'
+            ORDER BY contract_end_date DESC
+            LIMIT 5
+         ) smp_sub
+        ) AS shopping_mall_product_summary_raw,
+
+        -- Legacy: mas_product_summary_raw 유지
         (SELECT GROUP_CONCAT(
             mp_sub.product_name || '^^' || 
             IFNULL(mp_sub.detail_product_code, '') || '^^' || 
