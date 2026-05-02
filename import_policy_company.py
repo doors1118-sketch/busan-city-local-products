@@ -41,6 +41,10 @@ def map_cert_name_to_subtype(cert_name: str) -> str:
 def fetch_smpp_certs(b_no: str, use_mock=False):
     """
     Fetch certificates from SMPP API for a given business number.
+    3개 오퍼레이션을 개별 호출하여 통합 결과 반환.
+    - /getDPrductList: 직접생산확인증명
+    - /getFnrssList: 여성기업확인
+    - /getDspsnList: 장애인기업확인
     Returns a list of dicts: {"type": ..., "cert_no": ..., "v_from": ..., "v_to": ...}
     """
     if use_mock:
@@ -62,45 +66,72 @@ def fetch_smpp_certs(b_no: str, use_mock=False):
         return []
 
     results = []
-    url = f"{SMPP_BASE_URL}/{SMPP_OPERATION}"
-    params = {
-        'serviceKey': SMPP_SERVICE_KEY,
-        'bzno': b_no,
-        'pageNo': 1,
-        'numOfRows': 100
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=5.0)
-        if resp.status_code == 200:
-            try:
-                root = ET.fromstring(resp.content)
-                items = root.findall('.//item')
-                for item in items:
-                    cert_nm = item.findtext('certNm') or ''
-                    v_bgn = item.findtext('vldBgnDt') or ''
-                    v_end = item.findtext('vldEndDt') or ''
-                    cert_no = item.findtext('certNo') or ''
+    today_str = datetime.date.today().strftime("%Y%m%d")
 
-                    # YYYYMMDD → YYYY-MM-DD
-                    if len(v_bgn) == 8:
-                        v_bgn = f"{v_bgn[:4]}-{v_bgn[4:6]}-{v_bgn[6:]}"
-                    if len(v_end) == 8:
-                        v_end = f"{v_end[:4]}-{v_end[4:6]}-{v_end[6:]}"
+    # 3개 오퍼레이션 정의: (오퍼레이션명, 내부 subtype, certSeCode)
+    operations = [
+        ('/getDPrductList', 'direct_production', '01'),
+        ('/getFnrssList', 'women_company', '03'),
+        ('/getDspsnList', 'disabled_company', '04'),
+    ]
 
-                    subtype = map_cert_name_to_subtype(cert_nm)
-                    if subtype != "unknown":
+    for op_path, subtype, expected_code in operations:
+        url = f"{SMPP_BASE_URL}{op_path}"
+        params = {
+            'ServiceKey': SMPP_SERVICE_KEY,
+            'bsnmNo': b_no,
+            'stdrDate': today_str,
+            'numOfRows': 100,
+            'pageNo': 1,
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10.0)
+            if resp.status_code == 200:
+                try:
+                    root = ET.fromstring(resp.content)
+                    # 에러 코드 확인
+                    result_code = root.findtext('.//resultCode') or ''
+                    if result_code == '90':
+                        # 매칭데이터 없음 (정상 - 해당 인증서 미보유)
+                        continue
+                    if result_code not in ('00', ''):
+                        logger.debug(f"SMPP {op_path} resultCode={result_code} for {b_no}")
+                        continue
+
+                    items = root.findall('.//item')
+                    for item in items:
+                        v_bgn = item.findtext('validPdBeginDe') or ''
+                        v_end = item.findtext('validPdEndDe') or ''
+                        cert_date = item.findtext('certfcDe') or ''
+                        cert_se_code = item.findtext('certSeCode') or ''
+                        issu_instt = item.findtext('issuInstt') or ''
+
+                        # YYYYMMDD → YYYY-MM-DD
+                        if len(v_bgn) == 8:
+                            v_bgn = f"{v_bgn[:4]}-{v_bgn[4:6]}-{v_bgn[6:]}"
+                        if len(v_end) == 8:
+                            v_end = f"{v_end[:4]}-{v_end[4:6]}-{v_end[6:]}"
+                        if len(cert_date) == 8:
+                            cert_date = f"{cert_date[:4]}-{cert_date[4:6]}-{cert_date[6:]}"
+
+                        # 직접생산확인은 품목 정보도 있을 수 있음
+                        prdlst_nm = ''
+                        if subtype == 'direct_production':
+                            prdlst_nm = item.findtext('prdlstNm') or ''
+
+                        cert_no_str = f"{subtype}_{cert_se_code}_{b_no}_{cert_date}"
                         results.append({
                             "type": subtype,
-                            "cert_no": cert_no,
+                            "cert_no": cert_no_str,
                             "v_from": v_bgn,
-                            "v_to": v_end
+                            "v_to": v_end,
                         })
-            except ET.ParseError:
-                logger.warning("SMPP API 응답 XML 파싱 실패")
-        else:
-            logger.warning(f"SMPP API HTTP {resp.status_code}")
-    except requests.RequestException:
-        logger.warning("SMPP API 요청 실패")
+                except ET.ParseError:
+                    logger.warning(f"SMPP {op_path} XML 파싱 실패 for {b_no}")
+            else:
+                logger.warning(f"SMPP {op_path} HTTP {resp.status_code}")
+        except requests.RequestException:
+            logger.warning(f"SMPP {op_path} 요청 실패 for {b_no}")
     return results
 
 def run_import(dry_run=False, use_mock=False):
