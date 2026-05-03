@@ -424,13 +424,24 @@ def load_mas(conn, file_path, source_name):
     real_attr = conn.execute("SELECT COUNT(*) FROM company_procurement_attribute WHERE source_name=?", (source_name,)).fetchone()[0]
     real_general = conn.execute("SELECT COUNT(*) FROM product_general_certification WHERE source_name=?", (source_name,)).fetchone()[0]
     real_review = conn.execute("SELECT COUNT(*) FROM procurement_label_mapping_review WHERE source_name=?", (source_name,)).fetchone()[0]
+    real_sm = conn.execute("SELECT COUNT(*) FROM shopping_mall_product WHERE source_name=?", (source_name,)).fetchone()[0]
+    
+    # DB unique row 기준 active count
+    mas_active_unique = conn.execute("SELECT COUNT(*) FROM mas_product WHERE source_name=? AND contract_status='active'", (source_name,)).fetchone()[0]
+    sm_active_unique = conn.execute("SELECT COUNT(*) FROM shopping_mall_product WHERE source_name=? AND contract_status='active'", (source_name,)).fetchone()[0]
     
     print(f"MAS Results:")
     print(f"  Products: {real_prod}, Contracts: {real_cont}, Prices: {real_price}")
     print(f"  Product Certs: {real_cert}, Procurement Attrs: {real_attr}, General Certs: {real_general}, Review: {real_review}")
-    print(f"  Active Contracts: {active_count}")
+    print(f"  Shopping Mall Products: {real_sm}")
+    print(f"  --- Active Count Report ---")
+    print(f"  Raw Active Rows (loop): {active_count}")
+    print(f"  mas_product Active Unique Rows (DB): {mas_active_unique}")
+    print(f"  shopping_mall_product Active Unique Rows (DB): {sm_active_unique}")
     
     log_etl(conn, 'bootstrap_mas_excel', source_name, len(df), real_prod)
+    log_etl(conn, 'bootstrap_shopping_mall_excel', 'shopping_mall_excel_bootstrap', len(df), real_sm,
+            msg=f"raw_active={active_count}, mas_active_unique={mas_active_unique}, sm_active_unique={sm_active_unique}")
     log_etl(conn, 'bootstrap_mas_procurement_attr', 'mas_procurement_attr', 0, real_attr)
     log_etl(conn, 'bootstrap_mas_general_cert', 'mas_general_cert', 0, real_general)
     log_etl(conn, 'bootstrap_mas_mapping_review', 'mas_mapping_review', 0, real_review)

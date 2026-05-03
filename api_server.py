@@ -696,6 +696,37 @@ def _build_chatbot_response(rows, meta=None, error=None, validity_filter="valid_
                     c_raw[json_field] = []
             else:
                 c_raw[json_field] = []
+        
+        c_raw["shopping_mall_flags"] = []
+        c_raw["mas_product_summary"] = []
+        c_raw["shopping_mall_product_summary"] = []
+
+        # Phase 6-G: whitelist 기반 shopping_mall_flags 필터링
+        ALLOWED_SM_FLAGS = {
+            "shopping_mall_registered", "mas_registered",
+            "third_party_unit_price_registered", "general_unit_price_registered",
+            "excellent_procurement_registered"
+        }
+        ALLOWED_SM_CONTRACT_TYPES = {
+            "mas", "third_party_unit_price", "general_unit_price",
+            "excellent_procurement", "unknown"
+        }
+
+        raw_shopping_flags = c_raw.get("shopping_mall_flags_raw")
+        if "shopping_mall_flags_raw" in c_raw:
+            del c_raw["shopping_mall_flags_raw"]
+            
+        if raw_shopping_flags:
+            flags = set()
+            for group in raw_shopping_flags.split(","):
+                for flag in group.split("|"):
+                    if flag and flag in ALLOWED_SM_FLAGS:
+                        flags.add(flag)
+            
+            c_raw["shopping_mall_flags"] = list(flags)
+            
+            if "shopping_mall_registered" in flags and "shopping_mall_supplier" not in c_raw["candidate_types"]:
+                c_raw["candidate_types"].append("shopping_mall_supplier")
 
         raw_policies = c_raw.get("policy_subtypes_raw")
         if "policy_subtypes_raw" in c_raw:
@@ -778,31 +809,13 @@ def _build_chatbot_response(rows, meta=None, error=None, validity_filter="valid_
             if items and "certified_product" not in c_raw["source_refs"]:
                 c_raw["source_refs"].append("certified_product")
 
-        raw_shopping_flags = c_raw.get("shopping_mall_flags_raw")
         raw_mas_summary = c_raw.get("mas_product_summary_raw")
         raw_sm_summary = c_raw.get("shopping_mall_product_summary_raw")
         
-        if "shopping_mall_flags_raw" in c_raw:
-            del c_raw["shopping_mall_flags_raw"]
         if "mas_product_summary_raw" in c_raw:
             del c_raw["mas_product_summary_raw"]
         if "shopping_mall_product_summary_raw" in c_raw:
             del c_raw["shopping_mall_product_summary_raw"]
-
-        c_raw["shopping_mall_flags"] = []
-        c_raw["mas_product_summary"] = []
-        c_raw["shopping_mall_product_summary"] = []
-
-        if raw_shopping_flags:
-            flags = set()
-            for group in raw_shopping_flags.split(","):
-                for flag in group.split("|"):
-                    if flag: flags.add(flag)
-            
-            c_raw["shopping_mall_flags"] = list(flags)
-            
-            if "shopping_mall_registered" in flags and "shopping_mall_supplier" not in c_raw["candidate_types"]:
-                c_raw["candidate_types"].append("shopping_mall_supplier")
 
         if raw_sm_summary:
             items = []
@@ -811,6 +824,9 @@ def _build_chatbot_response(rows, meta=None, error=None, validity_filter="valid_
                 parts = sm.split("^^")
                 if len(parts) == 9:
                     pname, dcode, sm_type, status, end_date, price, unit, path_avail, src = parts
+                    # whitelist 기반 contract_type 필터링
+                    if sm_type not in ALLOWED_SM_CONTRACT_TYPES:
+                        sm_type = "unknown"
                     items.append({
                         "product_name": pname,
                         "detail_product_code": dcode if dcode else None,
@@ -940,6 +956,8 @@ def get_chatbot_health():
         mas_count = conn.execute("SELECT COUNT(*) FROM mas_product").fetchone()[0]
         attr_count = conn.execute("SELECT COUNT(*) FROM company_procurement_attribute").fetchone()[0]
         cert_count = conn.execute("SELECT COUNT(*) FROM product_general_certification").fetchone()[0]
+        sm_count = conn.execute("SELECT COUNT(*) FROM shopping_mall_product").fetchone()[0]
+        sm_active = conn.execute("SELECT COUNT(*) FROM shopping_mall_product WHERE contract_status = 'active'").fetchone()[0]
         conn.close()
         return {
             "status": "ok",
@@ -951,7 +969,9 @@ def get_chatbot_health():
                 "policy_company_count": pol_count,
                 "mas_product_count": mas_count,
                 "procurement_attribute_count": attr_count,
-                "general_certification_count": cert_count
+                "general_certification_count": cert_count,
+                "shopping_mall_product_count": sm_count,
+                "active_shopping_mall_product_count": sm_active
             },
             "production_deployment": "HOLD"
         }
@@ -963,8 +983,8 @@ def get_chatbot_health():
 def get_chatbot_version():
     return {
         "service": "busan-procurement-monitoring-chatbot-api",
-        "api_version": "phase-6e-final-staging",
-        "schema_version": "chatbot_company_v6d2",
+        "api_version": "phase-6g-shopping-mall",
+        "schema_version": "chatbot_company_v6g",
         "production_deployment": "HOLD",
         "features": [
             "company_search",
@@ -976,7 +996,9 @@ def get_chatbot_version():
             "mas_product",
             "sme_competition_product",
             "procurement_attributes",
-            "general_certifications"
+            "general_certifications",
+            "shopping_mall_product",
+            "shopping_mall_contract_type"
         ]
     }
 
@@ -1627,6 +1649,7 @@ def get_chatbot_certified_list():
 # ==========================================
 
 MasContractStatusFilter = Literal["active_only", "include_unknown", "all"]
+ShoppingMallContractTypeFilter = Literal["all", "mas", "third_party_unit_price", "general_unit_price", "excellent_procurement", "unknown"]
 
 def _get_mas_status_filter_sql(status_filter: str) -> str:
     if status_filter == "all":
@@ -1871,6 +1894,247 @@ def get_chatbot_mas_list():
     except Exception:
         logger.exception("챗봇 API 오류: mas-list")
         return _build_chatbot_response([], error="MAS 목록 조회 실패")
+
+# ==========================================
+# Phase 6-G: 종합쇼핑몰 전용 API
+# ==========================================
+
+def _get_sm_type_filter_sql(contract_type_filter: str) -> str:
+    if contract_type_filter == "all":
+        return ""
+    return f" AND smp.shopping_mall_contract_type = '{contract_type_filter}' "
+
+def _get_sm_status_filter_sql(status_filter: str) -> str:
+    if status_filter == "all":
+        return ""
+    elif status_filter == "include_unknown":
+        return " AND smp.contract_status IN ('active', 'unknown') "
+    return " AND smp.contract_status = 'active' "
+
+@app.get("/api/chatbot/shopping-mall/search", tags=["챗봇 종합쇼핑몰"])
+def get_chatbot_sm_search(
+    product_name: Optional[str] = None,
+    detail_product_code: Optional[str] = None,
+    company_keyword: Optional[str] = None,
+    contract_type_filter: ShoppingMallContractTypeFilter = "all",
+    contract_status_filter: MasContractStatusFilter = "active_only",
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    is_busan_company: bool = True,
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    """
+    종합쇼핑몰 등록상품 종합 검색.
+    shopping_mall_product 기준 조회. contract_type_filter로 MAS/3자단가/일반단가/우수제품 구분.
+    주의: 계약상태 active는 전자구매 경로 확인 용도이며, 당장 구매 가능을 의미하지 않습니다.
+    """
+    try:
+        conn = _get_chatbot_db()
+        where_clauses = []
+        if is_busan_company:
+            where_clauses.append("v.is_busan_company = 1")
+        params = []
+
+        if product_name:
+            where_clauses.append("(smp.product_name LIKE ? OR smp.product_name_normalized LIKE ? OR smp.detail_product_name LIKE ?)")
+            params.extend([f"%{product_name}%", f"%{product_name}%", f"%{product_name}%"])
+        if detail_product_code:
+            where_clauses.append("smp.detail_product_code = ?")
+            params.append(detail_product_code)
+        if company_keyword:
+            where_clauses.append("(v.company_name LIKE ? OR v.company_id = ?)")
+            params.extend([f"%{company_keyword}%", company_keyword])
+
+        sm_type_sql = _get_sm_type_filter_sql(contract_type_filter)
+        sm_status_sql = _get_sm_status_filter_sql(contract_status_filter)
+        if sm_type_sql:
+            where_clauses.append(sm_type_sql.strip(" AND"))
+        if sm_status_sql:
+            where_clauses.append(sm_status_sql.strip(" AND"))
+
+        status_sql = _get_status_filter_sql(status_filter)
+        where_sql = " AND ".join([w for w in where_clauses if w])
+        if where_sql:
+            where_sql = "WHERE " + where_sql
+
+        query = f'''
+            SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
+            FROM chatbot_company_candidate_view v
+            JOIN company_identity i ON v.company_id = i.company_id
+            JOIN shopping_mall_product smp ON i.company_internal_id = smp.company_internal_id
+            LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
+            {where_sql} {status_sql}
+            GROUP BY v.company_id
+            ORDER BY v.company_id
+            LIMIT ? OFFSET ?
+        '''
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+
+        resp = _build_chatbot_response(rows, meta={
+            "query": {
+                "product_name": product_name,
+                "detail_product_code": detail_product_code,
+                "company_keyword": company_keyword,
+                "contract_type_filter": contract_type_filter,
+                "contract_status_filter": contract_status_filter,
+                "limit": limit,
+                "offset": offset
+            }
+        })
+
+        # contract_status_filter가 active_only가 아닐 때 shopping_mall_product_summary를 오버라이드
+        if contract_status_filter != "active_only" and resp["candidates"]:
+            cids = [c["company_id"] for c in resp["candidates"]]
+            conn = _get_chatbot_db()
+            placeholders = ",".join("?" * len(cids))
+            sm_q = f'''
+                SELECT i.company_id, smp.product_name, smp.detail_product_code, smp.shopping_mall_contract_type,
+                       smp.contract_status, smp.contract_end_date, smp.price_amount, smp.price_unit,
+                       smp.order_path_available, smp.source_name
+                FROM shopping_mall_product smp
+                JOIN company_identity i ON smp.company_internal_id = i.company_internal_id
+                WHERE i.company_id IN ({placeholders}) {_get_sm_type_filter_sql(contract_type_filter)} {_get_sm_status_filter_sql(contract_status_filter)}
+                ORDER BY smp.contract_end_date DESC
+            '''
+            sm_rows = conn.execute(sm_q, cids).fetchall()
+            conn.close()
+
+            sm_map = {}
+            for r in sm_rows:
+                cid = r["company_id"]
+                if cid not in sm_map:
+                    sm_map[cid] = []
+                sm_map[cid].append({
+                    "product_name": r["product_name"],
+                    "detail_product_code": r["detail_product_code"],
+                    "shopping_mall_contract_type": r["shopping_mall_contract_type"] if r["shopping_mall_contract_type"] in ("mas", "third_party_unit_price", "general_unit_price", "excellent_procurement", "unknown") else "unknown",
+                    "contract_status": r["contract_status"],
+                    "contract_end_date": r["contract_end_date"],
+                    "price_amount": float(r["price_amount"]) if r["price_amount"] is not None else None,
+                    "price_unit": r["price_unit"],
+                    "order_path_available": True if r["order_path_available"] else False,
+                    "source_name": r["source_name"]
+                })
+
+            for c in resp["candidates"]:
+                c["shopping_mall_product_summary"] = sm_map.get(c["company_id"], [])[:5]
+
+        return resp
+    except Exception:
+        logger.exception("챗봇 API 오류: shopping-mall-search")
+        return _build_chatbot_response([], error="종합쇼핑몰 제품 조회 실패")
+
+
+@app.get("/api/chatbot/shopping-mall/product-search", tags=["챗봇 종합쇼핑몰"])
+def get_chatbot_sm_product_search(
+    product_name: str,
+    detail_product_code: Optional[str] = None,
+    contract_type_filter: ShoppingMallContractTypeFilter = "all",
+    contract_status_filter: MasContractStatusFilter = "active_only",
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    """
+    종합쇼핑몰 등록상품 제품명 검색.
+    """
+    return get_chatbot_sm_search(
+        product_name=product_name,
+        detail_product_code=detail_product_code,
+        contract_type_filter=contract_type_filter,
+        contract_status_filter=contract_status_filter,
+        status_filter=status_filter,
+        limit=limit,
+        offset=offset
+    )
+
+
+@app.get("/api/chatbot/shopping-mall/supplier-search", tags=["챗봇 종합쇼핑몰"])
+def get_chatbot_sm_supplier_search(
+    company_keyword: Optional[str] = None,
+    is_busan_company: bool = True,
+    contract_type_filter: ShoppingMallContractTypeFilter = "all",
+    contract_status_filter: MasContractStatusFilter = "active_only",
+    status_filter: ChatbotStatusFilter = "exclude_closed",
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    """
+    종합쇼핑몰 공급업체 검색.
+    """
+    return get_chatbot_sm_search(
+        company_keyword=company_keyword,
+        is_busan_company=is_busan_company,
+        contract_type_filter=contract_type_filter,
+        contract_status_filter=contract_status_filter,
+        status_filter=status_filter,
+        limit=limit,
+        offset=offset
+    )
+
+
+@app.get("/api/chatbot/shopping-mall/list", tags=["챗봇 종합쇼핑몰"])
+def get_chatbot_sm_list(
+    contract_type_filter: ShoppingMallContractTypeFilter = "all"
+):
+    """
+    종합쇼핑몰 통계/집계 목록 (계약유형별 세부품명 단위).
+    """
+    try:
+        conn = _get_chatbot_db()
+        type_sql = _get_sm_type_filter_sql(contract_type_filter)
+        query = f'''
+            SELECT
+                smp.detail_product_code,
+                MAX(smp.product_name) as product_name,
+                smp.shopping_mall_contract_type,
+                COUNT(DISTINCT smp.company_internal_id) as supplier_count,
+                SUM(CASE WHEN smp.contract_status = 'active' THEN 1 ELSE 0 END) as active_contract_count,
+                SUM(CASE WHEN smp.contract_status = 'expired' THEN 1 ELSE 0 END) as expired_contract_count,
+                MAX(smp.source_refreshed_at) as refreshed_at
+            FROM shopping_mall_product smp
+            JOIN company_master m ON smp.company_internal_id = m.company_internal_id
+            WHERE m.is_busan_company = 1 {type_sql}
+            GROUP BY smp.detail_product_code, smp.shopping_mall_contract_type
+        '''
+        rows = conn.execute(query).fetchall()
+        conn.close()
+
+        candidates = []
+        latest = None
+        for r in rows:
+            sm_type = r["shopping_mall_contract_type"]
+            if sm_type not in ("mas", "third_party_unit_price", "general_unit_price", "excellent_procurement", "unknown"):
+                sm_type = "unknown"
+            candidates.append({
+                "detail_product_code": r["detail_product_code"],
+                "product_name": r["product_name"],
+                "shopping_mall_contract_type": sm_type,
+                "supplier_count": r["supplier_count"],
+                "active_contract_count": r["active_contract_count"],
+                "expired_contract_count": r["expired_contract_count"]
+            })
+            if r["refreshed_at"]:
+                if latest is None or r["refreshed_at"] > latest:
+                    latest = r["refreshed_at"]
+
+        return {
+            "meta": {
+                "source_refreshed_at": {"shopping_mall_product": latest} if latest else {},
+                "contract_type_filter": contract_type_filter
+            },
+            "candidates": candidates,
+            "company_source_status": "live_company_lookup",
+            "company_search_status": "success",
+            "company_cache_used": False,
+            "company_cache_mode": "live_only",
+            "error": None
+        }
+    except Exception:
+        logger.exception("챗봇 API 오류: shopping-mall-list")
+        return _build_chatbot_response([], error="종합쇼핑몰 목록 조회 실패")
 
 if __name__ == '__main__':
     import uvicorn

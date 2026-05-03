@@ -29,9 +29,18 @@ def get_internal_id_by_bizno(conn, bizno):
     res = cur.fetchone()
     return res[0] if res else None
 
-def fetch_mas_data(target_date_str=None):
+def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7, probe=False, dry_run=False, staging_write=False):
     if not SERVICE_KEY:
-        print("ERROR: SHOPPING_MALL_PRDCT_SERVICE_KEY is missing.")
+        print("ERROR: SHOPPING_MALL_PRDCT_SERVICE_KEY is not set.")
+        # source_manifest / etl_job_log에 failed 기록
+        try:
+            conn = sqlite3.connect(TARGET_DB)
+            log_etl(conn, 'mas_api_incremental', 'mas_api_incremental', 0, 0, status='failed', msg='serviceKey not configured')
+            log_etl(conn, 'shopping_mall_api_incremental', 'shopping_mall_api_incremental', 0, 0, status='failed', msg='serviceKey not configured')
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
         return
         
     conn = sqlite3.connect(TARGET_DB)
@@ -41,18 +50,18 @@ def fetch_mas_data(target_date_str=None):
     else:
         end_date = datetime.now()
         
-    start_date = end_date - timedelta(days=7)
+    start_date = end_date - timedelta(days=days)
     
     bgn_dt = start_date.strftime("%Y%m%d")
     end_dt = end_date.strftime("%Y%m%d")
     
-    print(f"Starting MAS API incremental fetch (chgDt) for period {bgn_dt} ~ {end_dt}")
+    mode_label = "[PROBE]" if probe else ("[DRY-RUN]" if dry_run else "[LIVE]")
+    print(f"{mode_label} Starting MAS API incremental fetch (chgDt) for period {bgn_dt} ~ {end_dt}")
+    print(f"  max_pages={max_pages}, num_of_rows={num_of_rows}, days={days}")
     
     url = "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/getMASCntrctPrdctInfoList"
     
     page = 1
-    max_pages = 100
-    num_of_rows = 100
     total_inserted = 0
     total_api_items = 0
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -61,6 +70,7 @@ def fetch_mas_data(target_date_str=None):
     status = 'success'
     error_msg = ""
     source_name = 'mas_api_incremental'
+    sm_source_name = 'shopping_mall_api_incremental'
     
     while page <= max_pages:
         params = {
@@ -72,11 +82,11 @@ def fetch_mas_data(target_date_str=None):
         }
         
         try:
-            print(f"Fetching page {page}...")
+            print(f"  Fetching page {page}...")
             resp = requests.get(url, params=params, timeout=60)
             if resp.status_code != 200:
-                print(f"API Error at page {page}: {resp.status_code}")
-                status = 'partial_success'
+                print(f"  API Error at page {page}: HTTP {resp.status_code}")
+                status = 'partial_success' if total_inserted > 0 else 'failed'
                 error_msg = f"HTTP {resp.status_code} at page {page}"
                 break
                 
@@ -84,10 +94,21 @@ def fetch_mas_data(target_date_str=None):
             res_code = root.findtext('.//resultCode')
             if res_code != '00':
                 res_msg = root.findtext('.//resultMsg')
-                print(f"API Business Error: {res_code} - {res_msg}")
-                status = 'partial_success'
+                print(f"  API Business Error: code={res_code}")
+                status = 'partial_success' if total_inserted > 0 else 'failed'
                 error_msg = f"API Code {res_code}: {res_msg}"
                 break
+            
+            # Probe mode: 첫 페이지 총 건수만 확인 후 종료
+            if probe:
+                total_count_node = root.findtext('.//totalCount')
+                total_count = int(total_count_node) if total_count_node else 0
+                items = root.findall('.//item')
+                print(f"  [PROBE] totalCount={total_count}, page1_items={len(items)}")
+                log_etl(conn, 'mas_api_probe', source_name, total_count, 0, status='success', msg=f'probe: totalCount={total_count}')
+                conn.commit()
+                conn.close()
+                return
                 
             items = root.findall('.//item')
             if not items:
@@ -126,6 +147,10 @@ def fetch_mas_data(target_date_str=None):
                     price_val = float(price)
                 except:
                     price_val = 0
+                
+                if dry_run:
+                    total_inserted += 1
+                    continue
                     
                 # Phase 6-G: shopping_mall_product (MAS API is always 'mas')
                 conn.execute("""
@@ -141,7 +166,7 @@ def fetch_mas_data(target_date_str=None):
                         contract_status=excluded.contract_status,
                         price_amount=excluded.price_amount,
                         source_refreshed_at=excluded.source_refreshed_at
-                """, (internal_id, p_name, p_name.replace(' ', ''), p_code, dp_name, dp_code, g2b_cat, cno_hash, c_start, c_end, c_status, price_val, unit, source_name, now_str))
+                """, (internal_id, p_name, p_name.replace(' ', ''), p_code, dp_name, dp_code, g2b_cat, cno_hash, c_start, c_end, c_status, price_val, unit, sm_source_name, now_str))
 
                 # ON CONFLICT for mas_product
                 conn.execute("""
@@ -191,22 +216,56 @@ def fetch_mas_data(target_date_str=None):
                     break
             
             page += 1
-            conn.commit()
+            if not dry_run:
+                conn.commit()
             
-        except Exception as e:
-            print(f"Exception during fetch: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"  Network error during fetch: type={type(e).__name__}")
             status = 'failed'
-            error_msg = str(e)
+            error_msg = f"Network error: {type(e).__name__}"
             break
-            
-    print(f"Completed MAS API sync. Items in API: {total_api_items}, Local Updates: {total_inserted}")
-    log_etl(conn, 'mas_api_incremental', source_name, total_api_items, total_inserted, status=status, msg=error_msg)
+        except ET.ParseError as e:
+            print(f"  XML parsing error at page {page}")
+            status = 'failed'
+            error_msg = f"XML parse error at page {page}"
+            break
+        except Exception as e:
+            print(f"  Exception during fetch: {type(e).__name__}")
+            status = 'failed'
+            error_msg = f"{type(e).__name__}: {str(e)[:100]}"
+            break
+    
+    if dry_run:
+        print(f"[DRY-RUN] Completed. Items in API: {total_api_items}, Would insert: {total_inserted}")
+    else:
+        print(f"Completed MAS API sync. Items in API: {total_api_items}, Local Updates: {total_inserted}")
+    
+    log_etl(conn, 'mas_api_incremental', source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=error_msg)
+    log_etl(conn, 'shopping_mall_api_incremental', sm_source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=error_msg)
+    conn.commit()
     conn.close()
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--target-date", help="YYYYMMDD", default=None)
+    parser = argparse.ArgumentParser(description="MAS/종합쇼핑몰 API 증분 수집")
+    parser.add_argument("--target-date", help="YYYYMMDD (기준 종료일)", default=None)
+    parser.add_argument("--probe", action="store_true", help="API 총 건수만 확인 후 종료 (데이터 미적재)")
+    parser.add_argument("--dry-run", action="store_true", help="API 호출하되 DB 미적재 (파싱만 수행)")
+    parser.add_argument("--staging-write", action="store_true", help="staging DB에 적재 (기본: staging_chatbot_company.db)")
+    parser.add_argument("--max-pages", type=int, default=100, help="최대 페이지 수 (기본: 100)")
+    parser.add_argument("--num-rows", type=int, default=100, help="페이지당 행 수 (기본: 100)")
+    parser.add_argument("--days", type=int, default=7, help="수집 기간 일수 (기본: 7)")
     args = parser.parse_args()
     
-    fetch_mas_data(args.target_date)
+    if args.staging_write:
+        TARGET_DB = os.environ.get("CHATBOT_DB", "staging_chatbot_company.db")
+    
+    fetch_mas_data(
+        target_date_str=args.target_date,
+        max_pages=args.max_pages,
+        num_of_rows=args.num_rows,
+        days=args.days,
+        probe=args.probe,
+        dry_run=args.dry_run,
+        staging_write=args.staging_write
+    )
