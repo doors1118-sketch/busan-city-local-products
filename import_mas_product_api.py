@@ -29,10 +29,85 @@ def get_internal_id_by_bizno(conn, bizno):
     res = cur.fetchone()
     return res[0] if res else None
 
+def load_label_map(conn):
+    """procurement_label_map 테이블에서 라벨 → 도메인/타입 매핑 로드"""
+    label_map = {}
+    try:
+        for row in conn.execute("SELECT raw_label, target_domain, target_type, is_candidate_type_promotable FROM procurement_label_map WHERE is_active=1"):
+            label_map[row[0]] = {'domain': row[1], 'type': row[2], 'promotable': row[3]}
+    except Exception:
+        pass  # 테이블이 없으면 빈 맵 반환
+    return label_map
+
+def parse_and_insert_labels(conn, cert_list_str, internal_id, p_name, p_name_norm, p_code, dp_code, label_map, source_name, now_str, counters):
+    """prodctCertList(물품인증유형목록) 파싱 → 조달속성/일반인증/인증제품 분류 적재"""
+    if not cert_list_str or cert_list_str == 'nan':
+        return
+    
+    for cert in cert_list_str.split(','):
+        c = cert.strip()
+        if not c:
+            continue
+        
+        mapping = label_map.get(c)
+        
+        if mapping:
+            domain = mapping['domain']
+            target_type = mapping['type']
+            
+            if domain == 'product_certification':
+                surr = hashlib.sha256(
+                    f"{source_name}|{c}|{internal_id}|{p_name_norm}|{dp_code}".encode('utf-8')
+                ).hexdigest()[:16]
+                
+                conn.execute("""
+                    INSERT OR IGNORE INTO certified_product (
+                        company_internal_id, certification_type, certification_type_label,
+                        certification_no_hash, product_name, product_name_normalized, 
+                        validity_status, source_name, source_refreshed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'unknown', ?, ?)
+                """, (internal_id, target_type, c, surr, p_name, p_name_norm, source_name, now_str))
+                counters['cert'] += 1
+                
+            elif domain == 'company_procurement_attribute':
+                conn.execute("""
+                    INSERT OR IGNORE INTO company_procurement_attribute (
+                        company_internal_id, attribute_type, attribute_label,
+                        product_name, product_code, detail_product_code,
+                        source_name, source_refreshed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (internal_id, target_type, c, p_name, p_code, dp_code, source_name, now_str))
+                counters['attr'] += 1
+                
+            elif domain == 'general_certification':
+                conn.execute("""
+                    INSERT OR IGNORE INTO product_general_certification (
+                        company_internal_id, raw_cert_label, normalized_cert_type,
+                        product_name, product_code, detail_product_code,
+                        source_name, source_refreshed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (internal_id, c, target_type, p_name, p_code, dp_code, source_name, now_str))
+                counters['general'] += 1
+                
+            elif domain == 'ignore':
+                pass
+                
+        else:
+            # 매핑 없음 -> review 큐
+            try:
+                conn.execute("""
+                    INSERT INTO procurement_label_mapping_review (
+                        raw_label, product_name, product_code, detail_product_code,
+                        company_internal_id, source_name, reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (c, p_name, p_code, dp_code, internal_id, source_name, 'unmapped_api'))
+                counters['review'] += 1
+            except Exception:
+                pass
+
 def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7, probe=False, dry_run=False, staging_write=False):
     if not SERVICE_KEY:
         print("ERROR: SHOPPING_MALL_PRDCT_SERVICE_KEY is not set.")
-        # source_manifest / etl_job_log에 failed 기록
         try:
             conn = sqlite3.connect(TARGET_DB)
             log_etl(conn, 'mas_api_incremental', 'mas_api_incremental', 0, 0, status='failed', msg='serviceKey not configured')
@@ -44,6 +119,11 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
         return
         
     conn = sqlite3.connect(TARGET_DB)
+    
+    # 라벨 매핑 로드
+    label_map = load_label_map(conn)
+    label_count = len(label_map)
+    print(f"  procurement_label_map loaded: {label_count} entries")
     
     if target_date_str:
         end_date = datetime.strptime(target_date_str, "%Y%m%d")
@@ -71,6 +151,9 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
     error_msg = ""
     source_name = 'mas_api_incremental'
     sm_source_name = 'shopping_mall_api_incremental'
+    
+    # 라벨 파싱 카운터
+    label_counters = {'cert': 0, 'attr': 0, 'general': 0, 'review': 0}
     
     while page <= max_pages:
         params = {
@@ -104,8 +187,14 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
                 total_count_node = root.findtext('.//totalCount')
                 total_count = int(total_count_node) if total_count_node else 0
                 items = root.findall('.//item')
-                print(f"  [PROBE] totalCount={total_count}, page1_items={len(items)}")
-                log_etl(conn, 'mas_api_probe', source_name, total_count, 0, status='success', msg=f'probe: totalCount={total_count}')
+                has_cert_list = False
+                for item in items:
+                    cert_list = item.findtext('prodctCertList', '')
+                    if cert_list:
+                        has_cert_list = True
+                        break
+                print(f"  [PROBE] totalCount={total_count}, page1_items={len(items)}, prodctCertList={'있음' if has_cert_list else '없음'}, label_map={label_count}건")
+                log_etl(conn, 'mas_api_probe', source_name, total_count, 0, status='success', msg=f'probe: totalCount={total_count}, label_map={label_count}')
                 conn.commit()
                 conn.close()
                 return
@@ -116,29 +205,32 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
                 
             for item in items:
                 total_api_items += 1
-                bizno = item.findtext('bizrno')
+                bizno = item.findtext('bizrno') or item.findtext('cntrctCorpNo')
                 if not bizno: continue
                 
                 internal_id = get_internal_id_by_bizno(conn, bizno)
                 if not internal_id: continue 
                 
-                contract_no = item.findtext('cntrctNo', '')
+                contract_no = item.findtext('cntrctNo') or item.findtext('shopngCntrctNo', '')
                 cno_hash = hashlib.sha256(contract_no.encode('utf-8')).hexdigest()[:16]
                 
                 p_name = item.findtext('prdctClsfcNoNm', '')
                 p_code = item.findtext('prdctClsfcNo', '')
-                dp_name = item.findtext('dtlPrdctClsfcNoNm', '')
-                dp_code = item.findtext('dtlPrdctClsfcNo', '')
-                g2b_cat = item.findtext('shoppingMallCtgry', '') 
-                price = item.findtext('prdctUprc', '0')
-                unit = item.findtext('unitNm', '')
+                dp_name = item.findtext('dtlPrdctClsfcNoNm', '') or item.findtext('dtilPrdctClsfcNo', '')
+                dp_code = item.findtext('dtlPrdctClsfcNo', '') or item.findtext('dtilPrdctClsfcNo', '')
+                g2b_cat = item.findtext('shoppingMallCtgry', '') or item.findtext('prdctLrgclsfcCd', '')
+                price = item.findtext('prdctUprc') or item.findtext('cntrctPrceAmt', '0')
+                unit = item.findtext('unitNm') or item.findtext('prdctUnit', '')
                 
-                c_start = item.findtext('cntrctBgnDt', '')
-                c_end = item.findtext('cntrctEndDt', '')
+                c_start = item.findtext('cntrctBgnDt') or item.findtext('cntrctBgnDate', '')
+                c_end = item.findtext('cntrctEndDt') or item.findtext('cntrctEndDate', '')
+                
+                p_name_norm = p_name.replace(' ', '').lower() if p_name else ''
                 
                 c_status = 'unknown'
                 if c_end:
-                    if current_date <= c_end:
+                    c_end_clean = c_end.replace('-', '')[:8]
+                    if current_date <= c_end_clean:
                         c_status = 'active'
                     else:
                         c_status = 'expired'
@@ -166,7 +258,7 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
                         contract_status=excluded.contract_status,
                         price_amount=excluded.price_amount,
                         source_refreshed_at=excluded.source_refreshed_at
-                """, (internal_id, p_name, p_name.replace(' ', ''), p_code, dp_name, dp_code, g2b_cat, cno_hash, c_start, c_end, c_status, price_val, unit, sm_source_name, now_str))
+                """, (internal_id, p_name, p_name_norm, p_code, dp_name, dp_code, g2b_cat, cno_hash, c_start, c_end, c_status, price_val, unit, sm_source_name, now_str))
 
                 # ON CONFLICT for mas_product
                 conn.execute("""
@@ -180,12 +272,12 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
                         contract_status=excluded.contract_status,
                         price_amount=excluded.price_amount,
                         source_refreshed_at=excluded.source_refreshed_at
-                """, (internal_id, p_name, p_name.replace(' ', ''), p_code, dp_name, dp_code, g2b_cat, cno_hash, c_status, price_val, unit, source_name, now_str))
+                """, (internal_id, p_name, p_name_norm, p_code, dp_name, dp_code, g2b_cat, cno_hash, c_status, price_val, unit, source_name, now_str))
                 
                 mp_id = conn.execute("""
                     SELECT mas_product_id FROM mas_product 
                     WHERE company_internal_id=? AND contract_no_hash=? AND product_name_normalized=? AND detail_product_code=? AND source_name=?
-                """, (internal_id, cno_hash, p_name.replace(' ', ''), dp_code, source_name)).fetchone()[0]
+                """, (internal_id, cno_hash, p_name_norm, dp_code, source_name)).fetchone()[0]
                 
                 # ON CONFLICT for mas_contract
                 conn.execute("""
@@ -206,6 +298,15 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
                     ON CONFLICT(mas_product_id, source_name)
                     DO UPDATE SET price_amount=excluded.price_amount, source_refreshed_at=excluded.source_refreshed_at
                 """, (mp_id, price_val, unit, source_name, now_str))
+                
+                # Phase 6-H: 물품인증유형목록(prodctCertList) 라벨 파싱
+                cert_list_str = item.findtext('prodctCertList', '')
+                if cert_list_str and label_map:
+                    parse_and_insert_labels(
+                        conn, cert_list_str, internal_id,
+                        p_name, p_name_norm, p_code, dp_code,
+                        label_map, source_name, now_str, label_counters
+                    )
                 
                 total_inserted += 1
                 
@@ -238,16 +339,20 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
     if dry_run:
         print(f"[DRY-RUN] Completed. Items in API: {total_api_items}, Would insert: {total_inserted}")
     else:
-        print(f"Completed MAS API sync. Items in API: {total_api_items}, Local Updates: {total_inserted}")
+        print(f"Completed MAS API sync. Items: {total_api_items}, Updates: {total_inserted}")
+        print(f"  Label parsing: cert={label_counters['cert']}, attr={label_counters['attr']}, general={label_counters['general']}, review={label_counters['review']}")
     
-    log_etl(conn, 'mas_api_incremental', source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=error_msg)
-    log_etl(conn, 'shopping_mall_api_incremental', sm_source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=error_msg)
+    label_msg = f"cert={label_counters['cert']},attr={label_counters['attr']},general={label_counters['general']}"
+    full_msg = f"{error_msg} | labels: {label_msg}" if error_msg else f"labels: {label_msg}"
+    
+    log_etl(conn, 'mas_api_incremental', source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=full_msg)
+    log_etl(conn, 'shopping_mall_api_incremental', sm_source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=full_msg)
     conn.commit()
     conn.close()
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="MAS/종합쇼핑몰 API 증분 수집")
+    parser = argparse.ArgumentParser(description="MAS/종합쇼핑몰 API 증분 수집 + 물품인증유형 라벨 파싱")
     parser.add_argument("--target-date", help="YYYYMMDD (기준 종료일)", default=None)
     parser.add_argument("--probe", action="store_true", help="API 총 건수만 확인 후 종료 (데이터 미적재)")
     parser.add_argument("--dry-run", action="store_true", help="API 호출하되 DB 미적재 (파싱만 수행)")

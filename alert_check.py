@@ -501,6 +501,67 @@ def check_pipeline_sync():
     return alerts
 
 
+def check_chatbot_pipeline_sync():
+    """챗봇 DB 파이프라인 수집 실패 감지: chatbot_company.db의 etl_job_log 테이블 확인"""
+    alerts = []
+    chatbot_db = 'chatbot_company.db'
+    if not os.path.exists(chatbot_db):
+        return alerts
+        
+    try:
+        conn = sqlite3.connect(chatbot_db)
+        
+        # 오늘 날짜
+        today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+        
+        # 필수로 실행되어야 하는 핵심 작업 목록
+        essential_jobs = [
+            'bootstrap_master_data',
+            'mas_api_incremental',
+            'certified_product_api_incremental'
+        ]
+        
+        for job in essential_jobs:
+            # 가장 최근 로그 조회 (오늘 발생한 에러인지 우선 확인)
+            row = conn.execute("""
+                SELECT status, error_message, started_at 
+                FROM etl_job_log 
+                WHERE job_name LIKE ? 
+                ORDER BY started_at DESC LIMIT 1
+            """, (f"%{job}%",)).fetchone()
+            
+            if not row:
+                # 로그가 아예 없으면 (아직 실행된 적 없음)
+                msg = f"⚠️ [주의] 챗봇 DB 적재 누락: {job} 실행 이력 없음"
+                alerts.append(('WARNING', msg))
+                print(f"  {msg}")
+                continue
+                
+            status, err_msg, started_at = row
+            
+            # 오늘 실행되었는지 확인
+            is_today = started_at.startswith(today_str)
+            
+            if is_today and status == 'failed':
+                msg = f"🚨 [경보] 챗봇 DB 적재 실패: {job} (사유: {err_msg})"
+                alerts.append(('CRITICAL', msg))
+                print(f"  {msg}")
+            elif not is_today:
+                msg = f"🚨 [경보] 챗봇 DB 적재 지연: {job} 오늘 미실행 (최근: {started_at})"
+                alerts.append(('CRITICAL', msg))
+                print(f"  {msg}")
+            else:
+                print(f"  ✅ 정상: 챗봇 DB 적재 {job} 완료 ({started_at})")
+                
+        conn.close()
+    except Exception as e:
+        msg = f"⚠️ [주의] 챗봇 수집 상태 확인 오류: {e}"
+        alerts.append(('WARNING', msg))
+        print(f"  {msg}")
+        
+    return alerts
+
+
 def run_alert_check():
     """경보 체크 메인 함수"""
     print("\n==================================================")
@@ -522,6 +583,9 @@ def run_alert_check():
     print(f"  {'─'*46}")
     sync_alerts = check_pipeline_sync()
     alerts.extend(sync_alerts)
+    
+    chatbot_alerts = check_chatbot_pipeline_sync()
+    alerts.extend(chatbot_alerts)
 
     # ══════════════════════════════════════════════════════
     # Part A: 캐시 비교 (사후 분석)

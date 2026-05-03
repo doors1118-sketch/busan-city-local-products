@@ -26,7 +26,7 @@ def run_batch_sync(dry_run=False, probe=False, limit=None):
     """
     import nts_business_status_client
 
-    service_key = os.environ.get("NTS_SERVICE_KEY") or os.environ.get("SERVICE_KEY")
+    service_key = os.environ.get("NTS_SERVICE_KEY") or os.environ.get("SERVICE_KEY") or os.environ.get("SHOPPING_MALL_PRDCT_SERVICE_KEY")
     if not service_key:
         logger.error("NTS_SERVICE_KEY 또는 SERVICE_KEY 환경변수가 설정되지 않았습니다.")
         return False
@@ -51,7 +51,7 @@ def run_batch_sync(dry_run=False, probe=False, limit=None):
         LEFT JOIN company_business_status cbs ON m.company_internal_id = cbs.company_internal_id
         WHERE m.is_busan_company = 1
           AND i.canonical_business_no IS NOT NULL
-          AND NOT (IFNULL(cbs.business_status, '') = 'closed' AND IFNULL(cbs.business_status_freshness, '') = 'fresh')
+          AND IFNULL(cbs.business_status, '') != 'closed'
     """).fetchall()
 
     bno_pairs = [(row['company_internal_id'], row['canonical_business_no']) for row in rows]
