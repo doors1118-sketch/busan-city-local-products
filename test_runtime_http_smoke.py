@@ -59,8 +59,13 @@ def get_samples():
     comp = cur.fetchone()
     company_id = comp[0] if comp else "TEST_COMP_ID"
     
+    # Phase 6-G: shopping_mall_product 샘플링
+    cur.execute("SELECT product_name FROM shopping_mall_product WHERE product_name IS NOT NULL AND product_name != '' LIMIT 1 OFFSET 20")
+    sm_prod = cur.fetchone()
+    sm_product_name = sm_prod[0] if sm_prod else "컴퓨터"
+    
     conn.close()
-    return product_name, license_name, policy_subtype, company_id
+    return product_name, license_name, policy_subtype, company_id, sm_product_name
 
 def test_endpoint(url, must_be_non_empty=False):
     print(f"\n[TEST] {url}")
@@ -158,7 +163,7 @@ def test_endpoint(url, must_be_non_empty=False):
         print(f"  ❌ FAIL: Exception {e}")
         return False
 
-def test_shopping_mall_endpoints():
+def test_shopping_mall_endpoints(sm_product_name="컴퓨터"):
     """Phase 6-G 종합쇼핑몰 전용 엔드포인트 검증"""
     print("\n=== Phase 6-G Shopping Mall Endpoint Tests ===")
     all_ok = True
@@ -198,11 +203,14 @@ def test_shopping_mall_endpoints():
                 
                 # contract_no / contract_no_hash 미노출 확인
                 c_text = json.dumps(c, ensure_ascii=False)
-                if '"contract_no"' in c_text.replace('"contract_no_hash"', ''):
-                    # contract_no_hash도 허용 안됨
-                    pass
+                # contract_no_hash 포함 시 FAIL
                 if "contract_no_hash" in c_text:
                     print(f"  ❌ FAIL: contract_no_hash exposed in candidate")
+                    all_ok = False
+                # contract_no 단독 키 포함 시 FAIL (contract_no_hash 제외 후 검사)
+                c_text_no_hash = c_text.replace('contract_no_hash', '')
+                if '"contract_no"' in c_text_no_hash:
+                    print(f"  ❌ FAIL: contract_no exposed in candidate")
                     all_ok = False
             
             # shopping_mall_product_summary non-empty 확인 (전체 중 1건 이상)
@@ -224,10 +232,10 @@ def test_shopping_mall_endpoints():
         print(f"  ❌ FAIL: Exception {e}")
         all_ok = False
     
-    # 2. /shopping-mall/product-search
-    print("\n[TEST] /shopping-mall/product-search")
+    # 2. /shopping-mall/product-search (DB 샘플링 키워드 사용)
+    print(f"\n[TEST] /shopping-mall/product-search (keyword={sm_product_name})")
     try:
-        resp = requests.get(f"{BASE_URL}/shopping-mall/product-search?product_name=%EC%BB%B4%ED%93%A8%ED%84%B0", timeout=5)
+        resp = requests.get(f"{BASE_URL}/shopping-mall/product-search?product_name={urllib.parse.quote(sm_product_name)}", timeout=5)
         if resp.status_code != 200:
             print(f"  ❌ FAIL: HTTP {resp.status_code}")
             all_ok = False
@@ -368,12 +376,13 @@ def test_concurrency(url, concurrency=5):
         return True
 
 def main():
-    product_name, license_name, policy_subtype, company_id = get_samples()
+    product_name, license_name, policy_subtype, company_id, sm_product_name = get_samples()
     print(f"=== Extracted Samples ===")
     print(f"product_name: {product_name}")
     print(f"license_name: {license_name}")
     print(f"policy_subtype: {policy_subtype}")
-    print(f"company_id: {company_id}\n")
+    print(f"company_id: {company_id}")
+    print(f"sm_product_name: {sm_product_name}\n")
 
     endpoints = [
         ("/health", False),
@@ -403,7 +412,7 @@ def main():
         all_passed = False
 
     # Phase 6-G: shopping-mall endpoints
-    if not test_shopping_mall_endpoints():
+    if not test_shopping_mall_endpoints(sm_product_name):
         all_passed = False
 
     print("\n=== Performance Tests ===")
