@@ -1267,6 +1267,41 @@ def sync_one_day(target_date):
                 if updated: print(f"   - {tbl}: {updated}건 파싱")
         # [Step 3.6] 용역 현장 매칭
         update_servc_site_matching()
+        # [Step 3.65] 공사 종합/전문 자동 매칭 (공고 mainCnsttyNm → 계약 cnstwkTypeLrg)
+        try:
+            cur = conn.cursor()
+            # cnstwkTypeLrg가 비어있고 ntceNo가 있는 공사 계약 조회
+            empty_rows = cur.execute("""
+                SELECT c.rowid, REPLACE(c.ntceNo, '-', '') as ntce_clean
+                FROM cnstwk_cntrct c
+                WHERE (c.cnstwkTypeLrg IS NULL OR c.cnstwkTypeLrg = '')
+                AND c.ntceNo IS NOT NULL AND c.ntceNo != ''
+            """).fetchall()
+            if empty_rows:
+                # bid_notices_price에서 mainCnsttyNm 가져오기
+                matched = 0
+                for rowid, ntce_clean in empty_rows:
+                    if not ntce_clean:
+                        continue
+                    row_p = conn.execute("""
+                        SELECT mainCnsttyNm FROM bid_notices_price
+                        WHERE REPLACE(bidNtceNo, '-', '') = ?
+                        AND mainCnsttyNm IS NOT NULL AND mainCnsttyNm != ''
+                        LIMIT 1
+                    """, (ntce_clean,)).fetchone()
+                    if row_p and row_p[0]:
+                        main_cnstty = row_p[0].strip()
+                        # mainCnsttyNm을 cnstwkTypeDtl에 저장 (키워드 분류에 활용)
+                        conn.execute(
+                            "UPDATE cnstwk_cntrct SET cnstwkTypeDtl = ? WHERE rowid = ?",
+                            (main_cnstty, rowid)
+                        )
+                        matched += 1
+                conn.commit()
+                if matched:
+                    print(f"   - 공사 종합/전문 매칭: {matched}/{len(empty_rows)}건 (공고 mainCnsttyNm → cnstwkTypeDtl)")
+        except Exception as e:
+            print(f"   [경고] 공사 종합/전문 매칭 실패 (비핵심): {e}")
         # [Step 3.7] 사전규격 수집
         try:
             sync_prespec(target_date, conn_path=DB_PATH)

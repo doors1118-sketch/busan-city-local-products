@@ -184,9 +184,11 @@ def build_cache():
     
     # --- 공사 (현장 필터 포함) ---
     print("  [공사] 계산 중...")
-    df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cnstrtsiteRgnNm
-        FROM cnstwk_cntrct""", conn)
+    cnstwk_cols = [c[1] for c in conn.execute("PRAGMA table_info(cnstwk_cntrct)").fetchall()]
+    cnstwk_site_col = ', cnstrtsiteRgnNm' if 'cnstrtsiteRgnNm' in cnstwk_cols else ", '' as cnstrtsiteRgnNm"
+    df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
+        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo{cnstwk_site_col}
+        FROM cnstwk_cntrct WHERE cntrctCnclsDate >= '2026-01-01'""", conn)
     df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     n_before = len(df); df = dedup_by_dcsn(df)
     print(f"    차수 중복제거: {n_before - len(df)}건")
@@ -223,7 +225,7 @@ def build_cache():
         extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
         df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
             corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo{extra_col}
-            FROM [{tbl}]""", conn)
+            FROM [{tbl}] WHERE cntrctCnclsDate >= '2026-01-01'""", conn)
         df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         n_before = len(df); df = dedup_by_dcsn(df)
         if n_before > len(df): print(f"    차수 중복제거: {n_before - len(df)}건")
@@ -339,7 +341,8 @@ def build_cache():
     print("  [쇼핑몰] 계산 중...")
     df = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
         prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
-        cnstwkMtrlDrctPurchsObjYn, dlvrReqNm FROM shopping_cntrct""", conn)
+        cnstwkMtrlDrctPurchsObjYn, dlvrReqNm FROM shopping_cntrct
+        WHERE dlvrReqRcptDate >= '2026-01-01'""", conn)
     df['dlvrReqChgOrd'] = pd.to_numeric(df['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
@@ -585,7 +588,7 @@ def build_cache():
         dcsn_col = ', dcsnCntrctNo' if 'dcsnCntrctNo' in cols_t else ''
         df_l = pd.read_sql(f"""SELECT untyCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
             corpList, ntceNo, dminsttList, {nm_col} as cntrctNm, cntrctInsttOfclTelNo, dminsttCd{extra_col}{dcsn_col}
-            FROM [{tbl}]""", conn2)
+            FROM [{tbl}] WHERE cntrctCnclsDate >= '2026-01-01'""", conn2)
         df_l.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         df_l = dedup_by_dcsn(df_l)
         if tbl == 'servc_cntrct':
@@ -616,7 +619,7 @@ def build_cache():
             })
 
     # 쇼핑몰 유출계약
-    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn FROM shopping_cntrct", conn2)
+    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn FROM shopping_cntrct WHERE dlvrReqRcptDate >= '2026-01-01'", conn2)
     df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df_shop.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
@@ -747,19 +750,24 @@ def build_cache():
     for _r in conn.execute("SELECT REPLACE(bidNtceNo,'-',''), cnstrtsiteRgnNm FROM bid_notices_price WHERE cnstrtsiteRgnNm IS NOT NULL").fetchall():
         if _r[0]: site_map[_r[0]] = str(_r[1] or '')
 
+    # 공고 주공종명 lookup (공사 종합/전문 구분용)
+    cnstty_map = {}
+    for _r in conn.execute("SELECT REPLACE(bidNtceNo,'-',''), mainCnsttyNm FROM bid_notices_price WHERE mainCnsttyNm IS NOT NULL AND mainCnsttyNm != ''").fetchall():
+        if _r[0]: cnstty_map[_r[0]] = str(_r[1])
+
     prot_contract_queries = {
         'cnstwk_cntrct': ('공사', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
             dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
             cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
             cnstwkTypeLrg, cnstwkTypeDtl, cntrctCnclsDate
             FROM [cnstwk_cntrct]
-            WHERE cntrctCnclsMthdNm != '수의계약'"""),
+            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm != '수의계약'"""),
         'servc_cntrct': ('용역', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
             dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
             cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
             cntrctCnclsDate
             FROM [servc_cntrct]
-            WHERE cntrctCnclsMthdNm != '수의계약'"""),
+            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm != '수의계약'"""),
     }
 
     for tbl, (sector, query) in prot_contract_queries.items():
@@ -808,15 +816,29 @@ def build_cache():
                             bypassed = True
                     if not bypassed:
                         continue
-                # 공사 세분류: cnstwkTypeLrg → mainCnsttyNm → 계약명 순으로 확인
+                # 공사 세분류: cnstwkTypeLrg 값 → 키워드 매칭 → 계약명 순으로 확인
+                # ① cnstwkTypeLrg 값 자체로 1차 분류 (가장 정확)
                 type_lrg = str(row.get('cnstwkTypeLrg', '') or '').strip()
                 type_dtl = str(row.get('cnstwkTypeDtl', '') or '').strip()
                 main_type = str(row.get('mainCnsttyNm', '') or '').strip()
-                if type_lrg and any(k in type_lrg for k in SPECIALTY_TYPES): sub = '전문공사'
-                elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
-                elif main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
-                elif any(k in name for k in SPECIALTY_TYPES): sub = '전문공사'
-                else: sub = '종합공사'
+                if type_lrg:
+                    if type_lrg.startswith('전문공사') or type_lrg in ('시설물유지관리공사', '개별법령'):
+                        sub = '전문공사'
+                    elif type_lrg.startswith('종합공사') or type_lrg.startswith('종합건설'):
+                        sub = '종합공사'
+                    # LRG 값이 있지만 위에 해당 안 되면 키워드 fallback
+                    elif any(k in type_lrg for k in SPECIALTY_TYPES): sub = '전문공사'
+                    elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
+                    else: sub = '종합공사'
+                # ② cnstwkTypeLrg 없으면 공고 주공종명 → DTL → 계약명 키워드
+                else:
+                    # 공고 bid_notices_price에서 mainCnsttyNm 조회
+                    bid_cnstty = cnstty_map.get(ntce_clean, '') if ntce_clean else ''
+                    if bid_cnstty and any(k in bid_cnstty for k in SPECIALTY_TYPES): sub = '전문공사'
+                    elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
+                    elif main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
+                    elif any(k in name for k in SPECIALTY_TYPES): sub = '전문공사'
+                    else: sub = '종합공사'
             else:
                 # 용역: 타지역 키워드 필터
                 lrg = inst_dict.get(matched_cd, {}).get('cate_lrg', '')
@@ -922,17 +944,17 @@ def build_cache():
         'cnstwk_cntrct': ('공사', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cnstwkNm as cntrctNm,
             cntrctInsttOfclTelNo, ntceNo FROM [cnstwk_cntrct]
-            WHERE cntrctCnclsMthdNm='수의계약'
+            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
         'servc_cntrct': ('용역', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
             cntrctInsttOfclTelNo, ntceNo FROM [servc_cntrct]
-            WHERE cntrctCnclsMthdNm='수의계약'
+            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
         'thng_cntrct': ('물품', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
             cntrctInsttOfclTelNo, ntceNo FROM [thng_cntrct]
-            WHERE cntrctCnclsMthdNm='수의계약'
+            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
     }
     suui_stats = defaultdict(lambda: {'total': 0, 'busan': 0, 'non_busan': 0, 'non_busan_amt': 0})
