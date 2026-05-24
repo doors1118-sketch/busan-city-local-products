@@ -89,6 +89,9 @@ def send_sms(message):
 
 def check_api_health():
     """조달청 API 서비스 상태 확인. 정상이면 True, 점검/장애 시 False."""
+    if not SERVICE_KEY:
+        print(f"   🔑 SERVICE_KEY가 비어있습니다! .env 파일을 확인하세요.")
+        return False
     test_url = (f"https://apis.data.go.kr/1230000/ao/UsrInfoService02/getDminsttInfo02"
                 f"?serviceKey={SERVICE_KEY}&inqryDiv=1"
                 f"&inqryBgnDt=202601010000&inqryEndDt=202601010100"
