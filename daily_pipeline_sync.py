@@ -21,6 +21,16 @@ ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
 
+# .env 파일 자동 로딩 (크론/수동 실행 시 환경변수 미전달 방어)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+if os.path.exists(_env_path):
+    with open(_env_path, encoding='utf-8') as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 SERVICE_KEY = os.environ.get('SERVICE_KEY', '')
 DB_PATH = 'procurement_contracts.db'
 AGENCY_DB_PATH = 'busan_agencies_master.db'
