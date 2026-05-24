@@ -80,7 +80,7 @@ def send_sms(message):
 def check_api_health():
     """조달청 API 서비스 상태 확인. 정상이면 True, 점검/장애 시 False."""
     test_url = (f"https://apis.data.go.kr/1230000/ao/UsrInfoService02/getDminsttInfo02"
-                f"?serviceKey={SERVICE_KEY}&inqryDiv=2"
+                f"?serviceKey={SERVICE_KEY}&inqryDiv=1"
                 f"&inqryBgnDt=202601010000&inqryEndDt=202601010100"
                 f"&numOfRows=1&pageNo=1&type=json")
     for attempt in range(3):
@@ -129,7 +129,7 @@ def update_agency_master_daily(target_date):
     api_url = f"https://apis.data.go.kr/1230000/ao/UsrInfoService02/getDminsttInfo02"
     
     def fetch_agency(page_no):
-        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=2&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
+        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
         retry = 0
         while retry < 3:
             try:
@@ -228,7 +228,7 @@ def update_company_master_daily(target_date):
     end_dt = f"{target_date}2359"
 
     def fetch_company_page(page_no):
-        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=2&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
+        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
         retry = 0
         while retry < 3:
             try:
@@ -314,7 +314,7 @@ def update_company_industry_daily(target_date):
     end_dt = f"{target_date}2359"
 
     def fetch_industry_page(page_no):
-        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=2&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
+        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
         retry = 0
         while retry < 3:
             try:
