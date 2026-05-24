@@ -113,6 +113,10 @@ def auto_classify(name):
     if '어린이집' in name:
         return '어린이집', '민간 및 기타기관', '보육기관', '', ''
     
+    # 7b. 민간 조경/건설업체
+    if '종합조경' in name:
+        return '민간기업', '민간 및 기타기관', '민간기관', '', ''
+    
     # 8. 기존 분류에서 기관명 4글자 매칭으로 추론
     for prefix_len in [8, 6, 4]:
         if len(name) >= prefix_len:

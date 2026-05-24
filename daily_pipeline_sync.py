@@ -1291,26 +1291,30 @@ def sync_one_day(target_date):
                 AND c.ntceNo IS NOT NULL AND c.ntceNo != ''
             """).fetchall()
             if empty_rows:
-                # bid_notices_price에서 mainCnsttyNm 가져오기
+                # bid_notices_price의 mainCnsttyNm 맵 로드 (속도 최적화: 22만 건 해시맵 단일 로딩)
+                rows_p = conn.execute("""
+                    SELECT REPLACE(bidNtceNo, '-', '') as clean_no, mainCnsttyNm
+                    FROM bid_notices_price
+                    WHERE mainCnsttyNm IS NOT NULL AND mainCnsttyNm != ''
+                """).fetchall()
+                price_map = {r[0]: r[1].strip() for r in rows_p if r[0]}
+
                 matched = 0
+                updates = []
                 for rowid, ntce_clean in empty_rows:
                     if not ntce_clean:
                         continue
-                    row_p = conn.execute("""
-                        SELECT mainCnsttyNm FROM bid_notices_price
-                        WHERE REPLACE(bidNtceNo, '-', '') = ?
-                        AND mainCnsttyNm IS NOT NULL AND mainCnsttyNm != ''
-                        LIMIT 1
-                    """, (ntce_clean,)).fetchone()
-                    if row_p and row_p[0]:
-                        main_cnstty = row_p[0].strip()
-                        # mainCnsttyNm을 cnstwkTypeDtl에 저장 (키워드 분류에 활용)
-                        conn.execute(
-                            "UPDATE cnstwk_cntrct SET cnstwkTypeDtl = ? WHERE rowid = ?",
-                            (main_cnstty, rowid)
-                        )
+                    main_cnstty = price_map.get(ntce_clean)
+                    if main_cnstty:
+                        updates.append((main_cnstty, rowid))
                         matched += 1
-                conn.commit()
+                
+                if updates:
+                    conn.executemany(
+                        "UPDATE cnstwk_cntrct SET cnstwkTypeDtl = ? WHERE rowid = ?",
+                        updates
+                    )
+                    conn.commit()
                 if matched:
                     print(f"   - 공사 종합/전문 매칭: {matched}/{len(empty_rows)}건 (공고 mainCnsttyNm → cnstwkTypeDtl)")
         except Exception as e:

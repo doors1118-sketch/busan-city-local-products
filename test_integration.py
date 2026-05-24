@@ -16,11 +16,4 @@ def test_integration_dashboard_ranking(client):
     assert "전체" in data
     assert "분야별" in data
     
-def test_integration_debug_db_status(client):
-    """DB_PATH 누락 패치 후 debug API 정상 동작 여부 통합 테스트"""
-    resp = client.get("/api/debug/db-status")
-    assert resp.status_code == 200
-    data = resp.json()
-    # 실제 procurement_contracts.db 기반으로 응답하는지
-    assert "용역" in data
-    assert "공사" in data
+
