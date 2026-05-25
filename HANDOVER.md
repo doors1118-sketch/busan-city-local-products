@@ -407,10 +407,23 @@ systemctl restart busan-api          # 재시작
 ### 디스크 부족 시
 ```bash
 # DB 백업 파일 정리
-ls -la /opt/busan/backup/
+ls -la /opt/busan/backups/
 # 오래된 로그 삭제
 find /opt/busan/sync_log -mtime +30 -delete
 ```
+
+### DB 백업 실패 및 NCP Object Storage 연동 실패 시
+매일 새벽 3시 배치(`daily_pipeline_sync.py`)의 마지막 단계 혹은 수동 백업 시 S3 업로드(`InvalidAccessKeyId` 등) 실패가 발생한다면, 실서버의 `.env` 파일에 네이버클라우드 API 인증 키가 누락되었거나 만료된 상태입니다.
+
+1. **로컬 백업 상태 확인:** S3 전송이 실패하더라도 로컬 압축 파일은 `/opt/busan/backups/`에 정상적으로 생성 및 7일간 유지됩니다.
+2. **NCP 인증키 재등록:**
+   * 네이버클라우드 포털 마이페이지 → 계정 관리 → 인증키 관리에서 **Access Key ID**와 **Secret Key**를 발급/조회합니다.
+   * `/opt/busan/.env` 파일에 다음 환경변수를 추가하여 저장합니다:
+     ```bash
+     NCP_ACCESS_KEY=발급받은_Access_Key_ID
+     NCP_SECRET_KEY=발급받은_Secret_Key
+     ```
+   * 추가 후 백업 수동 실행 테스트: `cd /opt/busan && . .env && python3 backup_db.py`
 
 ---
 
