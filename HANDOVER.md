@@ -26,7 +26,7 @@
 ```
 
 ### 기술 스택
-- **서버**: NCP Ubuntu 24.04 (s2-g3), 공인IP `49.50.133.160`
+- **서버**: NCP Ubuntu 24.04.1 LTS (vCPU 4, 16GB RAM, Swap 8GB, SSD 50GB), 공인IP `49.50.133.160`
 - **언어 및 프레임워크**: Python 3 (FastAPI + Streamlit), Node.js (npx)
 - **AI/LLM**: Vertex AI / Gemini API 연계 + Model Context Protocol (MCP) 서버 연동
 - **DB**: SQLite (procurement_contracts.db, chatbot_company.db 외)
@@ -477,6 +477,13 @@ alert_check.py (평일 09:00)
   1. `api_cache.json`, `monthly_cache.json`, `staging_chatbot_company.db` 등 소유권을 `busan-monitor`로 수정 및 권한 `644` 복구.
   2. `build_monthly_cache.py` 내 `get_unit()` 함수에 `pd.isna()` 및 `str()` 변환 방어 코드를 적용하여 결측치 핫픽스 배포.
   3. 백그라운드 `grep` 프로세스를 강제 종료(Kill)하고, 코드 텍스트 파일(`.py`, `.json`, `.env`)만 조회하도록 쉘 커맨드 보완.
+
+### 서버 하드웨어 사양 스펙업 및 가상 메모리 최적화 (최근 인프라 변경 사항)
+- **원인**: AI 챗봇 및 RAG 연산 증가와 데이터 누적에 따른 서버 부하를 감당하기 위해 네이버클라우드 서버의 스펙을 업그레이드함.
+- **조치 (post_upgrade_setup.py 실행):**
+  1. **사양 스펙업**: 서버 하드웨어를 기존 vCPU 2, 8GB RAM에서 **vCPU 4, 16GB RAM, SSD 50GB** 사양으로 확장했습니다.
+  2. **가상 메모리(SWAP) 증설**: 부족한 가상 메모리 공간을 보완하기 위해 루트 디렉토리에 **8GB 크기의 Swapfile**을 신설하여 메모리 누수 방지 및 물리 RAM 병목을 해결했습니다 (`/swapfile none swap sw 0 0` fstab 등록 완료).
+  3. **챗봇 백엔드 성능 최적화**: 챗봇 API 서버(`busan-advisor-pilot.service`)의 uvicorn 실행 워커 수(Worker)를 기존 1개에서 **4개로 증설 최적화**하여 동시 접속 처리 속도를 높였습니다 (`--workers 4` 옵션 반영 완료).
 
 ### 2026-05-22~24 파이프라인 장애
 - **원인**: 크론점에서 `.env` 미로딩 + `.env` 파일 내용 소실
