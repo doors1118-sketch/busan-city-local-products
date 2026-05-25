@@ -1,45 +1,58 @@
-# 부산광역시 조달 모니터링 시스템 — 운영 인수인계서
+# 부산광역시 조달 모니터링 및 AI 어드바이저 시스템 — 통합 운영 인수인계서
 
-> 최종 작성: 2026-05-24
+> 최종 작성: 2026-05-25
 
 ---
 
 ## 1. 시스템 개요
 
-부산광역시 지역업체 수주율을 실시간 모니터링하는 시스템. 조달청 API에서 매일 전국 계약 데이터를 수집하고, 부산 관련 계약만 필터링하여 수주율·유출품목·보호제도 적용 현황을 분석한다.
+부산광역시 지역업체 수주율을 실시간 모니터링하는 **모니터링 시스템**과 사용자의 조달 법률 및 적격성 검토 질문에 실시간 법적 근거를 조회하여 답변하는 **AI 어드바이저 챗봇 시스템**이 통합 구동되는 서버입니다.
 
 ### 핵심 구성요소
 
 ```
 [NCP 서버: 49.50.133.160]
-├── daily_pipeline_sync.py  ← 매일 03:00 크론 (데이터 수집)
-├── build_api_cache.py      ← 매일 04:00 크론 (캐시 생성)
-├── alert_check.py          ← 평일 09:00 크론 (이상감지 SMS)
-├── api_server.py           ← 상시 실행 (FastAPI, systemd)
-├── core_calc.py            ← 수주율 계산 공통 모듈 (★ 핵심)
-└── .env                    ← SERVICE_KEY (조달청 API 인증키)
+├── /opt/busan/ (모니터링 시스템 - busan-monitor 계정)
+│   ├── daily_pipeline_sync.py  ← 매일 03:00 크론 (데이터 수집)
+│   ├── build_api_cache.py      ← 매일 04:00 크론 (캐시 생성)
+│   ├── alert_check.py          ← 평일 09:00 크론 (이상감지 SMS)
+│   ├── api_server.py           ← 상시 실행 (FastAPI 백엔드, 8000포트)
+│   ├── dashboard.py            ← 상시 실행 (Streamlit 프론트엔드, 8501포트)
+│   └── core_calc.py            ← 수주율 계산 공통 모듈 (★ 핵심)
+└── /opt/advisor/ (AI 어드바이저 챗봇 - busan-chatbot 계정)
+    ├── app/api_server.py       ← 상시 실행 (챗봇 백엔드 API, 8001포트)
+    ├── app/pages/💬_법령챗봇.py ← 상시 실행 (Streamlit 프론트엔드 UI, 8502포트)
+    └── (npx) korean-law-mcp    ← 상시 실행 (한국 계약법/유권해석 조회용 MCP API, 3000포트)
 ```
 
 ### 기술 스택
 - **서버**: NCP Ubuntu 24.04 (s2-g3), 공인IP `49.50.133.160`
-- **언어**: Python 3 + FastAPI
-- **DB**: SQLite (procurement_contracts.db 외 5개)
-- **배포**: GitHub → 서버 수동 `git pull`
-- **알림**: NCP SENS SMS (발신: 051-888-7694)
+- **언어 및 프레임워크**: Python 3 (FastAPI + Streamlit), Node.js (npx)
+- **AI/LLM**: Vertex AI / Gemini API 연계 + Model Context Protocol (MCP) 서버 연동
+- **DB**: SQLite (procurement_contracts.db, chatbot_company.db 외)
+- **배포**: GitHub → 서버 수동 `git pull` (모니터링 & 챗봇 각각 레포 관리)
+- **알림**: NCP SENS SMS (발신: 051-888-7694, 수신: 4명)
 
 ---
 
-## 2. 서버 접속 정보
+## 2. 서버 접속 정보 및 구동 서비스
 
-| 항목 | 값 |
-|------|------|
-| SSH | `root@49.50.133.160:22`, PW: `back9900@@` |
-| API | http://49.50.133.160:8000/docs (Swagger) |
-| GitHub | https://github.com/doors1118-sketch/busan-city-local-products |
-| systemd 서비스 | `busan-api.service` |
-| 서비스 유저 | `busan-monitor` |
-| 프로젝트 경로 | `/opt/busan/` |
-| 가상환경 | `/opt/busan/venv/` |
+### 2.1 서버 환경
+- **SSH 접속**: `root@49.50.133.160:22`, PW: `back9900@@`
+- **GitHub 레포지토리**:
+  - 모니터링: [busan-city-local-products](https://github.com/doors1118-sketch/busan-city-local-products)
+  - AI 어드바이저: [busan-advisor](https://github.com/doors1118-sketch/busan-advisor-pilot) (또는 해당 프로젝트 저장소)
+
+### 2.2 구동 서비스 및 systemd 유닛 목록
+현재 서버에는 총 5개의 백그라운드 systemd 서비스가 상시 구동되고 있습니다.
+
+| 유닛명 | 구동 포트 | 작업 경로 | 소유 권한 | 실행 명령어 / 역할 |
+| :--- | :---: | :---: | :---: | :--- |
+| `busan-api.service` | `8000` | `/opt/busan` | `busan-monitor` | `/opt/busan/venv/bin/python3 api_server.py`<br>모니터링 데이터 제공용 REST 백엔드 API |
+| `busan-dashboard.service` | `8501` | `/opt/busan` | `busan-monitor` | `streamlit run dashboard.py`<br>구청 담당자 조회용 대시보드 웹 화면 |
+| `busan-advisor-pilot.service` | `8001` | `/opt/advisor` | `busan-chatbot` | `python3 -m uvicorn app.api_server:app`<br>AI 어드바이저 챗봇 백엔드 엔진 API (Gemini 라우터 포함) |
+| `law-chatbot.service` | `8502` | `/opt/advisor` | `busan-chatbot` | `streamlit run app/pages/💬_법령챗봇.py`<br>대화형 법령/조달 챗봇 대화 웹 화면 |
+| `korean-law-mcp.service` | `3000` | /usr/bin/npx | `root` | `npx korean-law-mcp --mode http`<br>한국 계약법 및 유권해석 데이터를 실시간 제공하는 MCP API 서버 |
 
 > ⚠️ 사무실 네트워크에서 SSH 차단됨 — NCP 웹 콘솔 또는 집에서 paramiko로 접속
 
@@ -153,25 +166,40 @@ Step 6    DB 백업 (NCP Object Storage, 7일 보관)
 
 ## 5. 크론탭 구성
 
+### 5.1 모니터링 수집/분석 스케줄 (`busan-monitor` 유저 크론탭)
 ```bash
-# === 모니터링 핵심 (busan-monitor 유저) ===
-# 일일 데이터 수집
-0 3 * * * cd /opt/busan && . /opt/busan/.env && mkdir -p sync_log && python3 daily_pipeline_sync.py >> sync_log/daily.log 2>&1
+# 1. 일일 데이터 수집 (매일 03:00)
+0 3 * * * cd /opt/busan && . /opt/busan/.env && mkdir -p sync_log && /opt/busan/venv/bin/python3 daily_pipeline_sync.py >> /opt/busan/sync_log/daily.log 2>&1
 
-# API 캐시 재빌드 + 서버 재시작
-0 4 * * * cd /opt/busan && . /opt/busan/.env && cp api_cache.json api_cache_prev.json && python3 build_api_cache.py >> sync_log/cache_build.log 2>&1 && python3 build_monthly_cache.py >> sync_log/monthly_build.log 2>&1 && sudo systemctl restart busan-api
+# 2. 캐시 재생성 및 API 서버 리로드 (매일 04:00)
+0 4 * * * cd /opt/busan && . /opt/busan/.env && cp api_cache.json api_cache_prev.json && /opt/busan/venv/bin/python3 build_api_cache.py >> /opt/busan/sync_log/cache_build.log 2>&1 && /opt/busan/venv/bin/python3 build_monthly_cache.py >> /opt/busan/sync_log/monthly_build.log 2>&1 && sudo /usr/bin/systemctl restart busan-api
 
-# 이상감지 경보 (평일)
-0 9 * * 1-5 cd /opt/busan && . /opt/busan/.env && python3 alert_check.py >> alert_log/alert.log 2>&1
+# 3. 수주율 이상감지 경보 (평일 09:00)
+0 9 * * 1-5 cd /opt/busan && . /opt/busan/.env && /opt/busan/venv/bin/python3 alert_check.py >> /opt/busan/alert_log/alert.log 2>&1
+```
 
-# === 챗봇 관련 ===
-0 5 * * *   챗봇 DB 마스터 이관 (bootstrap_master_data.py)
-15 5 * * *  기술개발제품 인증 API 수집 (import_certified_product_api.py)
-30 5 * * *  혁신장터 API 수집 (import_innovation_product_api.py)
-45 5 * * *  종합쇼핑몰 API 수집 (import_mas_product_api.py)
-35 5 * * *  직접생산 인증 API (import_direct_production_cert_api.py)
-0 6 * * 0   국세청 사업자등록상태 배치 (주 1회 일요일, nts_batch_sync.py)
-20 6 * * 0  조달물품분류 동기화 (주 1회 일요일)
+### 5.2 챗봇 DB 마스터 및 제품 인증 수집 스케줄 (`busan-monitor` 유저 크론탭 하단)
+```bash
+# 챗봇 마스터 DB 동기화 이관 (매일 05:00)
+0 5 * * * cd /opt/busan && . /opt/busan/.env && CHATBOT_DB=/opt/busan/chatbot_company.db /opt/busan/venv/bin/python3 bootstrap_master_data.py >> /opt/busan/sync_log/chatbot_master.log 2>&1
+
+# 기술개발제품 인증 API 수집 (매일 05:15)
+15 5 * * * cd /opt/busan && . /opt/busan/.env && CHATBOT_DB=/opt/busan/chatbot_company.db /opt/busan/venv/bin/python3 import_certified_product_api.py >> /opt/busan/sync_log/chatbot_cert.log 2>&1
+
+# 직접생산 확인 증명 API 수집 (매일 05:35)
+35 5 * * * cd /opt/busan && . /opt/busan/.env && CHATBOT_DB=/opt/busan/chatbot_company.db /opt/busan/venv/bin/python3 import_direct_production_cert_api.py >> /opt/busan/sync_log/chatbot_direct_production.log 2>&1
+
+# 혁신장터 API 수집 (매일 05:30)
+30 5 * * * cd /opt/busan && . /opt/busan/.env && CHATBOT_DB=/opt/busan/chatbot_company.db /opt/busan/venv/bin/python3 import_innovation_product_api.py >> /opt/busan/sync_log/chatbot_innovation.log 2>&1
+
+# 종합쇼핑몰 API 증분 수집 (매일 05:45)
+45 5 * * * cd /opt/busan && . /opt/busan/.env && CHATBOT_DB=/opt/busan/chatbot_company.db /opt/busan/venv/bin/python3 import_mas_product_api.py >> /opt/busan/sync_log/chatbot_mas.log 2>&1
+
+# 국세청 휴폐업 여부 대조 배치 (주 1회 일요일 06:00)
+0 6 * * 0 cd /opt/busan && . /opt/busan/.env && CHATBOT_DB=/opt/busan/chatbot_company.db /opt/busan/venv/bin/python3 nts_batch_sync.py >> /opt/busan/sync_log/chatbot_nts.log 2>&1
+
+# G2B 나라장터 물품 분류/이칭 동기화 (주 1회 일요일 06:20)
+20 6 * * 0 cd /opt/busan && . /opt/busan/.env && CHATBOT_DB=/opt/busan/chatbot_company.db /opt/busan/venv/bin/python3 import_procurement_product_classification_api.py >> /opt/busan/sync_log/chatbot_product_classification.log 2>&1
 ```
 
 > ⚠️ 모든 크론에 `. /opt/busan/.env &&`가 있어야 함 (환경변수 로딩)
@@ -425,10 +453,20 @@ alert_check.py (평일 09:00)
 
 ---
 
-## 15. 과거 장애 이력
+## 15. 과거 장애 이력 및 조치 완료 내역
+
+### 2026-05-25 권한 거부(Permission Error) 및 핫픽스
+- **원인**: 
+  1. 캐시 파일(`/opt/busan/api_cache.json` 등) 및 챗봇 연동 DB 소유권이 `root:root` 및 `-rw-------` (600) 권한으로 잘못 변경되어 `busan-monitor` 계정으로 구동 중이던 파이프라인이 `PermissionError`를 발생하며 중단됨 (이상감지 알림 및 캐시 갱신 중단).
+  2. `build_monthly_cache.py` 실행 도중 `compare_unit` 컬럼의 결측치(`NaN`)가 섞여 있어 기관 정렬 시 `TypeError: '<' not supported between instances of 'str' and 'float'` 에러가 발생하며 비정상 종료됨.
+  3. `grep` 명령어로 바이너리/QA 대용량 로그 파일까지 전체 검색을 시도하여 터미널 버퍼가 막히며 무한 멈춤(Hang) 발생.
+- **조치**: 
+  1. `api_cache.json`, `monthly_cache.json`, `staging_chatbot_company.db` 등 소유권을 `busan-monitor`로 수정 및 권한 `644` 복구.
+  2. `build_monthly_cache.py` 내 `get_unit()` 함수에 `pd.isna()` 및 `str()` 변환 방어 코드를 적용하여 결측치 핫픽스 배포.
+  3. 백그라운드 `grep` 프로세스를 강제 종료(Kill)하고, 코드 텍스트 파일(`.py`, `.json`, `.env`)만 조회하도록 쉘 커맨드 보완.
 
 ### 2026-05-22~24 파이프라인 장애
-- **원인**: 크론에서 `.env` 미로딩 + `.env` 파일 내용 소실
+- **원인**: 크론점에서 `.env` 미로딩 + `.env` 파일 내용 소실
 - **조치**: 코드에 `.env` 자동 로더 추가, 크론에 `. .env` 추가, `inqryDiv=2→1` 수정
 - **교훈**: 환경변수 전달 경로를 이중화할 것
 
