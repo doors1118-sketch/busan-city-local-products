@@ -117,6 +117,9 @@ def build_monthly():
 
     def get_unit(cd):
         unit = inst_unit.get(cd)
+        if pd.isna(unit) or unit is None:
+            return ''
+        unit = str(unit).strip()
         if unit and inst_mid.get(cd, '') == '부산광역시 교육청':
             return '부산교육청'
         return unit
