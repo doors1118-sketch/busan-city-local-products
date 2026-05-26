@@ -105,7 +105,7 @@
 | `/api/download/license-companies` | `GET` | `license_name` (필수)<br>`status` (선택, 기본 영업중) | 특정 면허 보유 업체의 연락처, 주소, 본사구분, 대표품명 |
 | `/api/download/product-companies` | `GET` | `product_name` (필수)<br>`status` (선택) | 특정 세부품명 납품 가능 업체의 주소 및 대표자명 |
 | `/api/download/policy-companies` | `GET` | `policy_type` (선택)<br>`status` (선택) | 여성기업/장애인기업/사회적기업 분류별 업체 주소록 및 상세 명단 |
-| `/api/download/shopping-mall-products` | `GET` | `contract_type` (선택)<br>`status` (선택) | 종합쇼핑몰(MAS, 제3자단가 등)에 계약 등록된 부산 제품 및 단가 리스트 |
+| `/api/download/shopping-mall-products`| `GET` | `contract_type` (선택)<br>`status` (선택) | 종합쇼핑몰(MAS, 제3자단가 등)에 계약 등록된 부산 제품 및 단가 리스트 |
 | `/api/download/certified-products` | `GET` | `cert_type` (선택)<br>`status` (선택) | 기술인증(NEP, NET 등) 및 우수조달물품 인증을 보유한 제품 및 업체 명단 |
 
 ---
@@ -120,3 +120,25 @@
 
 3. **캐시 빌드 및 서버 리스타트 규칙**:
    - 통계 API(`/api/summary` 등)의 결과값 수정을 수동 반영한 경우, 서버에서 `/opt/busan/venv/bin/python3 build_api_cache.py`를 실행하여 캐시 파일(`api_cache.json`)을 갱신한 뒤 `sudo systemctl restart busan-api` 명령어로 API 서비스를 재시작해 주어야 즉시 반영됩니다.
+
+---
+
+## 4. 데이터 파이프라인 연휴 장애 원인 및 조치 내역 (2026-05-26 핫픽스)
+
+연휴 기간(금~월) 동안 챗봇 DB 적재 지연 및 실패 SMS 경보 문자가 계속 전송된 원인과 2026년 5월 26일 자로 처리한 서버 복구 내역은 다음과 같습니다.
+
+### 4.1 장애 현상 및 원인
+1. **서버 `.env` 파일 유실 및 환경변수 전파 오류**:
+   - `/opt/busan/.env` 파일 내에 필수 환경변수(`SERVICE_KEY`, `COMPANY_ID_HMAC_SECRET` 등)가 미작성 상태로 초기화되었습니다.
+   - 크론탭 쉘 스크립트 실행 환경에서 환경변수가 파이썬의 `os.environ`으로 전파되려면 변수명 앞에 `export` 키워드가 명시되어야 하나, 이것이 누락되어 `Bootstrap failed` 및 `serviceKey not configured` 에러가 발생했습니다.
+2. **크론탭 적재 스크립트 오매핑**:
+   - 크론탭 스케줄러(05:35분)에 존재하지 않는 `import_direct_production_cert_api.py` 파일 실행 구문이 등록되어 있어 매일 `No such file or directory` 에러가 적재 로그에 기록되었습니다.
+
+### 4.2 조치 및 해결 사항
+1. **환경변수 복구 및 `export` 키워드 보강**:
+   - `/opt/busan/.env` 파일을 재생성하고, 크론탭 쉘의 환경변수 소싱(`. .env`) 시 정상적으로 전파되도록 모든 변수 선언 앞에 `export` 키워드를 추가 완료했습니다.
+2. **크론탭 맵핑 수정**:
+   - 직접생산확인 API 수집 기능은 `import_policy_company.py` 내에 통합 처리되므로, 크론탭의 05:35 스케줄 대상을 **`import_policy_company.py`로 정상 교체 및 적용**하였습니다.
+3. **수동 파이프라인 싱크 및 검증**:
+   - 오늘 자(5/26) 적재 상태를 `success`로 갱신하기 위해 `bootstrap_master_data.py`, `import_certified_product_api.py`를 수동으로 강제 구동하여 정상 실행 완료 및 성공 로그 저장을 확인했습니다.
+   - 이에 따라 내일부터는 챗봇 DB 적재 지연 경고 문자가 발송되지 않습니다.
