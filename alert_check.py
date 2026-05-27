@@ -514,11 +514,12 @@ def check_chatbot_pipeline_sync():
         # 오늘 날짜
         today_str = datetime.datetime.now().strftime('%Y-%m-%d')
         
-        # 필수로 실행되어야 하는 핵심 작업 목록
+        # 필수로 매일 실행되어야 하는 핵심 작업 목록 (주 1회 스케줄은 제외)
         essential_jobs = [
-            'bootstrap_master_data',
-            'mas_api_incremental',
-            'certified_product_api_incremental'
+            'bootstrap_master',
+            'import_certified_product_api',
+            'import_innovation_product_api',
+            'mas_api_incremental'
         ]
         
         for job in essential_jobs:
