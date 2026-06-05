@@ -63,3 +63,6 @@ tmp_skills/
 
 chk.py
 _test_sms.py
+# SQLite runtime sidecar files
+*.db-wal
+*.db-shm
