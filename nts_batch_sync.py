@@ -18,6 +18,39 @@ DB_FILE = os.environ.get("CHATBOT_DB", os.path.join(os.path.dirname(os.path.absp
 BATCH_SIZE = 100  # NTS API 1회 최대 100건
 
 
+def _ensure_failure_log_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS nts_batch_failure_log (
+            failure_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_started_at TEXT NOT NULL,
+            batch_no INTEGER NOT NULL,
+            failed_count INTEGER NOT NULL,
+            error_message TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def _mark_batch_failed(cursor, id_map, bno_list, now_str, error_message):
+    error_message = (error_message or "nts_batch_failed")[:500]
+    for b_no in bno_list:
+        internal_id = id_map.get(b_no)
+        if internal_id:
+            cursor.execute("""
+                INSERT INTO company_business_status
+                (company_internal_id, business_status, business_status_freshness,
+                 checked_at, business_status_source, retry_count, last_error_message, last_attempt_at)
+                VALUES (?, 'api_failed', 'api_failed', ?, 'nts_batch', 1, ?, ?)
+                ON CONFLICT(company_internal_id) DO UPDATE SET
+                    business_status_freshness='api_failed',
+                    checked_at=excluded.checked_at,
+                    business_status_source='nts_batch',
+                    retry_count=IFNULL(company_business_status.retry_count, 0) + 1,
+                    last_error_message=excluded.last_error_message,
+                    last_attempt_at=excluded.last_attempt_at
+            """, (internal_id, now_str, error_message, now_str))
+
+
 def run_batch_sync(dry_run=False, probe=False, limit=None):
     """
     부산업체 전체의 휴폐업 상태를 NTS API 배치 호출로 갱신.
@@ -37,11 +70,13 @@ def run_batch_sync(dry_run=False, probe=False, limit=None):
 
     logger.info(f"Starting NTS Batch Sync. dry_run={dry_run}, probe={probe}, limit={limit}")
 
-    conn = sqlite3.connect(DB_FILE, timeout=5.0)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    if not dry_run:
+        _ensure_failure_log_table(conn)
 
     # 부산업체 중 폐업 확정(fresh)된 업체는 제외
     rows = cursor.execute("""
@@ -70,6 +105,7 @@ def run_batch_sync(dry_run=False, probe=False, limit=None):
     updated_count = 0
     failed_count = 0
     batch_count = 0
+    failed_batches = []
 
     # 배치 단위로 처리
     for i in range(0, len(bno_pairs), BATCH_SIZE):
@@ -87,21 +123,19 @@ def run_batch_sync(dry_run=False, probe=False, limit=None):
             res = nts_business_status_client.check_business_status(bno_list)
 
             if not res.get("success"):
-                logger.warning(f"  Batch {batch_count}: API 실패 - {res.get('error')}")
+                err = res.get("error") or "nts_api_failed"
+                attempts = res.get("attempts")
+                err_label = f"{err}, attempts={attempts}" if attempts else err
+                logger.warning(f"  Batch {batch_count}: API 실패 - {err_label}")
                 failed_count += len(batch)
-                # 실패 시에도 기록
-                for b_no in bno_list:
-                    internal_id = id_map.get(b_no)
-                    if internal_id:
-                        cursor.execute("""
-                            INSERT INTO company_business_status
-                            (company_internal_id, business_status, business_status_freshness, checked_at, business_status_source)
-                            VALUES (?, 'api_failed', 'api_failed', ?, 'nts_batch')
-                            ON CONFLICT(company_internal_id) DO UPDATE SET
-                                business_status_freshness='api_failed',
-                                checked_at=excluded.checked_at,
-                                business_status_source='nts_batch'
-                        """, (internal_id, now_str))
+                failed_batches.append((batch_count, len(batch), err_label))
+                _mark_batch_failed(cursor, id_map, bno_list, now_str, err_label)
+                cursor.execute("""
+                    INSERT INTO nts_batch_failure_log
+                    (run_started_at, batch_no, failed_count, error_message)
+                    VALUES (?, ?, ?, ?)
+                """, (now_str, batch_count, len(batch), err_label[:500]))
+                conn.commit()
                 continue
 
             results = res.get("results", {})
@@ -134,31 +168,53 @@ def run_batch_sync(dry_run=False, probe=False, limit=None):
 
             logger.info(f"  Batch {batch_count}: {len(results)}/{len(batch)} updated")
 
-            # 커밋은 10배치마다 (1,000건 단위)
-            if batch_count % 10 == 0:
-                conn.commit()
+            conn.commit()
 
             time.sleep(0.3)  # Rate limiting
 
         except Exception as e:
-            logger.error(f"  Batch {batch_count}: Exception - {e}")
+            err_label = f"{type(e).__name__}: {e}"
+            logger.error(f"  Batch {batch_count}: Exception - {err_label}")
             failed_count += len(batch)
+            failed_batches.append((batch_count, len(batch), err_label))
+            try:
+                _mark_batch_failed(cursor, id_map, bno_list, now_str, err_label)
+                cursor.execute("""
+                    INSERT INTO nts_batch_failure_log
+                    (run_started_at, batch_no, failed_count, error_message)
+                    VALUES (?, ?, ?, ?)
+                """, (now_str, batch_count, len(batch), err_label[:500]))
+                conn.commit()
+            except Exception as mark_error:
+                logger.error(f"  Batch {batch_count}: failure marker write failed - {mark_error}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
     # ETL 로그
     if not dry_run:
         end_time = datetime.datetime.now()
         elapsed = (end_time - start_time).total_seconds()
 
+        summary_error = None
+        if failed_batches:
+            summary_error = "; ".join(
+                f"batch={batch_no},count={count},error={err}" for batch_no, count, err in failed_batches[:5]
+            )
+            if len(failed_batches) > 5:
+                summary_error += f"; ... {len(failed_batches) - 5} more"
+
         cursor.execute("""
             INSERT INTO etl_job_log (
                 job_name, source_name, started_at, finished_at, status,
-                input_row_count, inserted_count, skipped_count, error_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                input_row_count, inserted_count, skipped_count, error_count, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             "nts_batch_sync", "nts_api_batch", now_str,
             end_time.strftime("%Y-%m-%d %H:%M:%S"),
             "success" if failed_count == 0 else "partial",
-            len(bno_pairs), updated_count, 0, failed_count
+            len(bno_pairs), updated_count, 0, failed_count, summary_error
         ))
 
         cursor.execute("""
@@ -176,6 +232,11 @@ def run_batch_sync(dry_run=False, probe=False, limit=None):
         logger.info(f"NTS Batch Sync 완료. "
                      f"처리: {len(bno_pairs)}건, 갱신: {updated_count}건, 실패: {failed_count}건, "
                      f"소요: {elapsed:.1f}초 ({batch_count} batches)")
+        print(f"NTS Batch Sync 완료: 처리 {len(bno_pairs)}건, 갱신 {updated_count}건, 실패 {failed_count}건, "
+              f"상태 {'success' if failed_count == 0 else 'partial'}, 소요 {elapsed:.1f}초")
+        if failed_batches:
+            first = failed_batches[0]
+            print(f"NTS 실패 배치: {len(failed_batches)}개, 첫 실패 batch={first[0]}, count={first[1]}, error={first[2]}")
     else:
         conn.close()
         logger.info(f"NTS Batch Sync (dry-run). 대상: {len(bno_pairs)}건, 배치: {batch_count}개")

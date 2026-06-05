@@ -9,8 +9,13 @@ Part B-2: 계약 단계 사후 경보 — 외지업체 지분 60% 초과 (의무
 단독 실행: python alert_check.py
 """
 import json, os, sys, datetime, sqlite3
-import urllib.request, urllib.parse
+import urllib.request, urllib.parse, urllib.error
 import hashlib, hmac, base64, time
+from protection_criteria import (
+    SPECIALTY_CONSTRUCTION_KEYWORDS,
+    get_protection_threshold,
+    normalize_protection_subtype,
+)
 
 CONFIG_FILE = 'alert_config.json'
 
@@ -38,13 +43,7 @@ THRESHOLD_LEAKAGE_BY_SECTOR = {
 }
 THRESHOLD_LEAKAGE_DEFAULT = 5e8
 
-# 공사 지역제한 기준액 (부산시 소속기관)
-BUSAN_CITY_THRESHOLDS = {
-    '종합': 100e8,   # ≤100억
-    '전문': 10e8,    # ≤10억
-    '용역': 3.3e8,   # ≤3.3억
-}
-SPECIALIZED_KEYWORDS = ['전기', '통신', '소방', '기계설비', '기계공사', '정보통신']
+SPECIALIZED_KEYWORDS = SPECIALTY_CONSTRUCTION_KEYWORDS
 
 # 의무공동도급: 외지업체 지분 상한 (60% 이상이면 위반)
 MAX_NON_LOCAL_SHARE = 60.0
@@ -125,6 +124,119 @@ def send_gmail(subject, body, config):
         print(f"  ⚠️ 이메일 발송 오류: {e}")
 
 
+def _truncate_euc_kr(text, max_bytes):
+    """SENS SMS/LMS byte limits are based on EUC-KR."""
+    encoded = str(text or '').encode('euc-kr', errors='ignore')
+    if len(encoded) <= max_bytes:
+        return encoded.decode('euc-kr', errors='ignore'), False
+    return encoded[:max_bytes].decode('euc-kr', errors='ignore').rstrip(), True
+
+
+def _sanitize_sens_text(text, max_bytes=None):
+    """Remove characters that NCP SENS cannot send reliably in SMS/LMS."""
+    value = str(text or '')
+    phrase_replacements = {
+        '🚨 [경보]': '[경보]',
+        '⚠️ [주의]': '[주의]',
+        '⚠ [주의]': '[주의]',
+        '📋 [사전규격': '[사전규격',
+    }
+    for src, dst in phrase_replacements.items():
+        value = value.replace(src, dst)
+
+    replacements = {
+        '🚨': '[경보]',
+        '⚠️': '[주의]',
+        '⚠': '[주의]',
+        '📋': '[사전규격]',
+        '🔔': '[알림]',
+        '✅': '[정상]',
+        '❌': '[실패]',
+        '💰': '[계약]',
+        '📄': '[로그]',
+        '💾': '[저장]',
+        '📱': 'SMS',
+        '📧': 'EMAIL',
+        '🟢': '[정상]',
+        '🔴': '[경보]',
+        '—': '-',
+        '→': '->',
+        '≤': '<=',
+        '≥': '>=',
+        '“': '"',
+        '”': '"',
+        '‘': "'",
+        '’': "'",
+    }
+    for src, dst in replacements.items():
+        value = value.replace(src, dst)
+
+    # Final guard: drop anything still outside EUC-KR.
+    cleaned = value.encode('euc-kr', errors='ignore').decode('euc-kr', errors='ignore')
+    truncated = False
+    if max_bytes is not None:
+        cleaned, truncated = _truncate_euc_kr(cleaned, max_bytes)
+    return cleaned, (cleaned != str(text or '')), truncated
+
+
+def _redact_sms_error_body(body):
+    """Keep provider diagnostics while removing likely secrets and phone numbers."""
+    import re
+    value = str(body or '')
+    value = re.sub(r'(?i)(access[_-]?key|secret[_-]?key|signature|token|authorization)"?\s*[:=]\s*"[^"]+"',
+                   r'\1":"***"', value)
+    value = re.sub(r'01[016789]-?\d{3,4}-?\d{4}', '010****0000', value)
+    value = re.sub(r'\b\d{10,11}\b', lambda m: '010****0000' if m.group(0).startswith('01') else m.group(0), value)
+    return value[:1000]
+
+
+KST = datetime.timezone(datetime.timedelta(hours=9))
+UTC = datetime.timezone.utc
+
+
+def _parse_etl_datetime(value):
+    """Parse SQLite ETL timestamps stored with mixed local/UTC conventions."""
+    if not value:
+        return None
+    raw = str(value).strip()
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            return datetime.datetime.strptime(raw[:19], fmt)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.datetime.fromisoformat(raw)
+        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    except ValueError:
+        return None
+
+
+def _etl_ran_on_kst_date(value, target_date):
+    """Return True if an ETL timestamp belongs to target_date in KST.
+
+    Some ETL scripts write KST wall-clock time to started_at, while others write
+    UTC wall-clock time. Accept both interpretations to avoid false alarms.
+    """
+    dt = _parse_etl_datetime(value)
+    if not dt:
+        return False
+    if dt.date() == target_date:
+        return True
+    return dt.replace(tzinfo=UTC).astimezone(KST).date() == target_date
+
+
+def _etl_display_time(value, target_date=None):
+    dt = _parse_etl_datetime(value)
+    if not dt:
+        return str(value or '')
+    if target_date is not None and dt.date() == target_date:
+        return str(value)
+    utc_as_kst = dt.replace(tzinfo=UTC).astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
+    if utc_as_kst != str(value):
+        return f"{value} (UTC→KST {utc_as_kst})"
+    return str(value)
+
+
 def send_ncp_sms(message, config):
     """네이버 클라우드 SENS API로 SMS 발송"""
     sms_cfg = config.get('ncp_sms', {})
@@ -141,9 +253,15 @@ def send_ncp_sms(message, config):
         print("  ⚠️ NCP SMS 설정 불완전")
         return
     
-    # LMS (장문) 사용 (80byte 초과 시)
-    msg_bytes = message.encode('utf-8')
-    msg_type = 'LMS' if len(msg_bytes) > 80 else 'SMS'
+    # SENS SMS/LMS limits and supported characters are based on EUC-KR.
+    sanitized_message, changed, _ = _sanitize_sens_text(message)
+    msg_bytes = sanitized_message.encode('euc-kr', errors='ignore')
+    msg_type = 'LMS' if len(msg_bytes) > 90 else 'SMS'
+    max_content_bytes = 2000 if msg_type == 'LMS' else 90
+    sanitized_message, changed_after_limit, truncated = _sanitize_sens_text(sanitized_message, max_content_bytes)
+    changed = changed or changed_after_limit
+    if changed or truncated:
+        print(f"  ℹ️ SMS 본문 정제 적용: EUC-KR {len(msg_bytes):,}byte → {len(sanitized_message.encode('euc-kr', errors='ignore')):,}byte ({msg_type})")
     
     # 서명 생성
     timestamp = str(int(time.time() * 1000))
@@ -158,11 +276,11 @@ def send_ncp_sms(message, config):
     body = {
         "type": msg_type,
         "from": from_number,
-        "content": message,
+        "content": sanitized_message,
         "messages": [{"to": r.replace('-','')} for r in recipients],
     }
     if msg_type == 'LMS':
-        body["subject"] = "[부산 조달 경보]"
+        body["subject"] = _truncate_euc_kr("[부산 조달 경보]", 40)[0]
     
     try:
         url = f"https://sens.apigw.ntruss.com{uri}"
@@ -180,6 +298,9 @@ def send_ncp_sms(message, config):
                 print(f"  📱 SMS 발송 완료 → {', '.join(recipients)} ({msg_type})")
             else:
                 print(f"  ⚠️ SMS 발송 실패: {result}")
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8', errors='replace')
+        print(f"  ⚠️ SMS 발송 오류: HTTP {e.code} {e.reason}; body={_redact_sms_error_body(error_body)}")
     except Exception as e:
         print(f"  ⚠️ SMS 발송 오류: {e}")
 
@@ -333,18 +454,16 @@ def check_bid_notices_protection(target_date=None):
         if price <= 0:
             continue
 
-        # 종합/전문 판별
-        if sector == '공사':
-            is_specialized = False
-            for kw in SPECIALIZED_KEYWORDS:
-                if (main_type and kw in str(main_type)) or (ntce_nm and kw in str(ntce_nm)):
-                    is_specialized = True
-                    break
-            ctype = '전문' if is_specialized else '종합'
-            limit = BUSAN_CITY_THRESHOLDS[ctype]
-        else:
-            ctype = '용역'
-            limit = BUSAN_CITY_THRESHOLDS['용역']
+        subtype = normalize_protection_subtype(
+            sector,
+            name=ntce_nm,
+            main_type=main_type,
+        )
+        if not subtype:
+            continue
+        limit = get_protection_threshold(TARGET_GROUP, '', subtype, target_date)
+        if not limit:
+            continue
 
         # 기준이하 확인
         if price > limit:
@@ -366,7 +485,7 @@ def check_bid_notices_protection(target_date=None):
                 '공고명': ntce_nm,
                 '수요기관': dm_nm,
                 '분야': sector,
-                '구분': ctype,
+                '구분': subtype,
                 '추정가격': price / 1e8,
                 '기준액': limit / 1e8,
                 '계약방식': method_str,
@@ -511,20 +630,21 @@ def check_chatbot_pipeline_sync():
     try:
         conn = sqlite3.connect(chatbot_db)
         
-        # 오늘 날짜
-        today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+        today_kst = datetime.datetime.now(KST).date()
         
-        # 필수로 실행되어야 하는 핵심 작업 목록
+        # 필수로 매일 실행되어야 하는 핵심 작업 목록 (주 1회 스케줄은 제외)
         essential_jobs = [
-            'bootstrap_master_data',
-            'mas_api_incremental',
-            'certified_product_api_incremental'
+            'bootstrap_master',
+            'nts_batch_sync',
+            'import_certified_product_api',
+            'import_innovation_product_api',
+            'mas_api_incremental'
         ]
         
         for job in essential_jobs:
             # 가장 최근 로그 조회 (오늘 발생한 에러인지 우선 확인)
             row = conn.execute("""
-                SELECT status, error_message, started_at 
+                SELECT status, error_message, started_at, input_row_count, inserted_count, error_count
                 FROM etl_job_log 
                 WHERE job_name LIKE ? 
                 ORDER BY started_at DESC LIMIT 1
@@ -537,21 +657,24 @@ def check_chatbot_pipeline_sync():
                 print(f"  {msg}")
                 continue
                 
-            status, err_msg, started_at = row
+            status, err_msg, started_at, input_count, inserted_count, error_count = row
             
-            # 오늘 실행되었는지 확인
-            is_today = started_at.startswith(today_str)
+            # Some jobs record started_at in UTC while others use KST.
+            is_today = _etl_ran_on_kst_date(started_at, today_kst)
+            started_label = _etl_display_time(started_at, today_kst)
             
-            if is_today and status == 'failed':
-                msg = f"🚨 [경보] 챗봇 DB 적재 실패: {job} (사유: {err_msg})"
+            if is_today and status in ('failed', 'partial'):
+                detail = f"입력 {input_count or 0:,} / 성공 {inserted_count or 0:,} / 실패 {error_count or 0:,}"
+                reason = f", 사유: {err_msg}" if err_msg else ""
+                msg = f"🚨 [경보] 챗봇 DB 적재 {status}: {job} ({detail}{reason})"
                 alerts.append(('CRITICAL', msg))
                 print(f"  {msg}")
             elif not is_today:
-                msg = f"🚨 [경보] 챗봇 DB 적재 지연: {job} 오늘 미실행 (최근: {started_at})"
+                msg = f"🚨 [경보] 챗봇 DB 적재 지연: {job} 오늘 미실행 (최근: {started_label})"
                 alerts.append(('CRITICAL', msg))
                 print(f"  {msg}")
             else:
-                print(f"  ✅ 정상: 챗봇 DB 적재 {job} 완료 ({started_at})")
+                print(f"  ✅ 정상: 챗봇 DB 적재 {job} 완료 ({started_label})")
                 
         conn.close()
     except Exception as e:

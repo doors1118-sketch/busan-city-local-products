@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime
 import base64, os, sqlite3
+from protection_criteria import protection_law_basis_for_cache
 
 # ─── 설정 ───
 # 로컬 테스트용 (서버 배포 시 서버 IP로 변경)
@@ -1623,6 +1624,16 @@ elif page == "🛡️ 지역업체 보호제도":
     if data_prot:
         st.caption(f"📅 생성: {data_prot.get('generated_at', '')}")
         현황 = data_prot.get("현황", {})
+        법령기준 = 현황.get("_법령기준") or protection_law_basis_for_cache()
+        gov_law = 법령기준.get("국가계약법", {})
+        pub_law = 법령기준.get("공기업·준정부기관 계약사무규칙", {})
+        bsn_law = 법령기준.get("지방계약법", {})
+        pub_change_dt = pub_law.get("변경일", "2026-04-21")
+        pub_old_amt = pub_law.get("종합공사_구", 88)
+        pub_new_amt = pub_law.get("종합공사", 150)
+        bsn_change_dt = bsn_law.get("변경일", "2026-04-24")
+        bsn_old_amt = bsn_law.get("종합공사_구", 100)
+        bsn_new_amt = bsn_law.get("종합공사", 150)
 
         # ── 보호제도 판정 기준 안내 ──
         with st.expander("ℹ️ 지역업체 보호제도 판정 기준 안내", expanded=False):
@@ -1642,9 +1653,9 @@ elif page == "🛡️ 지역업체 보호제도":
 
 | 구분 | 국가계약법<br>(정부기관) | 공기업·준정부기관<br>계약사무규칙 | 지방계약법<br>(부산시 산하) |
 |:---:|:---:|:---:|:---:|
-| **종합공사** | 88억 | ~~88억~~ → **150억** (4/21~) | ~~100억~~ → **150억** (4/24~) |
-| **전문공사** | 10억 | 10억 | 10억 |
-| **용역** | 2.2억 | 2.2억 | 3.3억 |
+| **종합공사** | {gov_law.get("종합공사", 88):g}억 | ~~{pub_old_amt:g}억~~ → **{pub_new_amt:g}억** ({pub_change_dt}~) | ~~{bsn_old_amt:g}억~~ → **{bsn_new_amt:g}억** ({bsn_change_dt}~) |
+| **전문공사** | {gov_law.get("전문공사", 10):g}억 | {pub_law.get("전문공사", 10):g}억 | {bsn_law.get("전문공사", 10):g}억 |
+| **용역** | {gov_law.get("용역", 2.2):g}억 | {pub_law.get("용역", 2.2):g}억 | {bsn_law.get("용역", 3.3):g}억 |
 
 ---
 
@@ -1657,9 +1668,9 @@ elif page == "🛡️ 지역업체 보호제도":
   └─ 위 둘 다 아님 → ❌ 미적용
 ```
 
-공사 100억 초과 건은 **의무공동도급** 기준 적용:
+공사는 지역제한 기준을 초과한 건도 **의무공동도급** 기준을 별도 점검:
 ```
-100억 초과 공사
+지역제한 기준 초과 공사
   ├─ 부산업체 지분 40% 이상 → ✅ 의무공동 적용
   └─ 40% 미만 → ❌ 미적용 (의무공동도급 위반)
 ```
@@ -1767,9 +1778,7 @@ elif page == "🛡️ 지역업체 보호제도":
 
         # ── ① 정부기관 (국가계약법) ──
         정부기관 = 현황.get("정부기관", 현황.get("정부 및 국가공공기관", {}))
-        법령기준 = 현황.get("_법령기준", {})
-        gov_law = 법령기준.get("국가계약법", {})
-        gov_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">국가계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>88억</b> 이하<br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>2.2억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 중앙행정기관, 국립대학</div>'
+        gov_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">국가계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>{gov_law.get("종합공사", 88):g}억</b> 이하<br>· 전문공사: 추정가격 <b>{gov_law.get("전문공사", 10):g}억</b> 이하<br>· 용역: 추정가격 <b>{gov_law.get("용역", 2.2):g}억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 중앙행정기관, 국립대학</div>'
         gov_card_title = make_donut_card("정부기관 (국가계약법)", '<img src="https://www.mois.go.kr/frt2022/main/img/common/logo.png" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #364a63 0%, #526484 100%)", 정부기관, gov_criteria)
 
         # ── 정부기관 미적용 계약 상세 ──
@@ -1803,11 +1812,7 @@ elif page == "🛡️ 지역업체 보호제도":
 
         # ── ② 국가공공기관 (공기업·준정부기관 계약사무규칙) ──
         국가공공 = 현황.get("국가공공기관", {})
-        pub_law = 법령기준.get("공기업·준정부기관 계약사무규칙", {})
-        pub_change_dt = pub_law.get("변경일", "2026-04-21")
-        pub_old_amt = pub_law.get("종합공사_구", 88)
-        pub_new_amt = pub_law.get("종합공사", 150)
-        pub_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">공기업·준정부기관 계약사무규칙</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>{pub_new_amt}억</b> 이하<br>  <span style="font-size:0.72rem; color:{COLORS["text_light"]};">({pub_change_dt} 이전: {pub_old_amt}억)</span><br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>2.2억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 공기업, 준정부기관 등 국가공공기관</div>'
+        pub_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">공기업·준정부기관 계약사무규칙</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>{pub_new_amt:g}억</b> 이하<br>  <span style="font-size:0.72rem; color:{COLORS["text_light"]};">({pub_change_dt} 이전: {pub_old_amt:g}억)</span><br>· 전문공사: 추정가격 <b>{pub_law.get("전문공사", 10):g}억</b> 이하<br>· 용역: 추정가격 <b>{pub_law.get("용역", 2.2):g}억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 공기업, 준정부기관 등 국가공공기관</div>'
         if 국가공공:
             pub_card_title = make_donut_card("국가공공기관 (계약사무규칙)", '🏛️', "linear-gradient(135deg, #526484 0%, #7B8DA0 100%)", 국가공공, pub_criteria)
 
@@ -1840,11 +1845,7 @@ elif page == "🛡️ 지역업체 보호제도":
 
         # ── ③ 부산시 및 소관기관 (지방계약법) ──
         부산 = 현황.get("부산시 및 소관기관_지역제한", {})
-        bsn_law = 법령기준.get("지방계약법", {})
-        bsn_change_dt = bsn_law.get("변경일", "2026-04-24")
-        bsn_old_amt = bsn_law.get("종합공사_구", 100)
-        bsn_new_amt = bsn_law.get("종합공사", 150)
-        busan_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">지방계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>{bsn_new_amt}억</b> 이하<br>  <span style="font-size:0.72rem; color:{COLORS["text_light"]};">({bsn_change_dt} 이전: {bsn_old_amt}억)</span><br>· 전문공사: 추정가격 <b>10억</b> 이하<br>· 용역: 추정가격 <b>3.3억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 부산광역시 및 소속기관</div>'
+        busan_criteria = f'<div style="font-size:0.88rem; font-weight:700; color:{COLORS["text_dark"]}; margin-bottom:6px;">지방계약법 지역제한 기준</div><div style="font-size:0.82rem; color:{COLORS["text_dark"]}; line-height:1.8;">· 종합공사: 추정가격 <b>{bsn_new_amt:g}억</b> 이하<br>  <span style="font-size:0.72rem; color:{COLORS["text_light"]};">({bsn_change_dt} 이전: {bsn_old_amt:g}억)</span><br>· 전문공사: 추정가격 <b>{bsn_law.get("전문공사", 10):g}억</b> 이하<br>· 용역: 추정가격 <b>{bsn_law.get("용역", 3.3):g}억</b> 이하</div><div style="font-size:0.72rem; color:{COLORS["text_light"]}; margin-top:6px;">대상: 부산광역시 및 소속기관</div>'
         busan_card_title = make_donut_card("부산시 및 소관기관 (지방계약법)", '<img src="https://www.busan.go.kr/humanframe/global/assets/img/common/busan_logo.svg" style="height:22px; width:22px; object-fit:cover; object-position:left;">', "linear-gradient(135deg, #6576ff 0%, #8B5CF6 100%)", 부산, busan_criteria)
 
         # ── 부산시 미적용 계약 상세 조회 ──
@@ -4693,6 +4694,8 @@ elif page == "🔔 경보 현황":
             st.markdown("<br>", unsafe_allow_html=True)
 
             # ── 경보 기준 안내 ──
+            alert_basis = protection_law_basis_for_cache()
+            alert_bsn = alert_basis.get("지방계약법", {})
             with st.expander("ℹ️ 경보 발생 기준 안내", expanded=False):
                 st.markdown(f"""
 <div style="font-size:0.78rem; line-height:1.7; color:{COLORS['text_dark']};">
@@ -4714,7 +4717,7 @@ elif page == "🔔 경보 현황":
 | **대형유출** | 신규 유출계약 발생 (공사 **50억↑**, 용역·물품 **5억↑**, 쇼핑몰 **3억↑**) | 이전 캐시에 없던 대형 유출계약이 새로 감지되었을 때 |
 | **발주액변동** | 전체 발주액이 전일 대비 **10% 이상** 증감 | 데이터 이상이나 대규모 계약 변동을 감지 |
 | **지분초과** | 부산시 소속기관 공사에서 **외지업체 지분 60% 초과** | 의무공동도급 위반 의심 건 (부산 40% 미달) |
-| **보호제도미적용** | 기준액 이하인데 **지역제한경쟁·의무공동도급 미적용** | 공사 종합 ≤100억, 전문 ≤10억, 용역 ≤3.3억 |
+| **보호제도미적용** | 기준액 이하인데 **지역제한경쟁·의무공동도급 미적용** | 부산시 기준: 종합공사 ≤{alert_bsn.get("종합공사", 150):g}억, 전문공사 ≤{alert_bsn.get("전문공사", 10):g}억, 용역 ≤{alert_bsn.get("용역", 3.3):g}억 |
 | **사전규격** | 대형 사전규격 신규 등록 (공사 **10억↑**, 용역 **5억↑**) | 입찰 전 단계에서 대형 건을 사전 모니터링 |
 
 ---
@@ -4864,4 +4867,3 @@ elif page == "🔔 경보 현황":
         conn_ah.close()
     except Exception as e:
         st.error(f"DB 연결 오류: {e}")
-

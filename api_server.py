@@ -2136,9 +2136,463 @@ def get_chatbot_sm_list(
         logger.exception("챗봇 API 오류: shopping-mall-list")
         return _build_chatbot_response([], error="종합쇼핑몰 목록 조회 실패")
 
+
+
+
+
+# ============================================================================
+# 엑셀 다운로드 API (구군청 담당자용)
+# ============================================================================
+
+DownloadStatusFilter = Literal["active_only", "all", "exclude_closed"]
+
+def _status_join_and_filter(status_filter: str):
+    join = " LEFT JOIN company_business_status cbs ON cm.company_internal_id = cbs.company_internal_id"
+    if status_filter == "active_only":
+        where = " AND IFNULL(cbs.business_status, 'unknown') = 'active'"
+    elif status_filter == "exclude_closed":
+        where = " AND IFNULL(cbs.business_status, 'unknown') NOT IN ('closed', 'suspended')"
+    else:
+        where = ""
+    col = ", IFNULL(cbs.business_status, 'unknown') as nts_status"
+    return join, where, col
+
+
+def _direct_production_summary_expr(company_alias: str = "cm", product_expr: Optional[str] = None, valid_only: bool = False) -> str:
+    """직접생산확인증명 요약 SQL 표현식.
+
+    다운로드 API 전용이며, 사업자번호 등 원천 식별자는 노출하지 않는다.
+    product_expr가 있으면 세부품명과 다운로드 행의 품목명을 느슨하게 교차 매칭한다.
+    """
+    conditions = [f"dpc.company_internal_id = {company_alias}.company_internal_id"]
+    if valid_only:
+        conditions.append("dpc.validity_status = 'valid'")
+    if product_expr:
+        conditions.append(
+            f"""(
+                dpc.detail_product_name LIKE '%' || {product_expr} || '%'
+                OR {product_expr} LIKE '%' || dpc.detail_product_name || '%'
+            )"""
+        )
+    where_clause = " AND ".join(conditions)
+    return f"""IFNULL((
+        SELECT GROUP_CONCAT(
+            dpc.detail_product_name || ':' ||
+            dpc.validity_status || ':' ||
+            IFNULL(dpc.valid_to, ''),
+            ', '
+        )
+        FROM direct_production_certificate dpc
+        WHERE {where_clause}
+    ), '')"""
+
+
+def _direct_production_count_expr(company_alias: str = "cm", valid_only: bool = True) -> str:
+    where_clause = f"dpc.company_internal_id = {company_alias}.company_internal_id"
+    if valid_only:
+        where_clause += " AND dpc.validity_status = 'valid'"
+    return f"""(
+        SELECT COUNT(*)
+        FROM direct_production_certificate dpc
+        WHERE {where_clause}
+    )"""
+
+
+def _make_excel_response(rows, columns, headers_kr, filename):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    import io
+    from starlette.responses import StreamingResponse
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "데이터"
+    
+    header_font = Font(name="맑은 고딕", bold=True, size=11, color="FFFFFF")
+    header_fill = PatternFill(start_color="2B579A", end_color="2B579A", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin")
+    )
+    
+    for col_idx, h in enumerate(headers_kr, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+    
+    data_font = Font(name="맑은 고딕", size=10)
+    for row_idx, row in enumerate(rows, 2):
+        for col_idx, col_name in enumerate(columns, 1):
+            val = row[col_name] if isinstance(row, dict) else row[col_idx - 1]
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.font = data_font
+            cell.border = thin_border
+    
+    for col_idx, h in enumerate(headers_kr, 1):
+        max_len = len(str(h))
+        for row_idx in range(2, min(len(rows) + 2, 100)):
+            cell_val = ws.cell(row=row_idx, column=col_idx).value
+            if cell_val:
+                max_len = max(max_len, len(str(cell_val)))
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 4, 40)
+    
+    ws.auto_filter.ref = ws.dimensions
+    
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.get("/api/download/license-companies", tags=["다운로드"])
+def download_license_companies(
+    license_name: str = Query(..., description="면허명 (예: 건축공사업)"),
+    status: DownloadStatusFilter = Query("active_only", description="영업상태 필터 (active_only/exclude_closed/all)"),
+    limit: int = Query(5000, ge=1, le=10000),
+):
+    s_join, s_where, s_col = _status_join_and_filter(status)
+    conn = _get_chatbot_db()
+    rows = conn.execute(f"""
+        SELECT cm.company_name, ci.canonical_business_no as bizno,
+               cm.display_location, cm.location_detail,
+               cm.is_headquarters{s_col},
+               cl.license_name, cl.license_code,
+               {_direct_production_summary_expr(valid_only=True)} as direct_production_summary
+        FROM company_master cm
+        JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+        JOIN company_license cl ON cm.company_internal_id = cl.company_internal_id
+        {s_join}
+        WHERE cl.license_name LIKE ? AND cm.is_busan_company = 1{s_where}
+        ORDER BY cm.company_name LIMIT ?
+    """, (f"%{license_name}%", limit)).fetchall()
+    conn.close()
+    
+    columns = ["company_name", "bizno", "display_location", "location_detail",
+               "is_headquarters", "nts_status", "license_name", "license_code",
+               "direct_production_summary"]
+    headers = ["업체명", "사업자번호", "소재지", "상세주소", "본사여부", "영업상태", "면허명", "면허코드",
+               "직접생산증명"]
+    
+    from urllib.parse import quote
+    fn = quote(f"면허별업체_{license_name}.xlsx")
+    return _make_excel_response(rows, columns, headers, fn)
+
+
+@app.get("/api/download/product-companies", tags=["다운로드"])
+def download_product_companies(
+    product_name: str = Query(..., description="물품명 (예: 컴퓨터)"),
+    status: DownloadStatusFilter = Query("active_only", description="영업상태 필터"),
+    limit: int = Query(5000, ge=1, le=10000),
+):
+    s_join, s_where, s_col = _status_join_and_filter(status)
+    conn = _get_chatbot_db()
+    rows = conn.execute(f"""
+        SELECT cm.company_name, ci.canonical_business_no as bizno,
+               cm.display_location, cm.location_detail,
+               cm.is_headquarters{s_col},
+               cp.product_name, cp.product_code,
+               {_direct_production_summary_expr(product_expr="cp.product_name")} as direct_production_summary
+        FROM company_master cm
+        JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+        JOIN company_product cp ON cm.company_internal_id = cp.company_internal_id
+        {s_join}
+        WHERE cp.product_name LIKE ? AND cm.is_busan_company = 1{s_where}
+        ORDER BY cm.company_name LIMIT ?
+    """, (f"%{product_name}%", limit)).fetchall()
+    conn.close()
+    
+    columns = ["company_name", "bizno", "display_location", "location_detail",
+               "is_headquarters", "nts_status", "product_name", "product_code",
+               "direct_production_summary"]
+    headers = ["업체명", "사업자번호", "소재지", "상세주소", "본사여부", "영업상태", "물품분류", "물품코드",
+               "직접생산증명"]
+    
+    from urllib.parse import quote
+    fn = quote(f"물품별업체_{product_name}.xlsx")
+    return _make_excel_response(rows, columns, headers, fn)
+
+
+@app.get("/api/download/policy-companies", tags=["다운로드"])
+def download_policy_companies(
+    policy_type: Optional[str] = Query(None, description="정책유형 (미지정시 전체)"),
+    status: DownloadStatusFilter = Query("active_only", description="영업상태 필터"),
+    limit: int = Query(5000, ge=1, le=10000),
+):
+    s_join, s_where, s_col = _status_join_and_filter(status)
+    conn = _get_chatbot_db()
+    if policy_type:
+        rows = conn.execute(f"""
+            SELECT cm.company_name, ci.canonical_business_no as bizno,
+                   cm.display_location, cm.location_detail,
+                   cm.is_headquarters{s_col},
+                   pcc.policy_subtype, pcc.validity_status,
+                   {_direct_production_summary_expr(valid_only=True)} as direct_production_summary
+            FROM company_master cm
+            JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+            JOIN policy_company_certification pcc ON cm.company_internal_id = pcc.company_internal_id
+            {s_join}
+            WHERE pcc.policy_subtype LIKE ? AND cm.is_busan_company = 1{s_where}
+            ORDER BY cm.company_name LIMIT ?
+        """, (f"%{policy_type}%", limit)).fetchall()
+    else:
+        rows = conn.execute(f"""
+            SELECT cm.company_name, ci.canonical_business_no as bizno,
+                   cm.display_location, cm.location_detail,
+                   cm.is_headquarters{s_col},
+                   pcc.policy_subtype, pcc.validity_status,
+                   {_direct_production_summary_expr(valid_only=True)} as direct_production_summary
+            FROM company_master cm
+            JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+            JOIN policy_company_certification pcc ON cm.company_internal_id = pcc.company_internal_id
+            {s_join}
+            WHERE cm.is_busan_company = 1{s_where}
+            ORDER BY pcc.policy_subtype, cm.company_name LIMIT ?
+        """, (limit,)).fetchall()
+    conn.close()
+    
+    columns = ["company_name", "bizno", "display_location", "location_detail",
+               "is_headquarters", "nts_status", "policy_subtype", "validity_status",
+               "direct_production_summary"]
+    headers = ["업체명", "사업자번호", "소재지", "상세주소", "본사여부", "영업상태", "정책유형", "인증상태",
+               "직접생산증명"]
+    
+    from urllib.parse import quote
+    fn = quote(f"정책업체_{policy_type or '전체'}.xlsx")
+    return _make_excel_response(rows, columns, headers, fn)
+
+
+@app.get("/api/download/shopping-mall-products", tags=["다운로드"])
+def download_shopping_mall_products(
+    contract_type: Optional[str] = Query(None, description="계약유형 (mas, general_unit_price 등)"),
+    status: DownloadStatusFilter = Query("active_only", description="영업상태 필터"),
+    limit: int = Query(10000, ge=1, le=50000),
+):
+    s_join, s_where, s_col = _status_join_and_filter(status)
+    conn = _get_chatbot_db()
+    if contract_type:
+        rows = conn.execute(f"""
+            SELECT cm.company_name, ci.canonical_business_no as bizno,
+                   cm.display_location{s_col},
+                   smp.product_name, smp.detail_product_name, smp.product_code,
+                   smp.shopping_mall_contract_type, smp.contract_status,
+                   smp.price_amount, smp.price_unit,
+                   smp.contract_start_date, smp.contract_end_date,
+                   {_direct_production_summary_expr(product_expr="IFNULL(NULLIF(smp.detail_product_name, ''), smp.product_name)")} as direct_production_summary
+            FROM shopping_mall_product smp
+            JOIN company_master cm ON smp.company_internal_id = cm.company_internal_id
+            JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+            {s_join}
+            WHERE cm.is_busan_company = 1 AND smp.shopping_mall_contract_type = ?{s_where}
+            ORDER BY cm.company_name LIMIT ?
+        """, (contract_type, limit)).fetchall()
+    else:
+        rows = conn.execute(f"""
+            SELECT cm.company_name, ci.canonical_business_no as bizno,
+                   cm.display_location{s_col},
+                   smp.product_name, smp.detail_product_name, smp.product_code,
+                   smp.shopping_mall_contract_type, smp.contract_status,
+                   smp.price_amount, smp.price_unit,
+                   smp.contract_start_date, smp.contract_end_date,
+                   {_direct_production_summary_expr(product_expr="IFNULL(NULLIF(smp.detail_product_name, ''), smp.product_name)")} as direct_production_summary
+            FROM shopping_mall_product smp
+            JOIN company_master cm ON smp.company_internal_id = cm.company_internal_id
+            JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+            {s_join}
+            WHERE cm.is_busan_company = 1{s_where}
+            ORDER BY cm.company_name LIMIT ?
+        """, (limit,)).fetchall()
+    conn.close()
+    
+    columns = ["company_name", "bizno", "display_location", "nts_status",
+               "product_name", "detail_product_name", "product_code",
+               "shopping_mall_contract_type", "contract_status",
+               "price_amount", "price_unit", "contract_start_date", "contract_end_date",
+               "direct_production_summary"]
+    headers = ["업체명", "사업자번호", "소재지", "영업상태",
+               "물품분류", "세부물품", "물품코드",
+               "계약유형", "계약상태", "단가(원)", "단위", "계약시작일", "계약종료일",
+               "직접생산증명"]
+    
+    from urllib.parse import quote
+    fn = quote(f"종합쇼핑몰_{contract_type or '전체'}.xlsx")
+    return _make_excel_response(rows, columns, headers, fn)
+
+
+@app.get("/api/download/certified-products", tags=["다운로드"])
+def download_certified_products(
+    cert_type: Optional[str] = Query(None, description="인증유형 (NEP, NET 등)"),
+    status: DownloadStatusFilter = Query("active_only", description="영업상태 필터"),
+    limit: int = Query(10000, ge=1, le=50000),
+):
+    s_join, s_where, s_col = _status_join_and_filter(status)
+    conn = _get_chatbot_db()
+    if cert_type:
+        rows = conn.execute(f"""
+            SELECT cm.company_name, ci.canonical_business_no as bizno,
+                   cm.display_location{s_col},
+                   cp.certification_type, cp.certification_type_label,
+                   cp.product_name, cp.validity_status, cp.source_name,
+                   {_direct_production_summary_expr(product_expr="cp.product_name")} as direct_production_summary
+            FROM certified_product cp
+            JOIN company_master cm ON cp.company_internal_id = cm.company_internal_id
+            JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+            {s_join}
+            WHERE cm.is_busan_company = 1 AND cp.certification_type LIKE ?{s_where}
+            ORDER BY cm.company_name LIMIT ?
+        """, (f"%{cert_type}%", limit)).fetchall()
+    else:
+        rows = conn.execute(f"""
+            SELECT cm.company_name, ci.canonical_business_no as bizno,
+                   cm.display_location{s_col},
+                   cp.certification_type, cp.certification_type_label,
+                   cp.product_name, cp.validity_status, cp.source_name,
+                   {_direct_production_summary_expr(product_expr="cp.product_name")} as direct_production_summary
+            FROM certified_product cp
+            JOIN company_master cm ON cp.company_internal_id = cm.company_internal_id
+            JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+            {s_join}
+            WHERE cm.is_busan_company = 1{s_where}
+            ORDER BY cp.certification_type, cm.company_name LIMIT ?
+        """, (limit,)).fetchall()
+    conn.close()
+    
+    columns = ["company_name", "bizno", "display_location", "nts_status",
+               "certification_type", "certification_type_label",
+               "product_name", "validity_status", "source_name",
+               "direct_production_summary"]
+    headers = ["업체명", "사업자번호", "소재지", "영업상태",
+               "인증유형", "인증유형명", "제품명", "유효상태", "출처",
+               "직접생산증명"]
+    
+    from urllib.parse import quote
+    fn = quote(f"인증제품_{cert_type or '전체'}.xlsx")
+    return _make_excel_response(rows, columns, headers, fn)
+
+
+@app.get("/api/download/direct-production-certs", tags=["다운로드"])
+def download_direct_production_certs(
+    product_name: Optional[str] = Query(None, description="세부품명 필터 (예: 데스크톱컴퓨터)"),
+    validity_status: Optional[str] = Query("valid", description="유효상태 (valid/expired/unknown/all)"),
+    status: DownloadStatusFilter = Query("active_only", description="영업상태 필터"),
+    limit: int = Query(10000, ge=1, le=50000),
+):
+    s_join, s_where, s_col = _status_join_and_filter(status)
+    params = []
+    dpc_where = ""
+    if product_name:
+        dpc_where += " AND dpc.detail_product_name LIKE ?"
+        params.append(f"%{product_name}%")
+    if validity_status and validity_status != "all":
+        dpc_where += " AND dpc.validity_status = ?"
+        params.append(validity_status)
+    params.append(limit)
+
+    conn = _get_chatbot_db()
+    rows = conn.execute(f"""
+        SELECT cm.company_name,
+               ci.canonical_business_no as bizno,
+               cm.display_location,
+               cm.location_detail,
+               cm.is_headquarters{s_col},
+               dpc.detail_product_name,
+               dpc.detail_product_code,
+               dpc.valid_from,
+               dpc.valid_to,
+               dpc.validity_status,
+               dpc.source_refreshed_at,
+               dpc.source_name
+        FROM direct_production_certificate dpc
+        JOIN company_master cm ON dpc.company_internal_id = cm.company_internal_id
+        JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+        {s_join}
+        WHERE cm.is_busan_company = 1{s_where}{dpc_where}
+        ORDER BY dpc.detail_product_name, cm.company_name
+        LIMIT ?
+    """, tuple(params)).fetchall()
+    conn.close()
+
+    columns = ["company_name", "bizno", "display_location", "location_detail",
+               "is_headquarters", "nts_status", "detail_product_name",
+               "detail_product_code", "valid_from", "valid_to", "validity_status",
+               "source_refreshed_at", "source_name"]
+    headers = ["업체명", "사업자번호", "소재지", "상세주소",
+               "본사여부", "영업상태", "세부품명",
+               "세부품명번호", "유효기간 시작일", "유효기간 종료일", "유효상태",
+               "원천갱신일", "출처"]
+
+    from urllib.parse import quote
+    fn = quote(f"직접생산증명_{product_name or '전체'}_{validity_status or 'all'}.xlsx")
+    return _make_excel_response(rows, columns, headers, fn)
+
+
+
+@app.get("/api/download/all-companies", tags=["다운로드"])
+def download_all_companies(
+    status: DownloadStatusFilter = Query("active_only", description="영업상태 필터 (active_only/exclude_closed/all)"),
+    limit: int = Query(50000, ge=1, le=50000),
+):
+    """부산 업체 통합 데이터 엑셀 다운로드"""
+    s_join, s_where, s_col = _status_join_and_filter(status)
+    conn = _get_chatbot_db()
+    rows = conn.execute(f"""
+        SELECT cm.company_name,
+               ci.canonical_business_no as bizno,
+               cm.display_location,
+               cm.location_detail
+               {s_col},
+               (SELECT GROUP_CONCAT(cl.license_name, ', ')
+                FROM company_license cl WHERE cl.company_internal_id = cm.company_internal_id) as licenses,
+               (SELECT GROUP_CONCAT(cp.product_name, ', ')
+                FROM company_product cp WHERE cp.company_internal_id = cm.company_internal_id) as products,
+               (SELECT GROUP_CONCAT(pcc.policy_subtype, ', ')
+                FROM policy_company_certification pcc WHERE pcc.company_internal_id = cm.company_internal_id) as policy_types,
+               (SELECT GROUP_CONCAT(cert.certification_type, ', ')
+                FROM certified_product cert WHERE cert.company_internal_id = cm.company_internal_id) as cert_types,
+               (SELECT GROUP_CONCAT(smp.shopping_mall_contract_type, ', ')
+                FROM shopping_mall_product smp
+                WHERE smp.company_internal_id = cm.company_internal_id AND smp.contract_status = 'active') as shopping_mall_types,
+               (SELECT COUNT(*)
+                FROM shopping_mall_product smp
+                WHERE smp.company_internal_id = cm.company_internal_id AND smp.contract_status = 'active') as shopping_mall_count,
+               {_direct_production_count_expr(valid_only=True)} as direct_production_valid_count,
+               {_direct_production_summary_expr(valid_only=True)} as direct_production_summary,
+               IFNULL((SELECT manufacturer_type FROM company_manufacturer_status cms
+                       WHERE cms.company_internal_id = cm.company_internal_id LIMIT 1), '') as manufacturer_type
+        FROM company_master cm
+        JOIN company_identity ci ON cm.company_internal_id = ci.company_internal_id
+        {s_join}
+        WHERE cm.is_busan_company = 1{s_where}
+        ORDER BY cm.company_name
+        LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+
+    columns = ["company_name", "bizno", "display_location", "location_detail",
+               "nts_status", "licenses", "products", "policy_types",
+               "cert_types", "shopping_mall_types", "shopping_mall_count",
+               "direct_production_valid_count", "direct_production_summary",
+               "manufacturer_type"]
+    headers = ["업체명", "사업자번호", "소재지", "상세주소",
+               "영업상태", "보유면허", "등록물품", "정책업체유형",
+               "인증유형", "쇼핑몰계약유형", "쇼핑몰등록건수",
+               "직접생산증명 유효건수", "직접생산증명",
+               "제조업체구분"]
+
+    from urllib.parse import quote
+    fn = quote(f"부산업체통합_{status}.xlsx")
+    return _make_excel_response(rows, columns, headers, fn)
+
+
 if __name__ == '__main__':
     import uvicorn
     print("[API] 부산 조달 모니터링 API 서버 시작")
     print("   http://localhost:8000/docs")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

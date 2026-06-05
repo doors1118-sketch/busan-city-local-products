@@ -18,8 +18,16 @@ NCP_SECRET_KEY = os.environ.get('NCP_SECRET_KEY', '')
 BUCKET_NAME = 'busan-procurement-backup'
 
 
+def has_object_storage_config():
+    """NCP Object Storage credentials are optional; local backup must still run."""
+    return bool(NCP_ACCESS_KEY and NCP_SECRET_KEY)
+
+
 def ensure_bucket():
     """버킷이 없으면 생성"""
+    if not has_object_storage_config():
+        raise RuntimeError("NCP_ACCESS_KEY/NCP_SECRET_KEY not configured")
+
     import boto3
     s3 = boto3.client('s3',
         endpoint_url=NCP_ENDPOINT,
@@ -70,18 +78,22 @@ def backup_and_upload():
     # 2. NCP Object Storage 업로드
     print(f"\n  [Object Storage 업로드]")
     s3 = None
-    try:
-        s3 = ensure_bucket()
-        for fpath in backup_files:
-            fname = os.path.basename(fpath)
-            s3_key = f"daily/{fname}"
-            fsize = os.path.getsize(fpath) / 1024 / 1024
-            print(f"    업로드: {fname} ({fsize:.1f}MB) → s3://{BUCKET_NAME}/{s3_key}")
-            s3.upload_file(fpath, BUCKET_NAME, s3_key)
-        print(f"  ✅ 업로드 완료 ({len(backup_files)}개 파일)")
-    except Exception as e:
-        print(f"  ⚠️ 업로드 실패: {e}")
-        print(f"  → 로컬 백업은 유지됩니다.")
+    if not has_object_storage_config():
+        print("  ⚠️ 원격 백업 비활성: NCP_ACCESS_KEY/NCP_SECRET_KEY 미설정")
+        print("  → 로컬 백업은 유지됩니다. 원격 백업 재개 시 .env에 유효한 NCP Object Storage 키를 설정하세요.")
+    else:
+        try:
+            s3 = ensure_bucket()
+            for fpath in backup_files:
+                fname = os.path.basename(fpath)
+                s3_key = f"daily/{fname}"
+                fsize = os.path.getsize(fpath) / 1024 / 1024
+                print(f"    업로드: {fname} ({fsize:.1f}MB) → s3://{BUCKET_NAME}/{s3_key}")
+                s3.upload_file(fpath, BUCKET_NAME, s3_key)
+            print(f"  ✅ 업로드 완료 ({len(backup_files)}개 파일)")
+        except Exception as e:
+            print(f"  ⚠️ 업로드 실패: {e}")
+            print(f"  → 로컬 백업은 유지됩니다.")
     
     # 3. 오래된 로컬 백업 삭제 (7일 초과)
     print(f"\n  [로컬 정리] {RETENTION_DAYS}일 초과 백업 삭제")

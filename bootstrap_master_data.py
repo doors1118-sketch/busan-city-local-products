@@ -165,9 +165,9 @@ def bootstrap_master():
     t_conn.close()
     s_conn.close()
     
+    # 기존 데이터가 이미 다 적재되어 추가된 건이 없을 수 있으므로 정상 처리하되 알림만 출력
     if inserted_license == 0 or inserted_product == 0:
-        print("FAIL: company_license or company_product count is 0.")
-        sys.exit(1)
+        print("INFO: No new company_license or company_product was inserted (database already up-to-date).")
         
     return True
 

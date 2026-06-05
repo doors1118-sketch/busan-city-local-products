@@ -81,6 +81,13 @@ NON_LOCAL_BRANCH_BIZNOS = {
     '3258101042',  # 주식회사로하스에코시스템 (비부산)
 }
 
+# 예외 수집 기관: 조달청 등록상 서울(타지역) 소재이지만 실제 본사가 부산인 기관
+# → 타지역 필터(전화번호/키워드) 면제 대상
+BUSAN_EXCEPTION_AGENCIES = {
+    'B552481',  # 한국예탁결제원 (부산 남구, 조달청 등록=서울)
+    'Z044079',  # 한국예탁결제원 총무2팀
+}
+
 # 부산 지명과 겹치는 키워드 예외
 BUSAN_EXCEPTIONS = {
     '대구': ['해운대구'],
@@ -188,6 +195,10 @@ def is_non_busan_contract(row, lrg):
     """전화번호+키워드로 타지역 계약 판별.
     Returns: 'keyword' (키워드 매칭), 'tel' (전화번호만), False (부산)"""
     if lrg == '부산광역시 및 소속기관':
+        return False
+    # 예외 수집 기관: 본사 부산이므로 타지역 필터 면제
+    cd = str(row.get('dminsttCd', '') or '').strip()
+    if cd in BUSAN_EXCEPTION_AGENCIES:
         return False
     # 전화번호
     tel = str(row.get('cntrctInsttOfclTelNo', '')).strip()
