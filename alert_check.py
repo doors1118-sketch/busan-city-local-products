@@ -620,6 +620,73 @@ def check_pipeline_sync():
     return alerts
 
 
+def _previous_collection_date():
+    """Return the previous collection date using the same weekend rule as check_pipeline_sync."""
+    now = datetime.datetime.now()
+    yesterday = now - datetime.timedelta(days=1)
+    if yesterday.weekday() == 6:
+        yesterday = now - datetime.timedelta(days=2)
+    elif yesterday.weekday() == 5:
+        yesterday = now - datetime.timedelta(days=1)
+    return yesterday.strftime('%Y%m%d')
+
+
+def check_public_api_issues():
+    """Alert when daily_pipeline_sync recorded public-data API errors for the target date."""
+    alerts = []
+    if not os.path.exists(DB_PATH):
+        return alerts
+
+    target_date = _previous_collection_date()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        table_exists = conn.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='api_call_issues'
+            LIMIT 1
+        """).fetchone()
+        if not table_exists:
+            conn.close()
+            print(f"  ✅ 정상: 공공데이터 API 실패 기록 테이블 없음")
+            return alerts
+
+        rows = conn.execute("""
+            SELECT api_name, issue_type, severity, detail, SUM(occurrence_count) AS cnt
+            FROM api_call_issues
+            WHERE target_date = ?
+            GROUP BY api_name, issue_type, severity, detail
+            ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 ELSE 1 END, cnt DESC, api_name
+        """, (target_date,)).fetchall()
+        conn.close()
+
+        if not rows:
+            print(f"  ✅ 정상: 공공데이터 API 실패 기록 없음 ({target_date})")
+            return alerts
+
+        critical_count = sum(int(r[4] or 0) for r in rows if r[2] == 'CRITICAL')
+        warning_count = sum(int(r[4] or 0) for r in rows if r[2] != 'CRITICAL')
+        level = 'CRITICAL' if critical_count else 'WARNING'
+        msg = (f"🚨 [경보] 공공데이터 API 실패 기록: {target_date} "
+               f"경보 {critical_count}건 / 주의 {warning_count}건") if level == 'CRITICAL' else (
+              f"⚠️ [주의] 공공데이터 API 실패 기록: {target_date} 주의 {warning_count}건")
+        alerts.append((level, msg))
+        print(f"  {msg}")
+
+        for api_name, issue_type, severity, detail, cnt in rows[:5]:
+            short_detail = str(detail or '').replace('\n', ' ')[:80]
+            sub_msg = f"⚠️ [API] {api_name}/{issue_type}: {int(cnt or 0)}회 - {short_detail}"
+            alerts.append(('WARNING', sub_msg))
+            print(f"  {sub_msg}")
+        if len(rows) > 5:
+            print(f"     ... 외 {len(rows) - 5}종")
+    except Exception as e:
+        msg = f"⚠️ [주의] 공공데이터 API 실패 기록 확인 오류: {e}"
+        alerts.append(('WARNING', msg))
+        print(f"  {msg}")
+
+    return alerts
+
+
 def check_chatbot_pipeline_sync():
     """챗봇 DB 파이프라인 수집 실패 감지: chatbot_company.db의 etl_job_log 테이블 확인"""
     alerts = []
@@ -706,6 +773,9 @@ def run_alert_check():
     print(f"  {'─'*46}")
     sync_alerts = check_pipeline_sync()
     alerts.extend(sync_alerts)
+
+    api_issue_alerts = check_public_api_issues()
+    alerts.extend(api_issue_alerts)
     
     chatbot_alerts = check_chatbot_pipeline_sync()
     alerts.extend(chatbot_alerts)
@@ -972,6 +1042,8 @@ def run_alert_check():
                     atype = '수주율변동'
                 elif '발주액' in msg:
                     atype = '발주액변동'
+                elif '공공데이터 API' in msg or '[API]' in msg:
+                    atype = '공공데이터API'
                 else:
                     atype = '기타'
 
