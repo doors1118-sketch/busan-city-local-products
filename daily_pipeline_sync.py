@@ -28,6 +28,8 @@ if os.path.exists(_env_path):
     with open(_env_path, encoding='utf-8') as _f:
         for _line in _f:
             _line = _line.strip()
+            if _line.startswith('export '):
+                _line = _line[len('export '):].strip()
             if _line and not _line.startswith('#') and '=' in _line:
                 _k, _v = _line.split('=', 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
@@ -222,6 +224,8 @@ def update_agency_master_daily(target_date):
                 with urllib.request.urlopen(rq, context=ctx, timeout=20) as res:
                     d = json.loads(res.read().decode('utf-8'))
                     h = d.get('response', {}).get('header', {})
+                    if not h:
+                        h = d.get('nkoneps.com.response.ResponseError', {}).get('header', {})
                     if h.get('resultCode') == '00':
                         b = d.get('response', {}).get('body', {})
                         return b.get('items', []), b.get('totalCount', 0)
@@ -407,7 +411,7 @@ def update_company_industry_daily(target_date):
     end_dt = f"{target_date}2359"
 
     def fetch_industry_page(page_no):
-        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
+        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=3&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
         retry = 0
         while retry < 3:
             try:
@@ -415,6 +419,8 @@ def update_company_industry_daily(target_date):
                 with urllib.request.urlopen(rq, context=ctx, timeout=20) as res:
                     d = json.loads(res.read().decode('utf-8'))
                     h = d.get('response', {}).get('header', {})
+                    if not h:
+                        h = d.get('nkoneps.com.response.ResponseError', {}).get('header', {})
                     if h.get('resultCode') == '00':
                         b = d.get('response', {}).get('body', {})
                         return b.get('items', []), b.get('totalCount', 0)
