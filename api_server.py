@@ -998,7 +998,9 @@ def get_chatbot_version():
             "procurement_attributes",
             "general_certifications",
             "shopping_mall_product",
-            "shopping_mall_contract_type"
+            "shopping_mall_contract_type",
+            "product_policy_summary",
+            "product_policy_search"
         ]
     }
 
@@ -2143,6 +2145,140 @@ def get_chatbot_sm_list(
 # ============================================================================
 # 엑셀 다운로드 API (구군청 담당자용)
 # ============================================================================
+
+
+ProductPolicyFlagFilter = Literal["all", "sme_competition", "construction_material", "busan_coop", "direct_production", "mas"]
+
+def _split_pipe(value):
+    if value is None:
+        return []
+    return [item.strip() for item in str(value).split("|") if item and item.strip()]
+
+def _product_policy_flag_sql(flag_filter: str) -> str:
+    if flag_filter == "sme_competition":
+        return " AND IFNULL(is_sme_competition_product, 0) = 1"
+    if flag_filter == "construction_material":
+        return " AND IFNULL(is_construction_material_direct_purchase, 0) = 1"
+    if flag_filter == "busan_coop":
+        return " AND (IFNULL(busan_eligible_coop_count, 0) > 0 OR IFNULL(busan_coop_joint_product_count, 0) > 0)"
+    if flag_filter == "direct_production":
+        return " AND IFNULL(direct_production_valid_supplier_count, 0) > 0"
+    if flag_filter == "mas":
+        return " AND IFNULL(mas_active_supplier_count, 0) > 0"
+    return ""
+
+def _build_product_policy_response(rows, meta=None, error=None):
+    candidates = []
+    for r in rows:
+        item = dict(r)
+        item["busan_eligible_coops"] = _split_pipe(item.get("busan_eligible_coops"))
+        item["busan_coop_joint_product_coops"] = _split_pipe(item.get("busan_coop_joint_product_coops"))
+        item["source_refs"] = _split_pipe(item.get("source_refs"))
+        for key in (
+            "is_sme_competition_product",
+            "is_construction_material_direct_purchase",
+            "eligible_coop_count",
+            "busan_eligible_coop_count",
+            "coop_joint_product_count",
+            "busan_coop_joint_product_count",
+            "mas_active_supplier_count",
+            "shopping_mall_active_supplier_count",
+            "busan_company_product_count",
+            "direct_production_valid_supplier_count",
+        ):
+            item[key] = int(item.get(key) or 0)
+        candidates.append(item)
+    return {
+        "meta": meta or {},
+        "candidates": candidates,
+        "company_source_status": "success" if error is None else "error",
+        "company_search_status": "success" if error is None else "error",
+        "company_cache_used": True,
+        "company_cache_mode": "database",
+        "error": error,
+    }
+
+@app.get("/api/chatbot/product-policy/search", tags=["chatbot product policy"])
+def get_chatbot_product_policy_search(
+    keyword: Optional[str] = Query(None, description="detail product name or code keyword"),
+    detail_product_code: Optional[str] = Query(None, description="detail product code"),
+    flag_filter: ProductPolicyFlagFilter = Query("all", description="policy flag filter"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    try:
+        conn = _get_chatbot_db()
+        where = ["1=1"]
+        params = []
+        if detail_product_code:
+            where.append("detail_product_code = ?")
+            params.append(detail_product_code.strip())
+        if keyword:
+            like = f"%{keyword.strip()}%"
+            where.append("(detail_product_name LIKE ? OR detail_product_code LIKE ?)")
+            params.extend([like, like])
+        flag_sql = _product_policy_flag_sql(flag_filter)
+        query = f'''
+            SELECT
+                detail_product_code,
+                detail_product_name,
+                is_sme_competition_product,
+                is_construction_material_direct_purchase,
+                required_special_note,
+                construction_material_note,
+                eligible_coop_count,
+                busan_eligible_coop_count,
+                busan_eligible_coops,
+                coop_joint_product_count,
+                busan_coop_joint_product_count,
+                busan_coop_joint_product_coops,
+                mas_active_supplier_count,
+                shopping_mall_active_supplier_count,
+                busan_company_product_count,
+                direct_production_valid_supplier_count,
+                source_refs,
+                generated_at
+            FROM product_policy_summary
+            WHERE {' AND '.join(where)} {flag_sql}
+            ORDER BY
+                (IFNULL(is_sme_competition_product, 0) + IFNULL(is_construction_material_direct_purchase, 0)) DESC,
+                (IFNULL(busan_eligible_coop_count, 0) + IFNULL(busan_coop_joint_product_count, 0)) DESC,
+                IFNULL(direct_production_valid_supplier_count, 0) DESC,
+                IFNULL(mas_active_supplier_count, 0) DESC,
+                detail_product_name
+            LIMIT ? OFFSET ?
+        '''
+        rows = conn.execute(query, params + [limit, offset]).fetchall()
+        total_query = f"SELECT COUNT(*) FROM product_policy_summary WHERE {' AND '.join(where)} {flag_sql}"
+        total = conn.execute(total_query, params).fetchone()[0]
+        latest = conn.execute("SELECT MAX(generated_at) FROM product_policy_summary").fetchone()[0]
+        conn.close()
+        return _build_product_policy_response(rows, meta={
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "keyword": keyword,
+            "detail_product_code": detail_product_code,
+            "flag_filter": flag_filter,
+            "source_refreshed_at": {"product_policy_summary": latest} if latest else {},
+        })
+    except Exception:
+        logger.exception("chatbot API error: product-policy-search")
+        return _build_product_policy_response([], error="product policy search failed")
+
+@app.get("/api/chatbot/product-policy/list", tags=["chatbot product policy"])
+def get_chatbot_product_policy_list(
+    flag_filter: ProductPolicyFlagFilter = Query("all", description="policy flag filter"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    return get_chatbot_product_policy_search(
+        keyword=None,
+        detail_product_code=None,
+        flag_filter=flag_filter,
+        limit=limit,
+        offset=offset,
+    )
 
 DownloadStatusFilter = Literal["active_only", "all", "exclude_closed"]
 
