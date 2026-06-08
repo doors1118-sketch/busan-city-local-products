@@ -5,21 +5,54 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import hashlib
+import time
 
 TARGET_DB = os.environ.get("CHATBOT_DB", "staging_chatbot_company.db")
 SERVICE_KEY = os.environ.get("SHOPPING_MALL_PRDCT_SERVICE_KEY")
+RETRY_STATUS_CODES = {429, 502, 503, 504}
+DEFAULT_RETRY_DELAYS = [5, 15, 30]
 
-def log_etl(conn, job_name, source_name, input_count, inserted_count, skipped_count=0, status='success', msg=""):
+def log_etl(conn, job_name, source_name, input_count, inserted_count, skipped_count=0, status='success', msg="", error_count=0):
     conn.execute("""
         INSERT INTO etl_job_log (job_name, source_name, started_at, finished_at, status, input_row_count, inserted_count, skipped_count, error_count, error_message)
-        VALUES (?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, 0, ?)
-    """, (job_name, source_name, status, input_count, inserted_count, skipped_count, msg))
+        VALUES (?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?)
+    """, (job_name, source_name, status, input_count, inserted_count, skipped_count, error_count, msg))
     
     conn.execute("""
         INSERT INTO source_manifest (source_name, source_type, source_refreshed_at, row_count, status, error_message)
         VALUES (?, 'api_incremental', datetime('now'), ?, ?, ?)
         ON CONFLICT(source_name) DO UPDATE SET row_count=excluded.row_count, source_refreshed_at=excluded.source_refreshed_at, status=excluded.status, error_message=excluded.error_message
     """, (source_name, inserted_count, status, msg))
+
+
+def fetch_page_with_retry(url, params, page, retry_delays=None):
+    retry_delays = retry_delays or DEFAULT_RETRY_DELAYS
+    attempts = len(retry_delays) + 1
+    last_error = ""
+
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=60)
+            if resp.status_code == 200:
+                return resp, attempt - 1, ""
+
+            last_error = f"HTTP {resp.status_code} at page {page}"
+            if resp.status_code not in RETRY_STATUS_CODES or attempt == attempts:
+                return resp, attempt - 1, last_error
+
+            delay = retry_delays[attempt - 1]
+            print(f"  API retryable error at page {page}: HTTP {resp.status_code}; retry {attempt}/{attempts - 1} after {delay}s")
+            time.sleep(delay)
+        except requests.exceptions.RequestException as e:
+            last_error = f"Network error at page {page}: {type(e).__name__}"
+            if attempt == attempts:
+                raise
+
+            delay = retry_delays[attempt - 1]
+            print(f"  Network retryable error at page {page}: {type(e).__name__}; retry {attempt}/{attempts - 1} after {delay}s")
+            time.sleep(delay)
+
+    raise RuntimeError(last_error or f"page {page} fetch failed")
 
 def get_internal_id_by_bizno(conn, bizno):
     cur = conn.cursor()
@@ -149,6 +182,8 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
     
     status = 'success'
     error_msg = ""
+    error_count = 0
+    retry_count = 0
     source_name = 'mas_api_incremental'
     sm_source_name = 'shopping_mall_api_incremental'
     
@@ -166,11 +201,13 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
         
         try:
             print(f"  Fetching page {page}...")
-            resp = requests.get(url, params=params, timeout=60)
+            resp, page_retry_count, retry_error = fetch_page_with_retry(url, params, page)
+            retry_count += page_retry_count
             if resp.status_code != 200:
                 print(f"  API Error at page {page}: HTTP {resp.status_code}")
                 status = 'partial_success' if total_inserted > 0 else 'failed'
-                error_msg = f"HTTP {resp.status_code} at page {page}"
+                error_count += 1
+                error_msg = retry_error or f"HTTP {resp.status_code} at page {page}"
                 break
                 
             root = ET.fromstring(resp.content)
@@ -179,6 +216,7 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
                 res_msg = root.findtext('.//resultMsg')
                 print(f"  API Business Error: code={res_code}")
                 status = 'partial_success' if total_inserted > 0 else 'failed'
+                error_count += 1
                 error_msg = f"API Code {res_code}: {res_msg}"
                 break
             
@@ -322,17 +360,20 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
             
         except requests.exceptions.RequestException as e:
             print(f"  Network error during fetch: type={type(e).__name__}")
-            status = 'failed'
-            error_msg = f"Network error: {type(e).__name__}"
+            status = 'partial_success' if total_inserted > 0 else 'failed'
+            error_count += 1
+            error_msg = f"Network error at page {page}: {type(e).__name__}"
             break
         except ET.ParseError as e:
             print(f"  XML parsing error at page {page}")
-            status = 'failed'
+            status = 'partial_success' if total_inserted > 0 else 'failed'
+            error_count += 1
             error_msg = f"XML parse error at page {page}"
             break
         except Exception as e:
             print(f"  Exception during fetch: {type(e).__name__}")
-            status = 'failed'
+            status = 'partial_success' if total_inserted > 0 else 'failed'
+            error_count += 1
             error_msg = f"{type(e).__name__}: {str(e)[:100]}"
             break
     
@@ -342,11 +383,11 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
         print(f"Completed MAS API sync. Items: {total_api_items}, Updates: {total_inserted}")
         print(f"  Label parsing: cert={label_counters['cert']}, attr={label_counters['attr']}, general={label_counters['general']}, review={label_counters['review']}")
     
-    label_msg = f"cert={label_counters['cert']},attr={label_counters['attr']},general={label_counters['general']}"
+    label_msg = f"cert={label_counters['cert']},attr={label_counters['attr']},general={label_counters['general']},retries={retry_count}"
     full_msg = f"{error_msg} | labels: {label_msg}" if error_msg else f"labels: {label_msg}"
     
-    log_etl(conn, 'mas_api_incremental', source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=full_msg)
-    log_etl(conn, 'shopping_mall_api_incremental', sm_source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=full_msg)
+    log_etl(conn, 'mas_api_incremental', source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=full_msg, error_count=error_count)
+    log_etl(conn, 'shopping_mall_api_incremental', sm_source_name, total_api_items, total_inserted if not dry_run else 0, status=status, msg=full_msg, error_count=error_count)
     conn.commit()
     conn.close()
 
