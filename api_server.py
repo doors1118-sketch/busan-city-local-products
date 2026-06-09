@@ -1165,21 +1165,56 @@ def get_chatbot_product_search(product_name: str, status_filter: ChatbotStatusFi
 def get_chatbot_category_search(category_name: str, status_filter: ChatbotStatusFilter = "exclude_closed", limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0)):
     try:
         conn = _get_chatbot_db()
+        keyword_normalized = category_name.lower()
+        for ch in [" ", "-", "_", "/", "(", ")", "[", "]", ".", ","]:
+            keyword_normalized = keyword_normalized.replace(ch, "")
         query = f'''
+            WITH matched_category AS (
+                SELECT category_code
+                FROM g2b_product_category
+                WHERE category_name LIKE ?
+                   OR category_name_normalized LIKE ?
+                   OR category_code = ?
+                UNION
+                SELECT dtil_prdct_clsfc_no AS category_code
+                FROM procurement_product_alias
+                WHERE is_active = 1
+                  AND (
+                      alias LIKE ?
+                      OR alias_normalized LIKE ?
+                      OR canonical_name LIKE ?
+                      OR canonical_name_normalized LIKE ?
+                  )
+                UNION
+                SELECT prdct_clsfc_no AS category_code
+                FROM procurement_product_alias
+                WHERE is_active = 1
+                  AND prdct_clsfc_no <> ''
+                  AND (
+                      alias LIKE ?
+                      OR alias_normalized LIKE ?
+                      OR canonical_name LIKE ?
+                      OR canonical_name_normalized LIKE ?
+                  )
+            )
             SELECT v.*, cbs.business_status as actual_business_status, cbs.business_status_freshness as actual_business_status_freshness, cbs.checked_at as business_status_checked_at, cbs.business_status_source
             FROM chatbot_company_candidate_view v
             JOIN company_identity i ON v.company_id = i.company_id
             JOIN company_product cp ON i.company_internal_id = cp.company_internal_id
-            JOIN g2b_product_category g ON cp.g2b_category_code = g.category_code
+            JOIN matched_category mc ON (cp.g2b_category_code = mc.category_code OR cp.product_code = mc.category_code)
             LEFT JOIN company_business_status cbs ON i.company_internal_id = cbs.company_internal_id
-            WHERE (g.category_name LIKE ? OR g.category_code = ?) AND v.is_busan_company = 1
+            WHERE v.is_busan_company = 1
             {_get_status_filter_sql(status_filter)}
             GROUP BY v.company_id
             ORDER BY v.company_id
             LIMIT ? OFFSET ?
         '''
         p = f"%{category_name}%"
-        rows = conn.execute(query, (p, category_name, limit, offset)).fetchall()
+        pn = f"%{keyword_normalized}%"
+        rows = conn.execute(
+            query,
+            (p, pn, category_name, p, pn, p, pn, p, pn, p, pn, limit, offset),
+        ).fetchall()
         conn.close()
         return _build_chatbot_response(rows, meta={"query": {"keyword": category_name, "limit": limit, "offset": offset, "status_filter": status_filter}})
     except Exception:

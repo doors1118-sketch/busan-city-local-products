@@ -368,6 +368,7 @@ def main() -> int:
                 )
 
         alias_count = seed_curated_aliases(conn)
+        category_count = sync_g2b_product_category(conn)
         insert_job_log(
             conn,
             started_at=started_at,
@@ -375,7 +376,7 @@ def main() -> int:
             imported_count=imported_count,
             alias_count=alias_count,
         )
-        print(json.dumps({"status": "success", "imported_count": imported_count, "alias_count": alias_count}, ensure_ascii=False))
+        print(json.dumps({"status": "success", "imported_count": imported_count, "alias_count": alias_count, "category_count": category_count}, ensure_ascii=False))
         return 0
     except Exception as exc:
         insert_job_log(
@@ -677,6 +678,58 @@ def find_unit10_by_exact_name(conn: sqlite3.Connection, name: str) -> sqlite3.Ro
         """,
         (normalize_text(name),),
     ).fetchone()
+
+
+def sync_g2b_product_category(conn: sqlite3.Connection) -> int:
+    if not table_exists(conn, "g2b_product_category"):
+        return 0
+    rows = conn.execute(
+        """
+        SELECT
+            classification_no,
+            classification_unit,
+            classification_name,
+            classification_name_normalized,
+            parent_classification_no,
+            source_name,
+            source_refreshed_at
+        FROM procurement_product_classification
+        WHERE classification_no <> ''
+          AND classification_name <> ''
+          AND COALESCE(use_yn, 'Y') <> 'N'
+        """
+    ).fetchall()
+    conn.executemany(
+        """
+        INSERT INTO g2b_product_category (
+            category_code, category_depth, category_name, category_name_normalized,
+            parent_category_code, source, source_refreshed_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(category_code) DO UPDATE SET
+            category_depth=excluded.category_depth,
+            category_name=excluded.category_name,
+            category_name_normalized=excluded.category_name_normalized,
+            parent_category_code=excluded.parent_category_code,
+            source=excluded.source,
+            source_refreshed_at=excluded.source_refreshed_at,
+            updated_at=CURRENT_TIMESTAMP
+        """,
+        [
+            (
+                row["classification_no"],
+                row["classification_unit"],
+                row["classification_name"],
+                row["classification_name_normalized"],
+                row["parent_classification_no"],
+                row["source_name"],
+                row["source_refreshed_at"],
+            )
+            for row in rows
+        ],
+    )
+    conn.commit()
+    return len(rows)
 
 
 def insert_job_log(
