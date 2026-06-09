@@ -700,11 +700,13 @@ def check_chatbot_pipeline_sync():
         today_kst = datetime.datetime.now(KST).date()
         
         # 필수로 매일 실행되어야 하는 핵심 작업 목록 (주 1회 스케줄은 제외)
+        # import_innovation_product_api was disabled on 2026-06-08 by operation decision.
+        # The PPS innovation API repeatedly inserted 0 matched suppliers; innovation recommendation data
+        # is covered by import_certified_product_api, which imports the 13-type SMPP tech-product dataset.
         essential_jobs = [
             'bootstrap_master',
             'nts_batch_sync',
             'import_certified_product_api',
-            'import_innovation_product_api',
             'mas_api_incremental'
         ]
         
