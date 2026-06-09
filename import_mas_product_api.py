@@ -391,6 +391,213 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
     conn.commit()
     conn.close()
 
+
+def _shopping_mall_contract_type(method_name, mas_yn, excellent_yn):
+    method = method_name or ""
+    if "\uc81c3\uc790" in method:
+        return "third_party_unit_price"
+    if "\uc77c\ubc18\ub2e8\uac00" in method:
+        return "general_unit_price"
+    if "\uc6b0\uc218" in method or excellent_yn == "Y":
+        return "excellent_procurement"
+    if "\ub2e4\uc218" in method or mas_yn == "Y":
+        return "mas"
+    return "unknown"
+
+
+def fetch_shopping_mall_catalog(target_date_str=None, max_pages=50, num_of_rows=100, days=1, probe=False, dry_run=False):
+    """Import registered shopping-mall catalog products.
+
+    Official operation: getShoppingMallPrdctInfoList.
+    Uses inqryDiv=1 and inqryBgnDate/inqryEndDate because the operation is based on registration date.
+    """
+    source_name = "shopping_mall_catalog_api_incremental"
+    job_name = "shopping_mall_catalog_api_incremental"
+    if not SERVICE_KEY:
+        print("ERROR: SHOPPING_MALL_PRDCT_SERVICE_KEY is not set.")
+        try:
+            conn = sqlite3.connect(TARGET_DB)
+            log_etl(conn, job_name, source_name, 0, 0, status="failed", msg="serviceKey not configured", error_count=1)
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return
+
+    conn = sqlite3.connect(TARGET_DB)
+    label_map = load_label_map(conn)
+    label_count = len(label_map)
+
+    if target_date_str:
+        end_date = datetime.strptime(target_date_str, "%Y%m%d")
+    else:
+        end_date = datetime.now()
+    start_date = end_date - timedelta(days=max(days - 1, 0))
+    bgn_dt = start_date.strftime("%Y%m%d")
+    end_dt = end_date.strftime("%Y%m%d")
+
+    mode_label = "[PROBE]" if probe else ("[DRY-RUN]" if dry_run else "[LIVE]")
+    print(f"{mode_label} Starting shopping-mall catalog fetch (registration date) for {bgn_dt} ~ {end_dt}")
+    print(f"  max_pages={max_pages}, num_of_rows={num_of_rows}, label_map={label_count}")
+
+    url = "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/getShoppingMallPrdctInfoList"
+    page = 1
+    total_api_items = 0
+    total_matched = 0
+    total_skipped = 0
+    retry_count = 0
+    error_count = 0
+    error_msg = ""
+    status = "success"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    current_date = datetime.now().strftime("%Y%m%d")
+    label_counters = {"cert": 0, "attr": 0, "general": 0, "review": 0}
+
+    while page <= max_pages:
+        params = {
+            "ServiceKey": SERVICE_KEY,
+            "numOfRows": str(num_of_rows),
+            "pageNo": str(page),
+            "inqryDiv": "1",
+            "inqryBgnDate": bgn_dt,
+            "inqryEndDate": end_dt,
+        }
+        try:
+            print(f"  Fetching catalog page {page}...")
+            resp, page_retry_count, retry_error = fetch_page_with_retry(url, params, page)
+            retry_count += page_retry_count
+            if resp.status_code != 200:
+                status = "partial_success" if total_matched > 0 else "failed"
+                error_count += 1
+                error_msg = retry_error or f"HTTP {resp.status_code} at page {page}"
+                break
+
+            root = ET.fromstring(resp.content)
+            res_code = root.findtext(".//resultCode")
+            if res_code != "00":
+                res_msg = root.findtext(".//resultMsg")
+                status = "partial_success" if total_matched > 0 else "failed"
+                error_count += 1
+                error_msg = f"API Code {res_code}: {res_msg}"
+                break
+
+            total_count_node = root.findtext(".//totalCount")
+            total_count = int(total_count_node) if total_count_node else 0
+            items = root.findall(".//item")
+            if probe:
+                print(f"  [PROBE] totalCount={total_count}, page_items={len(items)}")
+                if items:
+                    print("  [PROBE] item fields=" + ",".join(child.tag for child in items[0]))
+                log_etl(conn, "shopping_mall_catalog_api_probe", source_name, total_count, 0, status="success", msg=f"probe: totalCount={total_count}")
+                conn.commit()
+                conn.close()
+                return
+            if not items:
+                break
+
+            for item in items:
+                total_api_items += 1
+                bizno = item.findtext("cntrctCorpBizno") or item.findtext("bizrno") or item.findtext("cntrctCorpNo")
+                if not bizno:
+                    total_skipped += 1
+                    continue
+                internal_id = get_internal_id_by_bizno(conn, bizno)
+                if not internal_id:
+                    total_skipped += 1
+                    continue
+
+                contract_no = item.findtext("shopngCntrctNo", "") or item.findtext("cntrctNo", "")
+                contract_sno = item.findtext("shopngCntrctSno", "")
+                product_id = item.findtext("prdctIdntNo", "")
+                contract_key = f"{contract_no}|{contract_sno}|{product_id}"
+                cno_hash = hashlib.sha256(contract_key.encode("utf-8")).hexdigest()[:16]
+
+                p_name = item.findtext("prdctClsfcNoNm", "") or item.findtext("dtilPrdctClsfcNoNm", "")
+                p_code = item.findtext("prdctClsfcNo", "")
+                dp_name = item.findtext("dtilPrdctClsfcNoNm", "") or item.findtext("dtlPrdctClsfcNoNm", "")
+                dp_code = item.findtext("dtilPrdctClsfcNo", "") or item.findtext("dtlPrdctClsfcNo", "")
+                g2b_cat = item.findtext("prdctLrgclsfcCd", "")
+                p_name_norm = f"{p_name}{product_id}".replace(" ", "").lower() if (p_name or product_id) else ""
+
+                method = item.findtext("cntrctMthdNm", "")
+                mas_yn = item.findtext("masYn", "")
+                excellent_yn = item.findtext("exclncPrcrmntPrdctYn", "")
+                contract_type = _shopping_mall_contract_type(method, mas_yn, excellent_yn)
+
+                c_start = item.findtext("cntrctBgnDate", "") or item.findtext("cntrctBgnDt", "")
+                c_end = item.findtext("cntrctEndDate", "") or item.findtext("cntrctEndDt", "")
+                c_status = "unknown"
+                if c_end:
+                    c_end_clean = c_end.replace("-", "")[:8]
+                    c_status = "active" if current_date <= c_end_clean else "expired"
+
+                price = item.findtext("cntrctPrceAmt", "0")
+                try:
+                    price_val = float(str(price).replace(",", ""))
+                except Exception:
+                    price_val = 0.0
+                unit = item.findtext("prdctUnit", "")
+
+                if not dry_run:
+                    conn.execute("""
+                        INSERT INTO shopping_mall_product (
+                            company_internal_id, product_name, product_name_normalized, product_code,
+                            detail_product_name, detail_product_code, g2b_category_code,
+                            shopping_mall_registered, shopping_mall_contract_type, contract_no_hash,
+                            contract_start_date, contract_end_date, contract_status, order_path_available,
+                            price_amount, price_unit, source_name, source_refreshed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                        ON CONFLICT(company_internal_id, contract_no_hash, product_name_normalized, detail_product_code, source_name)
+                        DO UPDATE SET
+                            contract_status=excluded.contract_status,
+                            shopping_mall_contract_type=excluded.shopping_mall_contract_type,
+                            price_amount=excluded.price_amount,
+                            price_unit=excluded.price_unit,
+                            source_refreshed_at=excluded.source_refreshed_at
+                    """, (internal_id, p_name, p_name_norm, p_code, dp_name, dp_code, g2b_cat, contract_type,
+                          cno_hash, c_start, c_end, c_status, price_val, unit, source_name, now_str))
+
+                    cert_list_str = item.findtext("prodctCertList", "")
+                    if cert_list_str and label_map:
+                        parse_and_insert_labels(conn, cert_list_str, internal_id, p_name, p_name_norm, p_code, dp_code,
+                                                label_map, source_name, now_str, label_counters)
+                total_matched += 1
+
+            if not dry_run:
+                conn.commit()
+            if total_count and page * num_of_rows >= total_count:
+                break
+            page += 1
+
+        except requests.exceptions.RequestException as e:
+            status = "partial_success" if total_matched > 0 else "failed"
+            error_count += 1
+            error_msg = f"Network error at catalog page {page}: {type(e).__name__}"
+            break
+        except ET.ParseError:
+            status = "partial_success" if total_matched > 0 else "failed"
+            error_count += 1
+            error_msg = f"XML parse error at catalog page {page}"
+            break
+        except Exception as e:
+            status = "partial_success" if total_matched > 0 else "failed"
+            error_count += 1
+            error_msg = f"{type(e).__name__}: {str(e)[:100]}"
+            break
+
+    if dry_run:
+        print(f"[DRY-RUN] Catalog completed. API items={total_api_items}, matched_busan={total_matched}, skipped={total_skipped}")
+    else:
+        print(f"Completed shopping-mall catalog sync. API items={total_api_items}, matched_busan={total_matched}, skipped={total_skipped}")
+        print(f"  Label parsing: cert={label_counters['cert']}, attr={label_counters['attr']}, general={label_counters['general']}, review={label_counters['review']}")
+
+    label_msg = f"catalog: matched={total_matched},skipped={total_skipped},cert={label_counters['cert']},attr={label_counters['attr']},general={label_counters['general']},retries={retry_count}"
+    full_msg = f"{error_msg} | {label_msg}" if error_msg else label_msg
+    log_etl(conn, job_name, source_name, total_api_items, 0 if dry_run else total_matched,
+            skipped_count=total_skipped, status=status, msg=full_msg, error_count=error_count)
+    conn.commit()
+    conn.close()
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="MAS/종합쇼핑몰 API 증분 수집 + 물품인증유형 라벨 파싱")
@@ -401,17 +608,31 @@ if __name__ == "__main__":
     parser.add_argument("--max-pages", type=int, default=100, help="최대 페이지 수 (기본: 100)")
     parser.add_argument("--num-rows", type=int, default=100, help="페이지당 행 수 (기본: 100)")
     parser.add_argument("--days", type=int, default=7, help="수집 기간 일수 (기본: 7)")
+    parser.add_argument("--include-catalog", action="store_true", help="also import getShoppingMallPrdctInfoList catalog data")
+    parser.add_argument("--catalog-only", action="store_true", help="import only getShoppingMallPrdctInfoList catalog data")
+    parser.add_argument("--catalog-days", type=int, default=1, help="catalog registration-date range in days (default: 1)")
     args = parser.parse_args()
     
     if args.staging_write:
         TARGET_DB = os.environ.get("CHATBOT_DB", "staging_chatbot_company.db")
-    
-    fetch_mas_data(
-        target_date_str=args.target_date,
-        max_pages=args.max_pages,
-        num_of_rows=args.num_rows,
-        days=args.days,
-        probe=args.probe,
-        dry_run=args.dry_run,
-        staging_write=args.staging_write
-    )
+
+    if not args.catalog_only:
+        fetch_mas_data(
+            target_date_str=args.target_date,
+            max_pages=args.max_pages,
+            num_of_rows=args.num_rows,
+            days=args.days,
+            probe=args.probe,
+            dry_run=args.dry_run,
+            staging_write=args.staging_write
+        )
+
+    if args.include_catalog or args.catalog_only:
+        fetch_shopping_mall_catalog(
+            target_date_str=args.target_date,
+            max_pages=args.max_pages,
+            num_of_rows=args.num_rows,
+            days=args.catalog_days,
+            probe=args.probe,
+            dry_run=args.dry_run
+        )

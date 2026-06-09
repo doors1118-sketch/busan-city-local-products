@@ -707,7 +707,8 @@ def check_chatbot_pipeline_sync():
             'bootstrap_master',
             'nts_batch_sync',
             'import_certified_product_api',
-            'mas_api_incremental'
+            'mas_api_incremental',
+            'shopping_mall_catalog_api_incremental'
         ]
         
         for job in essential_jobs:
