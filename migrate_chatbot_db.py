@@ -746,6 +746,118 @@ def migrate():
     ''')
 
     # ==========================================
+    # Vendor recommendation supplemental reference tables
+    # ==========================================
+    # These tables are populated by import_vendor_reference_sources.py.  They
+    # are intentionally separate from company_license/company_product because
+    # manually imported historical ledgers must be validated before use.
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS company_license_construction_capacity (
+        capacity_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_internal_id INTEGER,
+        bizno TEXT NOT NULL,
+        license_name TEXT NOT NULL,
+        license_name_normalized TEXT,
+        construction_capacity_amount INTEGER NOT NULL,
+        source_name TEXT NOT NULL,
+        source_file_name TEXT,
+        source_refreshed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(bizno, license_name, source_name)
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS venture_nara_product (
+        venture_product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_identifier TEXT,
+        venture_product_name TEXT,
+        bizno TEXT,
+        company_internal_id INTEGER,
+        company_name TEXT,
+        category_name TEXT,
+        parent_category_name TEXT,
+        price_amount INTEGER,
+        price_unit TEXT,
+        spec TEXT,
+        origin_country TEXT,
+        description TEXT,
+        delivery_condition TEXT,
+        is_sme_competition_product INTEGER,
+        venture_company_flag INTEGER,
+        is_oem INTEGER,
+        valid_from TEXT,
+        valid_to TEXT,
+        company_cert_list TEXT,
+        mandatory_purchase_cert_list TEXT,
+        preferential_purchase_cert_list TEXT,
+        venture_nara_cert_list TEXT,
+        source_name TEXT NOT NULL,
+        source_refreshed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source_name, product_identifier, bizno)
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS venture_nara_order_transaction (
+        order_tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        demand_agency_code TEXT,
+        demand_agency_name TEXT,
+        demand_agency_region TEXT,
+        bizno TEXT,
+        company_internal_id INTEGER,
+        company_name TEXT,
+        item_class_no TEXT,
+        item_name TEXT,
+        detail_product_code TEXT,
+        detail_product_name TEXT,
+        product_identifier TEXT,
+        product_name TEXT,
+        venture_product_name TEXT,
+        company_region TEXT,
+        performance_date TEXT,
+        performance_amount INTEGER,
+        unit_price INTEGER,
+        quantity INTEGER,
+        quote_amount INTEGER,
+        mulnap_amount INTEGER,
+        manual_sale_amount INTEGER,
+        order_amount INTEGER,
+        source_name TEXT NOT NULL,
+        source_file_name TEXT,
+        source_refreshed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS company_policy_evidence (
+        evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_internal_id INTEGER,
+        bizno TEXT,
+        policy_type TEXT NOT NULL,
+        evidence_source TEXT NOT NULL,
+        evidence_confidence TEXT NOT NULL,
+        evidence_text TEXT,
+        valid_from TEXT,
+        valid_to TEXT,
+        source_refreshed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(bizno, policy_type, evidence_source, evidence_text)
+    )
+    ''')
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_company_license_capacity_company ON company_license_construction_capacity(company_internal_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_venture_nara_product_company ON venture_nara_product(company_internal_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_venture_order_company ON venture_nara_order_transaction(company_internal_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_company_policy_evidence_company ON company_policy_evidence(company_internal_id)')
+
+    # ==========================================
     # Phase 2 & 4 & 5 & 6-C & 6-D-2 뷰 생성
     # ==========================================
     # 챗봇 검색 API 응답용 경량 뷰 (보안 가이드레일 적용)
@@ -861,17 +973,80 @@ def migrate():
            WHERE pgc.company_internal_id = m.company_internal_id
          )) AS general_certifications_raw,
 
+        -- Manual supplement: construction capacity from validated Busan HQ license ledgers.
+        (SELECT GROUP_CONCAT(
+            cap_sub.license_name || '^^' ||
+            cap_sub.construction_capacity_amount || '^^' ||
+            cap_sub.source_name, '|||')
+         FROM (
+            SELECT license_name, construction_capacity_amount, source_name
+            FROM company_license_construction_capacity
+            WHERE company_internal_id = m.company_internal_id
+            ORDER BY construction_capacity_amount DESC
+            LIMIT 5
+         ) cap_sub
+        ) AS construction_capacity_summary_raw,
+
+        -- Manual/API supplement: VentureNara registered products.
+        (SELECT GROUP_CONCAT(
+            vnp_sub.venture_product_name || '^^' ||
+            IFNULL(vnp_sub.category_name, '') || '^^' ||
+            IFNULL(vnp_sub.valid_to, '') || '^^' ||
+            IFNULL(vnp_sub.venture_company_flag, 0) || '^^' ||
+            vnp_sub.source_name, '|||')
+         FROM (
+            SELECT venture_product_name, category_name, valid_to, venture_company_flag, source_name
+            FROM venture_nara_product
+            WHERE company_internal_id = m.company_internal_id
+            ORDER BY valid_to DESC
+            LIMIT 5
+         ) vnp_sub
+        ) AS venture_nara_product_summary_raw,
+
+        -- Manual supplement: VentureNara actual order history.
+        (SELECT GROUP_CONCAT(
+            vno_sub.detail_product_name || '^^' ||
+            vno_sub.order_count || '^^' ||
+            vno_sub.total_amount || '^^' ||
+            IFNULL(vno_sub.last_order_date, '') || '^^' ||
+            vno_sub.source_name, '|||')
+         FROM (
+            SELECT
+                detail_product_name,
+                COUNT(*) AS order_count,
+                SUM(IFNULL(performance_amount, 0)) AS total_amount,
+                MAX(performance_date) AS last_order_date,
+                MAX(source_name) AS source_name
+            FROM venture_nara_order_transaction
+            WHERE company_internal_id = m.company_internal_id
+            GROUP BY detail_product_name
+            ORDER BY total_amount DESC
+            LIMIT 5
+         ) vno_sub
+        ) AS venture_nara_order_summary_raw,
+
         IFNULL((SELECT manufacturer_type FROM company_manufacturer_status cms WHERE cms.company_internal_id = m.company_internal_id LIMIT 1), 'unknown') AS manufacturer_type,
         
-        'unknown' AS business_status,
-        'not_checked' AS business_status_freshness,
-        '후보' AS display_status,
+        IFNULL(bs.business_status, 'unknown') AS business_status,
+        IFNULL(bs.business_status_freshness, 'not_checked') AS business_status_freshness,
+        CASE
+            WHEN bs.business_status = 'active' THEN 'active'
+            WHEN bs.business_status = 'closed' THEN 'closed'
+            WHEN bs.business_status = 'suspended' THEN 'suspended'
+            ELSE 'candidate'
+        END AS display_status,
         0 AS contract_possible_auto_promoted,
         
-        '["company_master"]' AS source_refs,
+        ('["company_master"' ||
+            CASE WHEN bs.company_internal_id IS NOT NULL THEN ',"company_business_status"' ELSE '' END ||
+            CASE WHEN EXISTS (SELECT 1 FROM company_license_construction_capacity cap WHERE cap.company_internal_id = m.company_internal_id) THEN ',"company_license_construction_capacity"' ELSE '' END ||
+            CASE WHEN EXISTS (SELECT 1 FROM venture_nara_product vnp WHERE vnp.company_internal_id = m.company_internal_id) THEN ',"venture_nara_product"' ELSE '' END ||
+            CASE WHEN EXISTS (SELECT 1 FROM venture_nara_order_transaction vno WHERE vno.company_internal_id = m.company_internal_id) THEN ',"venture_nara_order_transaction"' ELSE '' END ||
+        ']') AS source_refs,
         m.source_refreshed_at
     FROM company_master m
     JOIN company_identity i ON m.company_internal_id = i.company_internal_id
+    LEFT JOIN company_business_status bs ON bs.company_internal_id = m.company_internal_id
     WHERE m.is_busan_company = 1
     ''')
 
