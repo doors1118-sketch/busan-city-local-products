@@ -13,6 +13,7 @@ from core_calc import (
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
     load_bid_dict, load_award_sets, BUSAN_BIZNO_PREFIXES,
+    is_site_excluded_contract,
 )
 from protection_criteria import (
     PROTECTION_GROUPS,
@@ -776,6 +777,8 @@ def build_cache():
         rows = rows[~((dcsn.str.len() >= 10) & (~dcsn.str.endswith('00')))]
 
         for _, row in rows.iterrows():
+            if is_site_excluded_contract(row):
+                continue
             ntce_clean = str(row.get('ntceNo', '')).replace('-','').strip()
             method = str(row.get('cntrctCnclsMthdNm', ''))
             amt = float(row.get('thtmCntrctAmt', 0) or 0)
@@ -946,17 +949,17 @@ def build_cache():
     suui_queries = {
         'cnstwk_cntrct': ('공사', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cnstwkNm as cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo FROM [cnstwk_cntrct]
+            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [cnstwk_cntrct]
             WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
         'servc_cntrct': ('용역', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo FROM [servc_cntrct]
+            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [servc_cntrct]
             WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
         'thng_cntrct': ('물품', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo FROM [thng_cntrct]
+            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [thng_cntrct]
             WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
     }
@@ -966,6 +969,8 @@ def build_cache():
         suui_df = pd.read_sql(sql, conn)
         suui_df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         for _, row in suui_df.iterrows():
+            if is_site_excluded_contract(row):
+                continue
             inst_cd = str(row.get('dminsttCd', '')).strip()
             if not inst_cd or inst_cd not in inst_dict:
                 for dcd in extract_dminstt_codes(row.get('dminsttList', '')):

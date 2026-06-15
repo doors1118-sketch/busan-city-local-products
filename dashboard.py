@@ -7,6 +7,7 @@ API 서버에서 데이터를 받아 사이드바 네비게이션으로 표시.
 실행: streamlit run dashboard.py
 """
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import plotly.express as px
 import plotly.graph_objects as go
@@ -25,6 +26,32 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+# Prevent browser/extension auto-translation from rewriting Korean menu labels.
+components.html(
+    """
+    <script>
+    try {
+      const doc = window.parent.document;
+      doc.documentElement.lang = 'ko';
+      doc.documentElement.setAttribute('translate', 'no');
+      doc.documentElement.classList.add('notranslate');
+      if (doc.body) {
+        doc.body.setAttribute('translate', 'no');
+        doc.body.classList.add('notranslate');
+      }
+      if (!doc.querySelector('meta[name="google"][content="notranslate"]')) {
+        const meta = doc.createElement('meta');
+        meta.name = 'google';
+        meta.content = 'notranslate';
+        doc.head.appendChild(meta);
+      }
+    } catch (e) { }
+    </script>
+    """,
+    height=0,
+    width=0,
 )
 
 # ─── DashLite 테마 색상 ───
