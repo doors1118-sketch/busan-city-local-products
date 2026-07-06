@@ -286,6 +286,7 @@ def create_summary_view(conn: sqlite3.Connection) -> None:
             UNION SELECT product_code FROM company_product WHERE product_code IS NOT NULL AND product_code != ''
             UNION SELECT detail_product_code FROM shopping_mall_product WHERE detail_product_code IS NOT NULL AND detail_product_code != ''
             UNION SELECT detail_product_code FROM mas_product WHERE detail_product_code IS NOT NULL AND detail_product_code != ''
+            UNION SELECT detail_product_code FROM pps_shopping_mall_item_policy_summary WHERE detail_product_code IS NOT NULL AND detail_product_code != ''
             UNION SELECT detail_product_code FROM company_procurement_attribute WHERE detail_product_code IS NOT NULL AND detail_product_code != ''
             UNION SELECT detail_product_code FROM product_general_certification WHERE detail_product_code IS NOT NULL AND detail_product_code != ''
         ),
@@ -298,6 +299,7 @@ def create_summary_view(conn: sqlite3.Connection) -> None:
                     (SELECT detail_product_name FROM ref_product_required_note r WHERE r.detail_product_code = c.detail_product_code LIMIT 1),
                     (SELECT detail_product_name FROM ref_eligible_cooperative r WHERE r.detail_product_code = c.detail_product_code LIMIT 1),
                     (SELECT detail_product_name FROM ref_coop_joint_product r WHERE r.detail_product_code = c.detail_product_code LIMIT 1),
+                    (SELECT detail_product_name FROM pps_shopping_mall_item_policy_summary p WHERE p.detail_product_code = c.detail_product_code AND IFNULL(p.detail_product_name, '') != '' LIMIT 1),
                     (SELECT detail_product_name FROM shopping_mall_product s WHERE s.detail_product_code = c.detail_product_code AND IFNULL(s.detail_product_name, '') != '' LIMIT 1),
                     (SELECT detail_product_name FROM mas_product m WHERE m.detail_product_code = c.detail_product_code AND IFNULL(m.detail_product_name, '') != '' LIMIT 1),
                     (SELECT product_name FROM company_product p WHERE p.product_code = c.detail_product_code AND IFNULL(p.product_name, '') != '' LIMIT 1),
@@ -351,6 +353,22 @@ def create_summary_view(conn: sqlite3.Connection) -> None:
             WHERE contract_status = 'active' AND detail_product_code IS NOT NULL AND detail_product_code != ''
             GROUP BY detail_product_code
         ),
+        pps_counts AS (
+            SELECT
+                detail_product_code,
+                MAX(active_registered_count) AS pps_active_registered_count,
+                MAX(active_third_party_count) AS pps_active_third_party_count,
+                MAX(active_mas_count) AS pps_active_mas_count,
+                MAX(active_general_unit_price_count) AS pps_active_general_unit_price_count,
+                MAX(active_excellent_procurement_count) AS pps_active_excellent_procurement_count,
+                MAX(active_sme_competition_count) AS pps_active_sme_competition_count,
+                MAX(active_supplier_count) AS pps_active_supplier_count,
+                MAX(active_busan_supplier_count) AS pps_active_busan_supplier_count,
+                MAX(active_contract_types) AS pps_active_contract_types
+            FROM pps_shopping_mall_item_policy_summary
+            WHERE detail_product_code IS NOT NULL AND detail_product_code != ''
+            GROUP BY detail_product_code
+        ),
         company_product_counts AS (
             SELECT product_code AS detail_product_code, COUNT(DISTINCT company_internal_id) AS busan_company_product_count
             FROM company_product
@@ -381,10 +399,18 @@ def create_summary_view(conn: sqlite3.Connection) -> None:
             IFNULL(joint.coop_joint_product_count, 0) AS coop_joint_product_count,
             IFNULL(joint.busan_coop_joint_product_count, 0) AS busan_coop_joint_product_count,
             joint.busan_coop_joint_product_coops,
-            IFNULL(mas_counts.mas_active_supplier_count, 0) AS mas_active_supplier_count,
-            IFNULL(shopping_counts.shopping_mall_active_supplier_count, 0) AS shopping_mall_active_supplier_count,
+            MAX(IFNULL(mas_counts.mas_active_supplier_count, 0), IFNULL(pps_counts.pps_active_mas_count, 0)) AS mas_active_supplier_count,
+            MAX(IFNULL(shopping_counts.shopping_mall_active_supplier_count, 0), IFNULL(pps_counts.pps_active_supplier_count, 0)) AS shopping_mall_active_supplier_count,
             IFNULL(company_product_counts.busan_company_product_count, 0) AS busan_company_product_count,
             IFNULL(direct_counts.direct_production_valid_supplier_count, 0) AS direct_production_valid_supplier_count,
+            IFNULL(pps_counts.pps_active_registered_count, 0) AS shopping_mall_active_registered_count,
+            IFNULL(pps_counts.pps_active_third_party_count, 0) AS shopping_mall_active_third_party_count,
+            IFNULL(pps_counts.pps_active_mas_count, 0) AS shopping_mall_active_mas_count,
+            IFNULL(pps_counts.pps_active_general_unit_price_count, 0) AS shopping_mall_active_general_unit_price_count,
+            IFNULL(pps_counts.pps_active_excellent_procurement_count, 0) AS shopping_mall_active_excellent_procurement_count,
+            IFNULL(pps_counts.pps_active_sme_competition_count, 0) AS shopping_mall_active_sme_competition_count,
+            IFNULL(pps_counts.pps_active_busan_supplier_count, 0) AS shopping_mall_active_busan_supplier_count,
+            pps_counts.pps_active_contract_types AS shopping_mall_active_contract_types,
             (
                 CASE WHEN EXISTS (SELECT 1 FROM ref_sme_competition_product r WHERE r.detail_category_code = b.detail_product_code) THEN 'sme_competition|' ELSE '' END ||
                 CASE WHEN EXISTS (SELECT 1 FROM ref_construction_material_product r WHERE r.detail_product_code = b.detail_product_code) THEN 'construction_material|' ELSE '' END ||
@@ -393,6 +419,7 @@ def create_summary_view(conn: sqlite3.Connection) -> None:
                 CASE WHEN EXISTS (SELECT 1 FROM ref_coop_joint_product r WHERE r.detail_product_code = b.detail_product_code) THEN 'coop_joint_product|' ELSE '' END ||
                 CASE WHEN EXISTS (SELECT 1 FROM mas_product m WHERE m.detail_product_code = b.detail_product_code) THEN 'mas|' ELSE '' END ||
                 CASE WHEN EXISTS (SELECT 1 FROM shopping_mall_product s WHERE s.detail_product_code = b.detail_product_code) THEN 'shopping_mall|' ELSE '' END ||
+                CASE WHEN EXISTS (SELECT 1 FROM pps_shopping_mall_item_policy_summary p WHERE p.detail_product_code = b.detail_product_code) THEN 'pps_shopping_mall_master|' ELSE '' END ||
                 CASE WHEN EXISTS (SELECT 1 FROM company_product p WHERE p.product_code = b.detail_product_code) THEN 'company_product|' ELSE '' END
             ) AS source_refs,
             DATETIME('now') AS generated_at
@@ -404,6 +431,7 @@ def create_summary_view(conn: sqlite3.Connection) -> None:
         LEFT JOIN joint ON joint.detail_product_code = b.detail_product_code
         LEFT JOIN mas_counts ON mas_counts.detail_product_code = b.detail_product_code
         LEFT JOIN shopping_counts ON shopping_counts.detail_product_code = b.detail_product_code
+        LEFT JOIN pps_counts ON pps_counts.detail_product_code = b.detail_product_code
         LEFT JOIN company_product_counts ON company_product_counts.detail_product_code = b.detail_product_code
         LEFT JOIN direct_counts ON direct_counts.detail_product_code = b.detail_product_code;
         """

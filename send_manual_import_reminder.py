@@ -18,24 +18,30 @@ def build_message(today: dt.date | None = None) -> str:
     today = today or dt.datetime.now().date()
     ymd = today.strftime("%Y%m%d")
     title = "\ubd80\uc0b0 \uc870\ub2ec \uc6b4\uc601\uc54c\ub9bc"
-    check_target = "\uc218\ub3d9 \uc784\ud3ec\ud2b8 \ub300\uc0c1 \ud655\uc778"
-    items = [
-        "\uc911\uc18c\uae30\uc5c5\uc790\uac04 \uacbd\uc7c1\uc81c\ud488 \ubc0f \uacf5\uc0ac\uc6a9\uc790\uc7ac \ub0b4\uc5ed",
-        "\uacf5\uc0ac\uc6a9\uc790\uc7ac \ud488\ubaa9",
-        "\uc138\ubd80\ud488\ubaa9\ubcc4 \ud544\uc218\ud2b9\uc774\uc0ac\ud56d \ubaa9\ub85d",
-        "\uc801\uaca9\uc870\ud569 \ud604\ud669",
-        "\uc870\ud569\uacf5\ub3d9\uc0ac\uc5c5\uc81c\ud488",
+    check_target = "SMPP 품목정책 수동 임포트 대상 확인"
+    required_items = [
+        "공사용자재 품목.xls",
+        "세부품목별_필수특이사항_목록.xls",
+        "적격조합 현황.xls",
+        "조합공동사업제품.xls",
     ]
-    upload = "\uc5c5\ub85c\ub4dc"
-    run = "\uc2e4\ud589"
-    verify = "\ud655\uc778"
-    verify_text = "product_policy_summary \uac74\uc218/\ubd80\uc0b0 \uc870\ud569/\uc9c1\uc811\uc0dd\uc0b0 \ub9e4\uce6d"
+    reference_items = [
+        "중소기업자간 경쟁제품 일반 목록",
+    ]
+    upload = "업로드"
+    run = "실행"
+    verify = "확인"
+    verify_text = "product_policy_summary 건수/부산 조합/직접생산 매칭"
     return "\n".join(
         [
             f"[{title}] {today:%Y-%m-%d}",
             check_target,
             "",
-            *[f"{idx}. {text}" for idx, text in enumerate(items, 1)],
+            "필수 업로드:",
+            *[f"{idx}. {text}" for idx, text in enumerate(required_items, 1)],
+            "",
+            "참고 확인:",
+            *[f"- {text}" for text in reference_items],
             "",
             f"{upload}: /opt/busan/import_sources/smpp_product_policy_{ymd}/",
             f"{run}: import_smpp_product_policy_files.py",

@@ -41,6 +41,8 @@ API_BASE_URL = os.environ.get(
 )
 DEFAULT_PER_PAGE = int(os.environ.get("DIRECT_PRODUCTION_PER_PAGE", "5000"))
 DEFAULT_MAX_PAGES = int(os.environ.get("DIRECT_PRODUCTION_MAX_PAGES", "1000"))
+RETRY_STATUS_CODES = {429, 502, 503, 504}
+RETRY_DELAYS = [5, 15, 30]
 
 
 def hash_string(value: str) -> str:
@@ -199,6 +201,28 @@ def insert_job_log(
     conn.commit()
 
 
+def fetch_page(params: dict, page: int) -> requests.Response:
+    attempts = len(RETRY_DELAYS) + 1
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(API_BASE_URL, params=params, timeout=45)
+            if response.status_code == 200:
+                return response
+            last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+            if response.status_code == 401:
+                raise RuntimeError("API 인증 실패(401). DIRECT_PRODUCTION_SERVICE_KEY를 확인하세요.")
+            if response.status_code not in RETRY_STATUS_CODES:
+                raise RuntimeError(last_error)
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        if attempt < attempts:
+            delay = RETRY_DELAYS[attempt - 1]
+            logger.warning("API page %s retry %s/%s after %ss: %s", page, attempt, attempts - 1, delay, last_error)
+            time.sleep(delay)
+    raise RuntimeError(f"API page {page} retry exhausted: {last_error}")
+
+
 def fetch_all_pages(service_key: str, per_page: int = DEFAULT_PER_PAGE, max_pages: int = DEFAULT_MAX_PAGES) -> list[dict]:
     all_items: list[dict] = []
     page = 1
@@ -211,12 +235,7 @@ def fetch_all_pages(service_key: str, per_page: int = DEFAULT_PER_PAGE, max_page
             "returnType": "JSON",
         }
         logger.info("Fetching page %s (perPage=%s)...", page, per_page)
-        response = requests.get(API_BASE_URL, params=params, timeout=30)
-
-        if response.status_code == 401:
-            raise RuntimeError("API 인증 실패(401). DIRECT_PRODUCTION_SERVICE_KEY를 확인하세요.")
-        if response.status_code != 200:
-            raise RuntimeError(f"API HTTP Error: {response.status_code} {response.text[:300]}")
+        response = fetch_page(params, page)
 
         payload = response.json()
         total_count = int(payload.get("totalCount") or 0)
