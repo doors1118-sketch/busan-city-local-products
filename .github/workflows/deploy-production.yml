@@ -1,0 +1,57 @@
+name: 운영 서버 수동 배포
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 배포하려면 DEPLOY를 입력하십시오.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-procurement
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ inputs.confirmation == 'DEPLOY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 배포 브랜치 체크아웃
+        uses: actions/checkout@v4
+        with:
+          ref: codex/monitoring-server-sync-20260611
+
+      - name: 핵심 코드 구문 검사
+        run: python -m py_compile api_server.py dashboard.py core_calc.py
+
+      - name: 배포 커밋 확인
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: 제한형 SSH 설정
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: 운영 배포
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SHA: ${{ steps.source.outputs.sha }}
+        run: >-
+          ssh -i ~/.ssh/id_ed25519 -p "$DEPLOY_PORT"
+          -o BatchMode=yes -o IdentitiesOnly=yes
+          "$DEPLOY_USER@$DEPLOY_HOST"
+          "deploy procurement $DEPLOY_SHA"
