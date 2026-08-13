@@ -33,6 +33,9 @@ openapi.html
 
 # Alert config (contains API keys/tokens)
 alert_config.json
+alert_config.json.before_*
+.env
+.env.*
 alert_log/
 sync_log/
 
@@ -40,6 +43,7 @@ sync_log/
 api_cache.json
 api_cache_prev.json
 monthly_cache.json
+social_purchase_cache.json
 
 # Deploy files
 deploy/
