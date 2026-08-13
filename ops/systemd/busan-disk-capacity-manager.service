@@ -1,0 +1,27 @@
+[Unit]
+Description=Busan verified Object Storage capacity manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/busan-capacity-manager.env
+Environment=CAPACITY_ARCHIVE_BUCKET=busan-procurement-backup
+Environment=CAPACITY_ARCHIVE_PREFIX=capacity-archive
+Environment=CAPACITY_REMOTE_RETENTION_DAYS=180
+Environment=AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+Environment=AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=busan-capacity-manager
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/flock -n /run/busan-capacity-manager/manager.lock /opt/busan/venv/bin/python3 /usr/local/sbin/busan-disk-capacity-manager.py
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/busan/backups /opt/busan/deploy_backups /opt/advisor/backups /opt/advisor/deploy_backups /opt/advisor/cache/company/archive /var/backups/credit-guarantee-dashboard /var/lib/busan-capacity-manager /var/tmp
+
+[Install]
+WantedBy=multi-user.target
