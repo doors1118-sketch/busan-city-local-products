@@ -34,6 +34,12 @@ class NaNSafeResponse(JSONResponse):
 app = FastAPI(title="부산 조달 모니터링 API", version="1.0", default_response_class=NaNSafeResponse)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
+@app.get("/health", include_in_schema=False)
+def health():
+    """Liveness probe used by the guarded production deployer."""
+    return {"status": "ok", "service": "busan-procurement-api"}
+
 CACHE_FILE = 'api_cache.json'
 DB_COMPANIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'busan_companies_master.db')
 SOCIAL_PURCHASE_CACHE_JSON = Path(os.environ.get(
