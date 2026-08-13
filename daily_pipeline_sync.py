@@ -1233,12 +1233,24 @@ def sync_one_day(target_date):
         failed_steps.append('Step2.0_추정가격')
     print("\n--------------------------------------------------")
 
-    # [Step 2.1] NTS 사업자등록상태 야간 배치 (매일)
+    # [Step 2.1] NTS 사업자등록상태 배치
+    # - 일요일: 전체 검증
+    # - 그 외: 실패/미검증/오래된 검증분만 제한적으로 재검증
     try:
-        print(f"[휴폐업 동기화] {target_date} NTS 사업자등록상태 배치 갱신 중...")
+        today = datetime.datetime.now().date()
+        is_full_nts_day = today.weekday() == 6  # Sunday
+        nts_cmd = [sys.executable, 'nts_batch_sync.py']
+        if is_full_nts_day:
+            nts_mode = 'weekly_full'
+            print(f"[휴폐업 동기화] {target_date} NTS 사업자등록상태 주 1회 전체 검증 중...")
+        else:
+            nts_mode = 'daily_incremental'
+            nts_cmd.extend(['--stale-days', os.environ.get('NTS_DAILY_STALE_DAYS', '30')])
+            nts_cmd.extend(['--limit', os.environ.get('NTS_DAILY_INCREMENTAL_LIMIT', '1000')])
+            print(f"[휴폐업 동기화] {target_date} NTS 사업자등록상태 일일 증분 검증 중...")
         import subprocess
         res = subprocess.run(
-            [sys.executable, 'nts_batch_sync.py'],
+            nts_cmd,
             capture_output=True, text=True, encoding='utf-8'
         )
         if res.returncode == 0:
@@ -1246,7 +1258,7 @@ def sync_one_day(target_date):
             for line in lines[-2:]:
                 print(f"   {line}")
         else:
-            print(f"   [오류] NTS 배치 실패: {res.stderr[-200:]}")
+            print(f"   [오류] NTS 배치 실패 ({nts_mode}): {res.stderr[-200:]}")
             failed_steps.append('Step2.1_NTS휴폐업')
     except Exception as e:
         print(f"   [오류] Step 2.1 NTS 휴폐업 동기화 실패: {e}")

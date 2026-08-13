@@ -184,11 +184,14 @@ def write_failure_log(started_at: str, source_name: str, message: str) -> None:
 def run_import(dry_run=False, probe=False):
     """
     기술개발제품 인증현황 API를 호출하여 certified_product 테이블에 UPSERT.
-    probe=True이면 1페이지(10건)만 호출하여 통신 상태 확인.
+    probe=True이면 1페이지(10건)만 호출하여 통신 상태만 확인하고 DB에는 기록하지 않음.
     """
     if not TECH_PRODUCT_SERVICE_KEY:
         logger.error("TECH_PRODUCT_SERVICE_KEY 또는 SERVICE_KEY 환경변수가 설정되지 않았습니다.")
         return False
+
+    if probe:
+        dry_run = True
 
     logger.info(f"Starting 기술개발제품 API Import. dry_run={dry_run}, probe={probe}")
 
@@ -341,12 +344,15 @@ def run_import(dry_run=False, probe=False):
         ))
 
         cursor.execute("""
-            INSERT INTO source_manifest (source_name, source_type, row_count, source_refreshed_at, status)
-            VALUES (?, 'api_full', ?, ?, 'success')
+            INSERT INTO source_manifest (
+                source_name, source_type, row_count, source_refreshed_at, status, error_message
+            )
+            VALUES (?, 'api_full', ?, ?, 'success', NULL)
             ON CONFLICT(source_name) DO UPDATE SET
                 row_count=excluded.row_count,
                 source_refreshed_at=excluded.source_refreshed_at,
-                status='success'
+                status='success',
+                error_message=NULL
         """, (source_name, inserted_count, now_str))
 
         conn.commit()

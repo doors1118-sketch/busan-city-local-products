@@ -19,6 +19,14 @@ def _retry_settings() -> tuple[int, float]:
     return max(1, max_retries), max(0.0, backoff_seconds)
 
 
+def _request_timeout_seconds() -> float:
+    try:
+        timeout_seconds = float(os.environ.get("NTS_TIMEOUT_SECONDS", "10"))
+    except ValueError:
+        timeout_seconds = 10.0
+    return max(1.0, timeout_seconds)
+
+
 def check_business_status(bno_list: list) -> dict:
     service_key = os.environ.get("NTS_SERVICE_KEY")
     if not service_key:
@@ -33,11 +41,12 @@ def check_business_status(bno_list: list) -> dict:
     payload = {"b_no": cleaned_bno_list}
 
     max_retries, backoff_seconds = _retry_settings()
+    timeout_seconds = _request_timeout_seconds()
     last_error = "nts_api_failed"
 
     for attempt in range(1, max_retries + 1):
         try:
-            resp = requests.post(NTS_API_URL, params=params, json=payload, headers=headers, timeout=10)
+            resp = requests.post(NTS_API_URL, params=params, json=payload, headers=headers, timeout=timeout_seconds)
             if resp.status_code >= 400:
                 last_error = f"nts_http_{resp.status_code}"
                 if resp.status_code < 500 and resp.status_code != 429:

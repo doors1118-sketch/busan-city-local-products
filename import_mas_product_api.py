@@ -6,11 +6,44 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import hashlib
 import time
+from urllib.parse import quote_plus
 
 TARGET_DB = os.environ.get("CHATBOT_DB", "staging_chatbot_company.db")
 SERVICE_KEY = os.environ.get("SHOPPING_MALL_PRDCT_SERVICE_KEY")
 RETRY_STATUS_CODES = {429, 502, 503, 504}
 DEFAULT_RETRY_DELAYS = [5, 15, 30]
+API_ERROR_SNIPPET_BYTES = int(os.environ.get("API_ERROR_SNIPPET_BYTES", "500"))
+
+
+def sanitize_api_text(text):
+    text = text or ""
+    if SERVICE_KEY:
+        text = text.replace(SERVICE_KEY, "[REDACTED_SERVICE_KEY]")
+        text = text.replace(quote_plus(SERVICE_KEY), "[REDACTED_SERVICE_KEY]")
+    return " ".join(text.split())[:API_ERROR_SNIPPET_BYTES]
+
+
+def describe_response(resp, context):
+    content_type = resp.headers.get("content-type", "")
+    try:
+        body_head = resp.content[:API_ERROR_SNIPPET_BYTES].decode(resp.encoding or "utf-8", "replace")
+    except Exception:
+        body_head = repr(resp.content[:API_ERROR_SNIPPET_BYTES])
+    return (
+        f"{context}: HTTP {resp.status_code}, content_type={content_type}, "
+        f"body_head={sanitize_api_text(body_head)}"
+    )
+
+
+def looks_like_xml(resp):
+    return resp.content.lstrip().startswith(b"<")
+
+
+def parse_xml_response(resp, context):
+    try:
+        return ET.fromstring(resp.content)
+    except ET.ParseError as exc:
+        raise ET.ParseError(f"{exc}; {describe_response(resp, context)}")
 
 def log_etl(conn, job_name, source_name, input_count, inserted_count, skipped_count=0, status='success', msg="", error_count=0):
     conn.execute("""
@@ -33,15 +66,20 @@ def fetch_page_with_retry(url, params, page, retry_delays=None):
     for attempt in range(1, attempts + 1):
         try:
             resp = requests.get(url, params=params, timeout=60)
-            if resp.status_code == 200:
+            if resp.status_code == 200 and looks_like_xml(resp):
                 return resp, attempt - 1, ""
 
-            last_error = f"HTTP {resp.status_code} at page {page}"
-            if resp.status_code not in RETRY_STATUS_CODES or attempt == attempts:
+            if resp.status_code == 200:
+                last_error = describe_response(resp, f"Non-XML response at page {page}")
+                retryable = True
+            else:
+                last_error = describe_response(resp, f"HTTP error at page {page}")
+                retryable = resp.status_code in RETRY_STATUS_CODES
+            if not retryable or attempt == attempts:
                 return resp, attempt - 1, last_error
 
             delay = retry_delays[attempt - 1]
-            print(f"  API retryable error at page {page}: HTTP {resp.status_code}; retry {attempt}/{attempts - 1} after {delay}s")
+            print(f"  API retryable error at page {page}: {last_error}; retry {attempt}/{attempts - 1} after {delay}s")
             time.sleep(delay)
         except requests.exceptions.RequestException as e:
             last_error = f"Network error at page {page}: {type(e).__name__}"
@@ -210,7 +248,7 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
                 error_msg = retry_error or f"HTTP {resp.status_code} at page {page}"
                 break
                 
-            root = ET.fromstring(resp.content)
+            root = parse_xml_response(resp, f"MAS page {page}")
             res_code = root.findtext('.//resultCode')
             if res_code != '00':
                 res_msg = root.findtext('.//resultMsg')
@@ -368,7 +406,7 @@ def fetch_mas_data(target_date_str=None, max_pages=100, num_of_rows=100, days=7,
             print(f"  XML parsing error at page {page}")
             status = 'partial_success' if total_inserted > 0 else 'failed'
             error_count += 1
-            error_msg = f"XML parse error at page {page}"
+            error_msg = f"XML parse error at page {page}: {str(e)[:500]}"
             break
         except Exception as e:
             print(f"  Exception during fetch: {type(e).__name__}")
@@ -472,7 +510,7 @@ def fetch_shopping_mall_catalog(target_date_str=None, max_pages=50, num_of_rows=
                 error_msg = retry_error or f"HTTP {resp.status_code} at page {page}"
                 break
 
-            root = ET.fromstring(resp.content)
+            root = parse_xml_response(resp, f"catalog page {page}")
             res_code = root.findtext(".//resultCode")
             if res_code != "00":
                 res_msg = root.findtext(".//resultMsg")
@@ -574,10 +612,10 @@ def fetch_shopping_mall_catalog(target_date_str=None, max_pages=50, num_of_rows=
             error_count += 1
             error_msg = f"Network error at catalog page {page}: {type(e).__name__}"
             break
-        except ET.ParseError:
+        except ET.ParseError as e:
             status = "partial_success" if total_matched > 0 else "failed"
             error_count += 1
-            error_msg = f"XML parse error at catalog page {page}"
+            error_msg = f"XML parse error at catalog page {page}: {str(e)[:500]}"
             break
         except Exception as e:
             status = "partial_success" if total_matched > 0 else "failed"

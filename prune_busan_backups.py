@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Prune local Busan monitoring backups with conservative operational rules.
 
-Policy as of 2026-07-06:
-- Keep the latest N compressed daily DB backups by filename date.
+Policy as of 2026-07-09:
+- Keep the latest N compressed daily DB backups by filename date. The default
+  is 3 because Object Storage keeps the longer recovery window.
 - Keep manual_contracts audit backups.
 - Keep the newest chatbot_company full-copy backup; delete older full-copy DB
   snapshots because chatbot_company.db is rebuilt from upstream sources.
@@ -46,7 +47,7 @@ def safe_delete(path: Path, root: Path, dry_run: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backup-root", default="/opt/busan/backups")
-    parser.add_argument("--keep-daily", type=int, default=7)
+    parser.add_argument("--keep-daily", type=int, default=3)
     parser.add_argument("--keep-chatbot-full", type=int, default=1)
     parser.add_argument("--delete-transient-days", type=int, default=14)
     parser.add_argument("--dry-run", action="store_true")

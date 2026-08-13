@@ -7,6 +7,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import quote_plus
 
 import requests
 
@@ -20,6 +21,7 @@ SOURCE_NAME = "shopping_mall_product_master_api"
 JOB_NAME = "shopping_mall_product_master_api_incremental"
 RETRY_STATUS_CODES = {429, 502, 503, 504}
 DEFAULT_RETRY_DELAYS = [5, 15, 30]
+API_ERROR_SNIPPET_BYTES = int(os.environ.get("API_ERROR_SNIPPET_BYTES", "500"))
 
 CONTRACT_ENDPOINTS = {
     "mas": {
@@ -38,6 +40,37 @@ CONTRACT_ENDPOINTS = {
         "job_name": "shopping_mall_product_master_third_party_change_api",
     },
 }
+
+
+def sanitize_api_text(text: str | None) -> str:
+    text = text or ""
+    if SERVICE_KEY:
+        text = text.replace(SERVICE_KEY, "[REDACTED_SERVICE_KEY]")
+        text = text.replace(quote_plus(SERVICE_KEY), "[REDACTED_SERVICE_KEY]")
+    return " ".join(text.split())[:API_ERROR_SNIPPET_BYTES]
+
+
+def describe_response(resp: requests.Response, context: str) -> str:
+    content_type = resp.headers.get("content-type", "")
+    try:
+        body_head = resp.content[:API_ERROR_SNIPPET_BYTES].decode(resp.encoding or "utf-8", "replace")
+    except Exception:
+        body_head = repr(resp.content[:API_ERROR_SNIPPET_BYTES])
+    return (
+        f"{context}: HTTP {resp.status_code}, content_type={content_type}, "
+        f"body_head={sanitize_api_text(body_head)}"
+    )
+
+
+def looks_like_xml(resp: requests.Response) -> bool:
+    return resp.content.lstrip().startswith(b"<")
+
+
+def parse_xml_response(resp: requests.Response, context: str) -> ET.Element:
+    try:
+        return ET.fromstring(resp.content)
+    except ET.ParseError as exc:
+        raise ET.ParseError(f"{exc}; {describe_response(resp, context)}")
 
 
 def normalize_text(value: str | None) -> str:
@@ -273,10 +306,15 @@ def fetch_page(url: str, params: dict[str, Any], page: int) -> tuple[requests.Re
     for attempt in range(1, attempts + 1):
         try:
             resp = requests.get(url, params=params, timeout=60)
-            if resp.status_code == 200:
+            if resp.status_code == 200 and looks_like_xml(resp):
                 return resp, attempt - 1, ""
-            last_error = f"HTTP {resp.status_code} at page {page}"
-            if resp.status_code not in RETRY_STATUS_CODES or attempt == attempts:
+            if resp.status_code == 200:
+                last_error = describe_response(resp, f"Non-XML response at page {page}")
+                retryable = True
+            else:
+                last_error = describe_response(resp, f"HTTP error at page {page}")
+                retryable = resp.status_code in RETRY_STATUS_CODES
+            if not retryable or attempt == attempts:
                 return resp, attempt - 1, last_error
         except requests.exceptions.RequestException as exc:
             last_error = f"{type(exc).__name__} at page {page}"
@@ -523,7 +561,7 @@ def run_import(target_date: str | None, days: int, max_pages: int, num_rows: int
                 error_msg = retry_error or f"HTTP {resp.status_code} at page {page}"
                 break
 
-            root = ET.fromstring(resp.content)
+            root = parse_xml_response(resp, f"catalog page {page}")
             result_code = root.findtext(".//resultCode")
             if result_code != "00":
                 status = "partial_success" if total_written else "failed"
@@ -657,7 +695,7 @@ def run_contract_endpoint_import(
                 error_msg = retry_error or f"HTTP {resp.status_code} at page {page}"
                 break
 
-            root = ET.fromstring(resp.content)
+            root = parse_xml_response(resp, f"{endpoint_key} page {page}")
             result_code = root.findtext(".//resultCode")
             if result_code != "00":
                 status = "partial_success" if total_written else "failed"

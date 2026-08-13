@@ -34,12 +34,30 @@ components.html(
     <script>
     try {
       const doc = window.parent.document;
-      doc.documentElement.lang = 'ko';
-      doc.documentElement.setAttribute('translate', 'no');
-      doc.documentElement.classList.add('notranslate');
-      if (doc.body) {
-        doc.body.setAttribute('translate', 'no');
-        doc.body.classList.add('notranslate');
+      const replacements = new Map([
+        ['대조현황', '종합현황'],
+        ['의회별 쿼리 검색', '기관별 실적 검색'],
+        ['계약관계 분석', '유출계약 분석'],
+        ['대립분석', '종합분석'],
+      ]);
+      function applyNoTranslate() {
+        doc.documentElement.lang = 'ko';
+        doc.documentElement.setAttribute('translate', 'no');
+        doc.documentElement.classList.add('notranslate');
+        if (doc.body) {
+          doc.body.setAttribute('translate', 'no');
+          doc.body.classList.add('notranslate');
+        }
+        doc.querySelectorAll('body, body *').forEach((el) => {
+          el.setAttribute('translate', 'no');
+          el.classList.add('notranslate');
+          const text = (el.childNodes && el.childNodes.length === 1 && el.childNodes[0].nodeType === Node.TEXT_NODE)
+            ? el.textContent.trim()
+            : '';
+          if (text && replacements.has(text)) {
+            el.textContent = replacements.get(text);
+          }
+        });
       }
       if (!doc.querySelector('meta[name="google"][content="notranslate"]')) {
         const meta = doc.createElement('meta');
@@ -47,6 +65,10 @@ components.html(
         meta.content = 'notranslate';
         doc.head.appendChild(meta);
       }
+      applyNoTranslate();
+      const observer = new MutationObserver(() => applyNoTranslate());
+      observer.observe(doc.body || doc.documentElement, { childList: true, subtree: true, characterData: true });
+      window.setInterval(applyNoTranslate, 1500);
     } catch (e) { }
     </script>
     """,
