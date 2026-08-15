@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Busan server disk capacity hourly
+
+[Timer]
+OnCalendar=*-*-* *:05:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=2m
+Unit=busan-disk-capacity-manager.service
+
+[Install]
+WantedBy=timers.target

@@ -8,6 +8,7 @@ rate_calc_db.py, build_api_cache.py 등에서 공통으로 사용하는
 import pandas as pd
 import numpy as np
 import json
+import os
 import re
 from collections import defaultdict
 
@@ -81,6 +82,13 @@ NON_LOCAL_BRANCH_BIZNOS = {
     '3258101042',  # 주식회사로하스에코시스템 (비부산)
 }
 
+# 예외 수집 기관: 조달청 등록상 서울(타지역) 소재이지만 실제 본사가 부산인 기관
+# → 타지역 필터(전화번호/키워드) 면제 대상
+BUSAN_EXCEPTION_AGENCIES = {
+    'B552481',  # 한국예탁결제원 (부산 남구, 조달청 등록=서울)
+    'Z044079',  # 한국예탁결제원 총무2팀
+}
+
 # 부산 지명과 겹치는 키워드 예외
 BUSAN_EXCEPTIONS = {
     '대구': ['해운대구'],
@@ -102,6 +110,73 @@ BUSAN_EXCEPTIONS = {
 # ============================================================
 # 2. 유틸리티 함수
 # ============================================================
+SITE_EXCLUSION_OVERRIDES_FILE = os.environ.get(
+    'SITE_EXCLUSION_OVERRIDES_FILE',
+    'site_exclusion_overrides.json',
+)
+_SITE_EXCLUSION_KEYS = None
+
+
+def _norm_contract_key(value):
+    """계약번호 비교용 정규화: 공백/하이픈 제거."""
+    if value is None:
+        return ''
+    text = str(value).strip()
+    if text in ('', 'nan', 'None'):
+        return ''
+    return text.replace('-', '')
+
+
+def load_site_exclusion_override_keys(path=None):
+    """관외 현장 확정 제외 계약번호 목록을 로드한다.
+
+    원천 계약 DB는 보존하고, DataHub 현장소재지 검증으로 부산 외 현장이
+    확정된 계약만 JSON override로 계산 모수에서 제외한다.
+    """
+    global _SITE_EXCLUSION_KEYS
+    override_path = path or SITE_EXCLUSION_OVERRIDES_FILE
+    if _SITE_EXCLUSION_KEYS is not None and path is None:
+        return _SITE_EXCLUSION_KEYS
+
+    keys = set()
+    try:
+        with open(override_path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        rows = payload.get('exclusions', payload if isinstance(payload, list) else [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get('active', 'Y')).upper() not in ('Y', 'YES', 'TRUE', '1'):
+                continue
+            for col in (
+                'contract_no', 'dcsnCntrctNo', 'server_dcsnCntrctNo',
+                'untyCntrctNo', 'server_ref_no',
+            ):
+                key = _norm_contract_key(row.get(col))
+                if key:
+                    keys.add(key)
+    except FileNotFoundError:
+        keys = set()
+    except Exception as exc:
+        print(f"[WARN] site exclusion override load failed: {exc}")
+        keys = set()
+
+    if path is None:
+        _SITE_EXCLUSION_KEYS = keys
+    return keys
+
+
+def is_site_excluded_contract(row):
+    """현장소재지 검증으로 모수 제외 처리된 계약인지 확인."""
+    keys = load_site_exclusion_override_keys()
+    if not keys:
+        return False
+    for col in ('dcsnCntrctNo', 'untyCntrctNo', 'server_dcsnCntrctNo', 'server_ref_no'):
+        if _norm_contract_key(row.get(col, '')) in keys:
+            return True
+    return False
+
+
 def parse_corp_shares(cl):
     """corpList 문자열에서 [(사업자번호, 지분율)] 추출 + 정규화"""
     biz_list = []
@@ -188,6 +263,10 @@ def is_non_busan_contract(row, lrg):
     """전화번호+키워드로 타지역 계약 판별.
     Returns: 'keyword' (키워드 매칭), 'tel' (전화번호만), False (부산)"""
     if lrg == '부산광역시 및 소속기관':
+        return False
+    # 예외 수집 기관: 본사 부산이므로 타지역 필터 면제
+    cd = str(row.get('dminsttCd', '') or '').strip()
+    if cd in BUSAN_EXCEPTION_AGENCIES:
         return False
     # 전화번호
     tel = str(row.get('cntrctInsttOfclTelNo', '')).strip()
@@ -508,6 +587,9 @@ def filter_shopping_by_site(df, conn, busan_agency_cds, inst_dict=None):
 def process_contract_row(row, inst_dict, biznos, is_shopping=False,
                          use_location_filter=False, bid_dict=None, award_set=None):
     """단일 계약 행 처리 → (matched_cd, amt, local_amt) 또는 None (배제)"""
+    if not is_shopping and is_site_excluded_contract(row):
+        return None
+
     if is_shopping:
         amt = float(row.get('prdctAmt', 0))
         if np.isnan(amt): amt = 0

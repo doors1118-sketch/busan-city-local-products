@@ -11,6 +11,7 @@ import time
 import hmac
 import hashlib
 import base64
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -27,6 +28,8 @@ if os.path.exists(_env_path):
     with open(_env_path, encoding='utf-8') as _f:
         for _line in _f:
             _line = _line.strip()
+            if _line.startswith('export '):
+                _line = _line[len('export '):].strip()
             if _line and not _line.startswith('#') and '=' in _line:
                 _k, _v = _line.split('=', 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
@@ -35,6 +38,77 @@ SERVICE_KEY = os.environ.get('SERVICE_KEY', '')
 DB_PATH = 'procurement_contracts.db'
 AGENCY_DB_PATH = 'busan_agencies_master.db'
 SERVC_SITE_DB_PATH = 'servc_site.db'
+
+API_ISSUES = []
+API_ISSUES_LOCK = threading.Lock()
+
+
+def record_api_issue(target_date, api_name, page_no, issue_type, detail, severity='WARNING'):
+    """Collect public-data API issues without interrupting the current pipeline step."""
+    issue = {
+        'target_date': str(target_date or ''),
+        'detected_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'api_name': str(api_name or ''),
+        'page_no': int(page_no or 0),
+        'issue_type': str(issue_type or ''),
+        'severity': str(severity or 'WARNING'),
+        'detail': str(detail or '')[:500],
+    }
+    with API_ISSUES_LOCK:
+        API_ISSUES.append(issue)
+
+
+def flush_api_issues(target_date):
+    """Persist collected API issues to DB and a JSONL side log for the 09:00 alert job."""
+    with API_ISSUES_LOCK:
+        issues = [x for x in API_ISSUES if str(x.get('target_date')) == str(target_date)]
+
+    if not issues:
+        return 0
+
+    grouped = {}
+    for issue in issues:
+        key = (
+            issue['target_date'],
+            issue['api_name'],
+            issue['page_no'],
+            issue['issue_type'],
+            issue['severity'],
+            issue['detail'],
+        )
+        grouped.setdefault(key, 0)
+        grouped[key] += 1
+
+    os.makedirs('sync_log', exist_ok=True)
+    with open(os.path.join('sync_log', 'api_issues.jsonl'), 'a', encoding='utf-8') as f:
+        for issue in issues:
+            f.write(json.dumps(issue, ensure_ascii=False) + '\n')
+
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("""CREATE TABLE IF NOT EXISTS api_call_issues (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_date TEXT,
+        detected_at TEXT,
+        api_name TEXT,
+        page_no INTEGER,
+        issue_type TEXT,
+        severity TEXT,
+        detail TEXT,
+        occurrence_count INTEGER DEFAULT 1
+    )""")
+    conn.execute("DELETE FROM api_call_issues WHERE target_date = ?", (str(target_date),))
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    rows = [
+        (td, now, api, page, issue_type, severity, detail, count)
+        for (td, api, page, issue_type, severity, detail), count in grouped.items()
+    ]
+    conn.executemany("""INSERT INTO api_call_issues
+        (target_date, detected_at, api_name, page_no, issue_type, severity, detail, occurrence_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+    conn.commit()
+    conn.close()
+    print(f"   ⚠️ 공공데이터 API 이슈 기록: {len(rows)}종 / {len(issues)}건")
+    return len(rows)
 
 # === NCloud SENS SMS 알림 (alert_config.json에서 설정 로드) ===
 def send_sms(message):
@@ -150,13 +224,19 @@ def update_agency_master_daily(target_date):
                 with urllib.request.urlopen(rq, context=ctx, timeout=20) as res:
                     d = json.loads(res.read().decode('utf-8'))
                     h = d.get('response', {}).get('header', {})
+                    if not h:
+                        h = d.get('nkoneps.com.response.ResponseError', {}).get('header', {})
                     if h.get('resultCode') == '00':
                         b = d.get('response', {}).get('body', {})
                         return b.get('items', []), b.get('totalCount', 0)
-            except Exception:
-                pass
+                    record_api_issue(target_date, 'agency_master', page_no, 'result_code',
+                                     f"{h.get('resultCode')}: {h.get('resultMsg', '')}", 'WARNING')
+            except Exception as e:
+                record_api_issue(target_date, 'agency_master', page_no, 'exception', repr(e), 'WARNING')
             retry += 1
             time.sleep(1)
+        record_api_issue(target_date, 'agency_master', page_no, 'retry_exhausted',
+                         '수요기관 API 3회 재시도 실패', 'WARNING')
         return [], 0
         
     items, total_count = fetch_agency(1)
@@ -252,10 +332,14 @@ def update_company_master_daily(target_date):
                     if h.get('resultCode') == '00':
                         b = d.get('response', {}).get('body', {})
                         return b.get('items', []), b.get('totalCount', 0)
-            except Exception:
-                pass
+                    record_api_issue(target_date, 'company_master', page_no, 'result_code',
+                                     f"{h.get('resultCode')}: {h.get('resultMsg', '')}", 'WARNING')
+            except Exception as e:
+                record_api_issue(target_date, 'company_master', page_no, 'exception', repr(e), 'WARNING')
             retry += 1
             time.sleep(1)
+        record_api_issue(target_date, 'company_master', page_no, 'retry_exhausted',
+                         '조달업체 기본정보 API 3회 재시도 실패', 'WARNING')
         return [], 0
 
     items, total_count = fetch_company_page(1)
@@ -327,7 +411,7 @@ def update_company_industry_daily(target_date):
     end_dt = f"{target_date}2359"
 
     def fetch_industry_page(page_no):
-        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
+        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=3&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
         retry = 0
         while retry < 3:
             try:
@@ -335,13 +419,19 @@ def update_company_industry_daily(target_date):
                 with urllib.request.urlopen(rq, context=ctx, timeout=20) as res:
                     d = json.loads(res.read().decode('utf-8'))
                     h = d.get('response', {}).get('header', {})
+                    if not h:
+                        h = d.get('nkoneps.com.response.ResponseError', {}).get('header', {})
                     if h.get('resultCode') == '00':
                         b = d.get('response', {}).get('body', {})
                         return b.get('items', []), b.get('totalCount', 0)
-            except Exception:
-                pass
+                    record_api_issue(target_date, 'company_industry', page_no, 'result_code',
+                                     f"{h.get('resultCode')}: {h.get('resultMsg', '')}", 'WARNING')
+            except Exception as e:
+                record_api_issue(target_date, 'company_industry', page_no, 'exception', repr(e), 'WARNING')
             retry += 1
             time.sleep(1)
+        record_api_issue(target_date, 'company_industry', page_no, 'retry_exhausted',
+                         '조달업체 업종정보 API 3회 재시도 실패', 'WARNING')
         return [], 0
 
     items, total_count = fetch_industry_page(1)
@@ -461,10 +551,17 @@ def update_bid_notices_daily(target_date):
                             success = True
                             page_no = -1 # outer loop stop indicator
                         break
-            except Exception:
-                pass
+                    else:
+                        record_api_issue(target_date, 'construction_bid_notice_site', page_no, 'result_code',
+                                         f"{h.get('resultCode')}: {h.get('resultMsg', '')}", 'WARNING')
+            except Exception as e:
+                record_api_issue(target_date, 'construction_bid_notice_site', page_no, 'exception', repr(e), 'WARNING')
             retry += 1
             time.sleep(1)
+
+        if not success and retry >= 3:
+            record_api_issue(target_date, 'construction_bid_notice_site', page_no, 'retry_exhausted',
+                             '공사 입찰공고 현장 API 3회 재시도 실패', 'WARNING')
             
         if page_no == -1 or not success:
             break
@@ -560,6 +657,8 @@ def update_servc_site_daily(target_date):
                         data = json.loads(resp.read().decode('utf-8'))
                         header = data.get('response', {}).get('header', {})
                         if header.get('resultCode') not in ['00', None]:
+                            record_api_issue(target_date, f"servc_site_{api_key}", page, 'result_code',
+                                             f"{header.get('resultCode')}: {header.get('resultMsg', '')}", 'WARNING')
                             break
                         body = data.get('response', {}).get('body', {})
                         items = body.get('items', [])
@@ -590,12 +689,15 @@ def update_servc_site_daily(target_date):
                         if page * 100 >= total:
                             success = True
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    record_api_issue(target_date, f"servc_site_{api_key}", page, 'exception', repr(e), 'WARNING')
                 retry += 1
                 time.sleep(1)
 
             if success or retry >= 3:
+                if not success and retry >= 3:
+                    record_api_issue(target_date, f"servc_site_{api_key}", page, 'retry_exhausted',
+                                     f"{label} 조달요청 API 3회 재시도 실패", 'WARNING')
                 if success:
                     break
                 break
@@ -753,10 +855,18 @@ def sync_prespec(target_date, conn_path=None):
                             body = data.get('response', {}).get('body', {})
                             items = body.get('items', [])
                             total_count = int(body.get('totalCount', 0))
+                        else:
+                            record_api_issue(target_date, f"prespec_{sector}", page, 'result_code',
+                                             f"{hdr.get('resultCode')}: {hdr.get('resultMsg', '')}", 'WARNING')
                     break
-                except Exception:
+                except Exception as e:
+                    record_api_issue(target_date, f"prespec_{sector}", page, 'exception', repr(e), 'WARNING')
                     retry += 1
                     time.sleep(1)
+
+            if retry >= 3 and not items:
+                record_api_issue(target_date, f"prespec_{sector}", page, 'retry_exhausted',
+                                 f"{sector} 사전규격 API 3회 재시도 실패", 'WARNING')
 
             if items:
                 sector_items.extend(items)
@@ -873,6 +983,8 @@ def update_busan_awards_daily(target_date):
                     data = json.loads(res.read().decode('utf-8'))
                     header = data.get('response', {}).get('header', {})
                     if header.get('resultCode') != '00':
+                        record_api_issue(target_date, f"busan_award_{label}", page_no, 'result_code',
+                                         f"{header.get('resultCode')}: {header.get('resultMsg', '')}", 'WARNING')
                         break
                     items = data.get('response', {}).get('body', {}).get('items', [])
                     if not items:
@@ -891,6 +1003,7 @@ def update_busan_awards_daily(target_date):
                     page_no += 1
             except Exception as e:
                 print(f"   [Error] {label}: {e}")
+                record_api_issue(target_date, f"busan_award_{label}", page_no, 'exception', repr(e), 'WARNING')
                 break
         
         if results:
@@ -955,6 +1068,8 @@ def update_bid_notices_price_daily(target_date):
                     data = json.loads(res.read().decode('utf-8'))
                     header = data.get('response', {}).get('header', {})
                     if header.get('resultCode') != '00':
+                        record_api_issue(target_date, f"bid_notice_price_{sector}", page_no, 'result_code',
+                                         f"{header.get('resultCode')}: {header.get('resultMsg', '')}", 'WARNING')
                         break
                     body = data.get('response', {}).get('body', {})
                     items = body.get('items', [])
@@ -973,6 +1088,7 @@ def update_bid_notices_price_daily(target_date):
                     page_no += 1
             except Exception as e:
                 print(f"   [Error] {sector}: {e}")
+                record_api_issue(target_date, f"bid_notice_price_{sector}", page_no, 'exception', repr(e), 'WARNING')
                 break
         
         if all_items:
@@ -1008,10 +1124,15 @@ def fetch_contract_data(api_url, bgn_date, end_date, page_no=1, num_of_rows=999)
                     body = data.get('response', {}).get('body', {})
                     return body.get('items', []), body.get('totalCount', 0)
                 else:
+                    record_api_issue(bgn_date, f"contract_{api_url.rsplit('/', 1)[-1]}", page_no, 'result_code',
+                                     f"{header.get('resultCode')}: {header.get('resultMsg', '')}", 'CRITICAL')
                     return [], 0
-        except Exception:
+        except Exception as e:
+            record_api_issue(bgn_date, f"contract_{api_url.rsplit('/', 1)[-1]}", page_no, 'exception', repr(e), 'CRITICAL')
             time.sleep(1)
             retry += 1
+    record_api_issue(bgn_date, f"contract_{api_url.rsplit('/', 1)[-1]}", page_no, 'retry_exhausted',
+                     '계약 API 3회 재시도 실패', 'CRITICAL')
     return [], 0
     
 def download_for_category(api_type, date_str):
@@ -1045,6 +1166,9 @@ def sync_one_day(target_date):
     if not check_api_health():
         print("   🚫 조달청 API 서비스 점검 중 — 금일 수집을 건너뜁니다.")
         print("   → 점검 완료 후 다음 실행 시 자동 보충 수집됩니다.")
+        record_api_issue(target_date, 'api_health_check', 1, 'health_check_failed',
+                         '조달청 API 헬스체크 실패로 금일 수집 건너뜀', 'CRITICAL')
+        flush_api_issues(target_date)
         send_sms(f'[조달알림] {target_date} API 점검중 수집 건너뜀')
         return False
     print("   ✅ API 정상 응답 확인")
@@ -1109,12 +1233,24 @@ def sync_one_day(target_date):
         failed_steps.append('Step2.0_추정가격')
     print("\n--------------------------------------------------")
 
-    # [Step 2.1] NTS 사업자등록상태 야간 배치 (매일)
+    # [Step 2.1] NTS 사업자등록상태 배치
+    # - 일요일: 전체 검증
+    # - 그 외: 실패/미검증/오래된 검증분만 제한적으로 재검증
     try:
-        print(f"[휴폐업 동기화] {target_date} NTS 사업자등록상태 배치 갱신 중...")
+        today = datetime.datetime.now().date()
+        is_full_nts_day = today.weekday() == 6  # Sunday
+        nts_cmd = [sys.executable, 'nts_batch_sync.py']
+        if is_full_nts_day:
+            nts_mode = 'weekly_full'
+            print(f"[휴폐업 동기화] {target_date} NTS 사업자등록상태 주 1회 전체 검증 중...")
+        else:
+            nts_mode = 'daily_incremental'
+            nts_cmd.extend(['--stale-days', os.environ.get('NTS_DAILY_STALE_DAYS', '30')])
+            nts_cmd.extend(['--limit', os.environ.get('NTS_DAILY_INCREMENTAL_LIMIT', '1000')])
+            print(f"[휴폐업 동기화] {target_date} NTS 사업자등록상태 일일 증분 검증 중...")
         import subprocess
         res = subprocess.run(
-            [sys.executable, 'nts_batch_sync.py'],
+            nts_cmd,
             capture_output=True, text=True, encoding='utf-8'
         )
         if res.returncode == 0:
@@ -1122,7 +1258,7 @@ def sync_one_day(target_date):
             for line in lines[-2:]:
                 print(f"   {line}")
         else:
-            print(f"   [오류] NTS 배치 실패: {res.stderr[-200:]}")
+            print(f"   [오류] NTS 배치 실패 ({nts_mode}): {res.stderr[-200:]}")
             failed_steps.append('Step2.1_NTS휴폐업')
     except Exception as e:
         print(f"   [오류] Step 2.1 NTS 휴폐업 동기화 실패: {e}")
@@ -1186,6 +1322,8 @@ def sync_one_day(target_date):
     except Exception as e:
         print(f"   [오류] Step 2 계약 데이터 수집 실패: {e}")
         print(f"   → 핵심 데이터 수집 실패 — 전체 실패 처리 (추후 자동 보충)")
+        record_api_issue(target_date, 'contract_download_all', 0, 'step_exception', repr(e), 'CRITICAL')
+        flush_api_issues(target_date)
         send_sms(f'[조달알림] {target_date} 계약수집 실패: {str(e)[:30]}')
         return False
 
@@ -1197,6 +1335,9 @@ def sync_one_day(target_date):
     if total_collected == 0 and is_weekday:
         msg = f'[조달경보] {target_date} 전체 0건 수집! API 엔드포인트 변경 의심'
         print(f"   🚨 {msg}")
+        record_api_issue(target_date, 'contract_download_all', 0, 'zero_total_collected',
+                         '평일 전체 계약 수집 0건', 'CRITICAL')
+        flush_api_issues(target_date)
         send_sms(msg)
         return False  # catch-up 대상으로 남김
 
@@ -1328,6 +1469,7 @@ def sync_one_day(target_date):
         conn.close()
     except Exception as e:
         print(f"   [오류] DB 적재: {e}")
+        flush_api_issues(target_date)
         return False
 
     # 실패 요약
@@ -1335,6 +1477,7 @@ def sync_one_day(target_date):
         print(f"\n   ⚠️ 일부 Step 실패 ({len(failed_steps)}건): {', '.join(failed_steps)}")
         print(f"   → 핵심 계약 데이터는 정상 수집되어 성공 처리합니다.")
 
+    flush_api_issues(target_date)
     return True
 
 def get_last_sync_date():

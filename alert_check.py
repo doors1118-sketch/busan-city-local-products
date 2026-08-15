@@ -9,8 +9,13 @@ Part B-2: 계약 단계 사후 경보 — 외지업체 지분 60% 초과 (의무
 단독 실행: python alert_check.py
 """
 import json, os, sys, datetime, sqlite3
-import urllib.request, urllib.parse
+import urllib.request, urllib.parse, urllib.error
 import hashlib, hmac, base64, time
+from protection_criteria import (
+    SPECIALTY_CONSTRUCTION_KEYWORDS,
+    get_protection_threshold,
+    normalize_protection_subtype,
+)
 
 CONFIG_FILE = 'alert_config.json'
 
@@ -28,6 +33,7 @@ THRESHOLD_TOTAL_RATE_DROP = 3.0      # 전체 수주율 급락 기준 (%p)
 THRESHOLD_SECTOR_RATE_CHANGE = 5.0   # 분야별 수주율 급변 기준 (%p)
 THRESHOLD_PROTECTION_INCREASE = 10   # 보호제도 미적용 증가 기준 (건수)
 THRESHOLD_TOTAL_AMT_CHANGE = 0.10    # 전체 발주액 급변 기준 (10%)
+THRESHOLD_DISK_USAGE_PERCENT = float(os.getenv('DISK_USAGE_ALERT_THRESHOLD', '90'))
 
 # 대형 유출계약 분야별 차등 기준
 THRESHOLD_LEAKAGE_BY_SECTOR = {
@@ -38,13 +44,7 @@ THRESHOLD_LEAKAGE_BY_SECTOR = {
 }
 THRESHOLD_LEAKAGE_DEFAULT = 5e8
 
-# 공사 지역제한 기준액 (부산시 소속기관)
-BUSAN_CITY_THRESHOLDS = {
-    '종합': 100e8,   # ≤100억
-    '전문': 10e8,    # ≤10억
-    '용역': 3.3e8,   # ≤3.3억
-}
-SPECIALIZED_KEYWORDS = ['전기', '통신', '소방', '기계설비', '기계공사', '정보통신']
+SPECIALIZED_KEYWORDS = SPECIALTY_CONSTRUCTION_KEYWORDS
 
 # 의무공동도급: 외지업체 지분 상한 (60% 이상이면 위반)
 MAX_NON_LOCAL_SHARE = 60.0
@@ -125,6 +125,119 @@ def send_gmail(subject, body, config):
         print(f"  ⚠️ 이메일 발송 오류: {e}")
 
 
+def _truncate_euc_kr(text, max_bytes):
+    """SENS SMS/LMS byte limits are based on EUC-KR."""
+    encoded = str(text or '').encode('euc-kr', errors='ignore')
+    if len(encoded) <= max_bytes:
+        return encoded.decode('euc-kr', errors='ignore'), False
+    return encoded[:max_bytes].decode('euc-kr', errors='ignore').rstrip(), True
+
+
+def _sanitize_sens_text(text, max_bytes=None):
+    """Remove characters that NCP SENS cannot send reliably in SMS/LMS."""
+    value = str(text or '')
+    phrase_replacements = {
+        '🚨 [경보]': '[경보]',
+        '⚠️ [주의]': '[주의]',
+        '⚠ [주의]': '[주의]',
+        '📋 [사전규격': '[사전규격',
+    }
+    for src, dst in phrase_replacements.items():
+        value = value.replace(src, dst)
+
+    replacements = {
+        '🚨': '[경보]',
+        '⚠️': '[주의]',
+        '⚠': '[주의]',
+        '📋': '[사전규격]',
+        '🔔': '[알림]',
+        '✅': '[정상]',
+        '❌': '[실패]',
+        '💰': '[계약]',
+        '📄': '[로그]',
+        '💾': '[저장]',
+        '📱': 'SMS',
+        '📧': 'EMAIL',
+        '🟢': '[정상]',
+        '🔴': '[경보]',
+        '—': '-',
+        '→': '->',
+        '≤': '<=',
+        '≥': '>=',
+        '“': '"',
+        '”': '"',
+        '‘': "'",
+        '’': "'",
+    }
+    for src, dst in replacements.items():
+        value = value.replace(src, dst)
+
+    # Final guard: drop anything still outside EUC-KR.
+    cleaned = value.encode('euc-kr', errors='ignore').decode('euc-kr', errors='ignore')
+    truncated = False
+    if max_bytes is not None:
+        cleaned, truncated = _truncate_euc_kr(cleaned, max_bytes)
+    return cleaned, (cleaned != str(text or '')), truncated
+
+
+def _redact_sms_error_body(body):
+    """Keep provider diagnostics while removing likely secrets and phone numbers."""
+    import re
+    value = str(body or '')
+    value = re.sub(r'(?i)(access[_-]?key|secret[_-]?key|signature|token|authorization)"?\s*[:=]\s*"[^"]+"',
+                   r'\1":"***"', value)
+    value = re.sub(r'01[016789]-?\d{3,4}-?\d{4}', '010****0000', value)
+    value = re.sub(r'\b\d{10,11}\b', lambda m: '010****0000' if m.group(0).startswith('01') else m.group(0), value)
+    return value[:1000]
+
+
+KST = datetime.timezone(datetime.timedelta(hours=9))
+UTC = datetime.timezone.utc
+
+
+def _parse_etl_datetime(value):
+    """Parse SQLite ETL timestamps stored with mixed local/UTC conventions."""
+    if not value:
+        return None
+    raw = str(value).strip()
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            return datetime.datetime.strptime(raw[:19], fmt)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.datetime.fromisoformat(raw)
+        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    except ValueError:
+        return None
+
+
+def _etl_ran_on_kst_date(value, target_date):
+    """Return True if an ETL timestamp belongs to target_date in KST.
+
+    Some ETL scripts write KST wall-clock time to started_at, while others write
+    UTC wall-clock time. Accept both interpretations to avoid false alarms.
+    """
+    dt = _parse_etl_datetime(value)
+    if not dt:
+        return False
+    if dt.date() == target_date:
+        return True
+    return dt.replace(tzinfo=UTC).astimezone(KST).date() == target_date
+
+
+def _etl_display_time(value, target_date=None):
+    dt = _parse_etl_datetime(value)
+    if not dt:
+        return str(value or '')
+    if target_date is not None and dt.date() == target_date:
+        return str(value)
+    utc_as_kst = dt.replace(tzinfo=UTC).astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
+    if utc_as_kst != str(value):
+        return f"{value} (UTC→KST {utc_as_kst})"
+    return str(value)
+
+
 def send_ncp_sms(message, config):
     """네이버 클라우드 SENS API로 SMS 발송"""
     sms_cfg = config.get('ncp_sms', {})
@@ -141,9 +254,15 @@ def send_ncp_sms(message, config):
         print("  ⚠️ NCP SMS 설정 불완전")
         return
     
-    # LMS (장문) 사용 (80byte 초과 시)
-    msg_bytes = message.encode('utf-8')
-    msg_type = 'LMS' if len(msg_bytes) > 80 else 'SMS'
+    # SENS SMS/LMS limits and supported characters are based on EUC-KR.
+    sanitized_message, changed, _ = _sanitize_sens_text(message)
+    msg_bytes = sanitized_message.encode('euc-kr', errors='ignore')
+    msg_type = 'LMS' if len(msg_bytes) > 90 else 'SMS'
+    max_content_bytes = 2000 if msg_type == 'LMS' else 90
+    sanitized_message, changed_after_limit, truncated = _sanitize_sens_text(sanitized_message, max_content_bytes)
+    changed = changed or changed_after_limit
+    if changed or truncated:
+        print(f"  ℹ️ SMS 본문 정제 적용: EUC-KR {len(msg_bytes):,}byte → {len(sanitized_message.encode('euc-kr', errors='ignore')):,}byte ({msg_type})")
     
     # 서명 생성
     timestamp = str(int(time.time() * 1000))
@@ -158,11 +277,11 @@ def send_ncp_sms(message, config):
     body = {
         "type": msg_type,
         "from": from_number,
-        "content": message,
+        "content": sanitized_message,
         "messages": [{"to": r.replace('-','')} for r in recipients],
     }
     if msg_type == 'LMS':
-        body["subject"] = "[부산 조달 경보]"
+        body["subject"] = _truncate_euc_kr("[부산 조달 경보]", 40)[0]
     
     try:
         url = f"https://sens.apigw.ntruss.com{uri}"
@@ -180,13 +299,42 @@ def send_ncp_sms(message, config):
                 print(f"  📱 SMS 발송 완료 → {', '.join(recipients)} ({msg_type})")
             else:
                 print(f"  ⚠️ SMS 발송 실패: {result}")
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8', errors='replace')
+        print(f"  ⚠️ SMS 발송 오류: HTTP {e.code} {e.reason}; body={_redact_sms_error_body(error_body)}")
     except Exception as e:
         print(f"  ⚠️ SMS 발송 오류: {e}")
 
 
-def send_notifications(alerts, suspects, violations, config):
+def _format_prespec_sms_line(item, max_name_len=24):
+    """Format one prespec-monitor row for compact LMS output."""
+    try:
+        _no, sector, name, agency, amount, deadline, is_target, target_type = item
+        amount_eok = (amount or 0) / 1e8
+        deadline_text = str(deadline or '')[:10]
+        target_text = f'/{target_type}' if is_target and target_type else ''
+        return f'[{sector}{target_text}] "{str(name or "")[:max_name_len]}" {amount_eok:.1f}억 - {agency} (마감:{deadline_text})'
+    except Exception:
+        return str(item)[:90]
+
+
+def send_notifications(alerts, suspects, violations, config, prespec_items=None, prespec_target_count=0):
     """경보 발생 시 텔레그램 + 이메일 발송"""
+    prespec_items = prespec_items or []
     if not alerts:
+        if os.getenv('ALERT_SEND_OK_SMS', '1').lower() not in ('0', 'false', 'no', 'off'):
+            today = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+            ok_lines = [
+                f'[부산 조달 운영알림] {today}',
+                '경보 0건 / 주의 0건',
+                '',
+                '이상 없음: 일일 수집, 챗봇 DB 적재, NTS 사업자등록상태, 서버 디스크, 수주율 변동 정상',
+            ]
+            if prespec_target_count:
+                ok_lines.append(f'\n[사전규격] 주요 마감전 {prespec_target_count}건')
+                for item in prespec_items[:5]:
+                    ok_lines.append(_format_prespec_sms_line(item))
+            send_ncp_sms('\n'.join(ok_lines), config)
         return
 
     critical = sum(1 for level, _ in alerts if level == 'CRITICAL')
@@ -200,6 +348,8 @@ def send_notifications(alerts, suspects, violations, config):
         tg_lines.append(msg)
     if len(alerts) > 10:
         tg_lines.append(f'... 외 {len(alerts)-10}건')
+    if prespec_target_count:
+        tg_lines.append(f'\n사전규격 주요 마감전 {prespec_target_count}건')
     send_telegram('\n'.join(tg_lines), config)
 
     # 이메일 (상세하게)
@@ -221,6 +371,11 @@ def send_notifications(alerts, suspects, violations, config):
         for v in violations[:10]:
             body_lines.append(f'<li>{v["외지업체"]} {v["외지지분"]}% ({v["계약금액"]:.1f}억) — {v["수요기관"]}</li>')
         body_lines.append('</ul>')
+    if prespec_target_count:
+        body_lines.append(f'<h3>사전규격 주요 마감전 ({prespec_target_count}건)</h3><ul>')
+        for item in prespec_items[:10]:
+            body_lines.append(f'<li>{_format_prespec_sms_line(item, max_name_len=60)}</li>')
+        body_lines.append('</ul>')
     send_gmail(subject, '\n'.join(body_lines), config)
 
     # SMS (LMS: 상세 포함, 최대 2000자)
@@ -240,6 +395,10 @@ def send_notifications(alerts, suspects, violations, config):
         sms_lines.append(f'\n[외지업체 지분초과] {len(violations)}건')
         for i, v in enumerate(violations[:5], 1):
             sms_lines.append(f'{i}. {v["외지업체"][:15]} {v["외지지분"]}% ({v["계약금액"]:.1f}억) - {v["수요기관"]}')
+    if prespec_target_count:
+        sms_lines.append(f'\n[사전규격] 주요 마감전 {prespec_target_count}건')
+        for item in prespec_items[:5]:
+            sms_lines.append(_format_prespec_sms_line(item))
     send_ncp_sms('\n'.join(sms_lines), config)
 
 
@@ -333,18 +492,16 @@ def check_bid_notices_protection(target_date=None):
         if price <= 0:
             continue
 
-        # 종합/전문 판별
-        if sector == '공사':
-            is_specialized = False
-            for kw in SPECIALIZED_KEYWORDS:
-                if (main_type and kw in str(main_type)) or (ntce_nm and kw in str(ntce_nm)):
-                    is_specialized = True
-                    break
-            ctype = '전문' if is_specialized else '종합'
-            limit = BUSAN_CITY_THRESHOLDS[ctype]
-        else:
-            ctype = '용역'
-            limit = BUSAN_CITY_THRESHOLDS['용역']
+        subtype = normalize_protection_subtype(
+            sector,
+            name=ntce_nm,
+            main_type=main_type,
+        )
+        if not subtype:
+            continue
+        limit = get_protection_threshold(TARGET_GROUP, '', subtype, target_date)
+        if not limit:
+            continue
 
         # 기준이하 확인
         if price > limit:
@@ -366,7 +523,7 @@ def check_bid_notices_protection(target_date=None):
                 '공고명': ntce_nm,
                 '수요기관': dm_nm,
                 '분야': sector,
-                '구분': ctype,
+                '구분': subtype,
                 '추정가격': price / 1e8,
                 '기준액': limit / 1e8,
                 '계약방식': method_str,
@@ -501,6 +658,73 @@ def check_pipeline_sync():
     return alerts
 
 
+def _previous_collection_date():
+    """Return the previous collection date using the same weekend rule as check_pipeline_sync."""
+    now = datetime.datetime.now()
+    yesterday = now - datetime.timedelta(days=1)
+    if yesterday.weekday() == 6:
+        yesterday = now - datetime.timedelta(days=2)
+    elif yesterday.weekday() == 5:
+        yesterday = now - datetime.timedelta(days=1)
+    return yesterday.strftime('%Y%m%d')
+
+
+def check_public_api_issues():
+    """Alert when daily_pipeline_sync recorded public-data API errors for the target date."""
+    alerts = []
+    if not os.path.exists(DB_PATH):
+        return alerts
+
+    target_date = _previous_collection_date()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        table_exists = conn.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='api_call_issues'
+            LIMIT 1
+        """).fetchone()
+        if not table_exists:
+            conn.close()
+            print(f"  ✅ 정상: 공공데이터 API 실패 기록 테이블 없음")
+            return alerts
+
+        rows = conn.execute("""
+            SELECT api_name, issue_type, severity, detail, SUM(occurrence_count) AS cnt
+            FROM api_call_issues
+            WHERE target_date = ?
+            GROUP BY api_name, issue_type, severity, detail
+            ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 ELSE 1 END, cnt DESC, api_name
+        """, (target_date,)).fetchall()
+        conn.close()
+
+        if not rows:
+            print(f"  ✅ 정상: 공공데이터 API 실패 기록 없음 ({target_date})")
+            return alerts
+
+        critical_count = sum(int(r[4] or 0) for r in rows if r[2] == 'CRITICAL')
+        warning_count = sum(int(r[4] or 0) for r in rows if r[2] != 'CRITICAL')
+        level = 'CRITICAL' if critical_count else 'WARNING'
+        msg = (f"🚨 [경보] 공공데이터 API 실패 기록: {target_date} "
+               f"경보 {critical_count}건 / 주의 {warning_count}건") if level == 'CRITICAL' else (
+              f"⚠️ [주의] 공공데이터 API 실패 기록: {target_date} 주의 {warning_count}건")
+        alerts.append((level, msg))
+        print(f"  {msg}")
+
+        for api_name, issue_type, severity, detail, cnt in rows[:5]:
+            short_detail = str(detail or '').replace('\n', ' ')[:80]
+            sub_msg = f"⚠️ [API] {api_name}/{issue_type}: {int(cnt or 0)}회 - {short_detail}"
+            alerts.append(('WARNING', sub_msg))
+            print(f"  {sub_msg}")
+        if len(rows) > 5:
+            print(f"     ... 외 {len(rows) - 5}종")
+    except Exception as e:
+        msg = f"⚠️ [주의] 공공데이터 API 실패 기록 확인 오류: {e}"
+        alerts.append(('WARNING', msg))
+        print(f"  {msg}")
+
+    return alerts
+
+
 def check_chatbot_pipeline_sync():
     """챗봇 DB 파이프라인 수집 실패 감지: chatbot_company.db의 etl_job_log 테이블 확인"""
     alerts = []
@@ -511,21 +735,23 @@ def check_chatbot_pipeline_sync():
     try:
         conn = sqlite3.connect(chatbot_db)
         
-        # 오늘 날짜
-        today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+        today_kst = datetime.datetime.now(KST).date()
         
         # 필수로 매일 실행되어야 하는 핵심 작업 목록 (주 1회 스케줄은 제외)
+        # import_innovation_product_api was disabled on 2026-06-08 by operation decision.
+        # The PPS innovation API repeatedly inserted 0 matched suppliers; innovation recommendation data
+        # is covered by import_certified_product_api, which imports the 13-type SMPP tech-product dataset.
         essential_jobs = [
             'bootstrap_master',
             'import_certified_product_api',
-            'import_innovation_product_api',
-            'mas_api_incremental'
+            'mas_api_incremental',
+            'shopping_mall_catalog_api_incremental'
         ]
         
         for job in essential_jobs:
             # 가장 최근 로그 조회 (오늘 발생한 에러인지 우선 확인)
             row = conn.execute("""
-                SELECT status, error_message, started_at 
+                SELECT status, error_message, started_at, input_row_count, inserted_count, error_count
                 FROM etl_job_log 
                 WHERE job_name LIKE ? 
                 ORDER BY started_at DESC LIMIT 1
@@ -538,28 +764,152 @@ def check_chatbot_pipeline_sync():
                 print(f"  {msg}")
                 continue
                 
-            status, err_msg, started_at = row
+            status, err_msg, started_at, input_count, inserted_count, error_count = row
             
-            # 오늘 실행되었는지 확인
-            is_today = started_at.startswith(today_str)
+            # Some jobs record started_at in UTC while others use KST.
+            is_today = _etl_ran_on_kst_date(started_at, today_kst)
+            started_label = _etl_display_time(started_at, today_kst)
             
-            if is_today and status == 'failed':
-                msg = f"🚨 [경보] 챗봇 DB 적재 실패: {job} (사유: {err_msg})"
+            if is_today and status in ('failed', 'partial'):
+                detail = f"입력 {input_count or 0:,} / 성공 {inserted_count or 0:,} / 실패 {error_count or 0:,}"
+                reason = f", 사유: {err_msg}" if err_msg else ""
+                msg = f"🚨 [경보] 챗봇 DB 적재 {status}: {job} ({detail}{reason})"
                 alerts.append(('CRITICAL', msg))
                 print(f"  {msg}")
             elif not is_today:
-                msg = f"🚨 [경보] 챗봇 DB 적재 지연: {job} 오늘 미실행 (최근: {started_at})"
+                msg = f"🚨 [경보] 챗봇 DB 적재 지연: {job} 오늘 미실행 (최근: {started_label})"
                 alerts.append(('CRITICAL', msg))
                 print(f"  {msg}")
             else:
-                print(f"  ✅ 정상: 챗봇 DB 적재 {job} 완료 ({started_at})")
-                
+                print(f"  ✅ 정상: 챗봇 DB 적재 {job} 완료 ({started_label})")
+
+        # NTS business-status sync is no longer a daily full refresh.
+        # Alert by freshness residue and recent weekly full validation instead.
+        nts_failed_count = conn.execute("""
+            SELECT COUNT(*)
+            FROM company_business_status
+            WHERE business_status_freshness = 'api_failed'
+        """).fetchone()[0]
+        nts_failed_critical_threshold = int(os.getenv('NTS_FAILED_CRITICAL_THRESHOLD', '100'))
+        if nts_failed_count:
+            if nts_failed_count >= nts_failed_critical_threshold:
+                level = 'CRITICAL'
+                msg = f"🚨 [경보] NTS 사업자등록상태 실패 잔여: {nts_failed_count:,}건"
+            else:
+                level = 'WARNING'
+                msg = (
+                    f"⚠️ [주의] NTS 사업자등록상태 실패 잔여: {nts_failed_count:,}건 "
+                    f"(경보 기준 {nts_failed_critical_threshold:,}건 미만)"
+                )
+            alerts.append((level, msg))
+            print(f"  {msg}")
+
+        nts_full_valid_days = int(os.getenv('NTS_FULL_VALID_DAYS', '8'))
+        nts_full_success_row = conn.execute("""
+            SELECT status, error_message, started_at, input_row_count, inserted_count, error_count
+            FROM etl_job_log
+            WHERE job_name = 'nts_batch_sync'
+              AND (source_name = 'nts_api_batch_full' OR IFNULL(input_row_count, 0) >= 20000)
+              AND status = 'success'
+            ORDER BY started_at DESC LIMIT 1
+        """).fetchone()
+        nts_latest_full_row = conn.execute("""
+            SELECT status, error_message, started_at, input_row_count, inserted_count, error_count
+            FROM etl_job_log
+            WHERE job_name = 'nts_batch_sync'
+              AND (source_name = 'nts_api_batch_full' OR IFNULL(input_row_count, 0) >= 20000)
+            ORDER BY started_at DESC LIMIT 1
+        """).fetchone()
+        if not nts_full_success_row:
+            msg = "⚠️ [주의] NTS 사업자등록상태 전체 검증 이력 없음"
+            alerts.append(('WARNING', msg))
+            print(f"  {msg}")
+        else:
+            status, err_msg, started_at, input_count, inserted_count, error_count = nts_full_success_row
+            started_dt = _parse_etl_datetime(started_at)
+            full_age_days = (today_kst - started_dt.date()).days if started_dt else 999
+            started_label = _etl_display_time(started_at, today_kst)
+            if full_age_days > nts_full_valid_days:
+                if nts_failed_count >= nts_failed_critical_threshold:
+                    msg = (
+                        f"🚨 [경보] NTS 사업자등록상태 전체 검증 지연: 최근 {started_label} "
+                        f"(실패 잔여 {nts_failed_count:,}건)"
+                    )
+                    alerts.append(('CRITICAL', msg))
+                else:
+                    msg = (
+                        f"⚠️ [주의] NTS 사업자등록상태 전체 검증 지연: 최근 {started_label} "
+                        f"(실패 잔여 {nts_failed_count:,}건, 경보 기준 {nts_failed_critical_threshold:,}건 미만)"
+                    )
+                    alerts.append(('WARNING', msg))
+                print(f"  {msg}")
+            else:
+                print(f"  ✅ 정상: NTS 전체 검증 유효 ({started_label}, {input_count or 0:,}건)")
+                if nts_latest_full_row:
+                    latest_status, latest_err_msg, latest_started_at, latest_input_count, latest_inserted_count, latest_error_count = nts_latest_full_row
+                    latest_started_dt = _parse_etl_datetime(latest_started_at)
+                    if (
+                        latest_status in ('failed', 'partial')
+                        and latest_started_dt
+                        and started_dt
+                        and latest_started_dt > started_dt
+                        and nts_failed_count == 0
+                    ):
+                        latest_label = _etl_display_time(latest_started_at, today_kst)
+                        detail = (
+                            f"입력 {latest_input_count or 0:,} / "
+                            f"성공 {latest_inserted_count or 0:,} / "
+                            f"실패 {latest_error_count or 0:,}"
+                        )
+                        print(
+                            f"  ℹ️ NTS 최신 전체 검증은 {latest_status}이나 "
+                            f"실패 잔여 0건이고 최근 성공 전체검증이 유효하여 경보 제외 "
+                            f"({latest_label}, {detail})"
+                        )
+
         conn.close()
     except Exception as e:
         msg = f"⚠️ [주의] 챗봇 수집 상태 확인 오류: {e}"
         alerts.append(('WARNING', msg))
         print(f"  {msg}")
         
+    return alerts
+
+
+def _format_bytes_gb(value):
+    try:
+        return f"{value / (1024 ** 3):.1f}GB"
+    except Exception:
+        return "N/A"
+
+
+def check_disk_usage():
+    """운영 서버 루트 디스크 사용률 경보."""
+    alerts = []
+    mount_path = os.getenv('DISK_USAGE_ALERT_PATH', '/')
+    threshold = THRESHOLD_DISK_USAGE_PERCENT
+    try:
+        usage = os.statvfs(mount_path)
+        total = usage.f_blocks * usage.f_frsize
+        free = usage.f_bavail * usage.f_frsize
+        used = total - free
+        used_percent = (used / total * 100) if total else 0
+    except Exception as e:
+        alerts.append(('WARNING', f"⚠️ [주의] 서버 디스크 사용률 확인 실패: {mount_path} ({e})"))
+        return alerts
+
+    if used_percent >= threshold:
+        msg = (
+            f"⚠️ [주의] 서버 디스크 사용률 {used_percent:.1f}%: "
+            f"{mount_path} 사용 {_format_bytes_gb(used)} / {_format_bytes_gb(total)}, "
+            f"여유 {_format_bytes_gb(free)} (기준 {threshold:.0f}%)"
+        )
+        alerts.append(('WARNING', msg))
+    else:
+        print(
+            f"  ✅ 서버 디스크 정상: {mount_path} {used_percent:.1f}% "
+            f"(여유 {_format_bytes_gb(free)}, 기준 {threshold:.0f}%)"
+        )
     return alerts
 
 
@@ -584,9 +934,15 @@ def run_alert_check():
     print(f"  {'─'*46}")
     sync_alerts = check_pipeline_sync()
     alerts.extend(sync_alerts)
+
+    api_issue_alerts = check_public_api_issues()
+    alerts.extend(api_issue_alerts)
     
     chatbot_alerts = check_chatbot_pipeline_sync()
     alerts.extend(chatbot_alerts)
+
+    disk_alerts = check_disk_usage()
+    alerts.extend(disk_alerts)
 
     # ══════════════════════════════════════════════════════
     # Part A: 캐시 비교 (사후 분석)
@@ -675,6 +1031,8 @@ def run_alert_check():
     # Part B-0: 사전규격 대형 건 알림 + 보호제도 대상 요약
     # ══════════════════════════════════════════════════════
     prespec_alerts = []
+    prespec_sms_items = []
+    prespec_target_count = 0
     print(f"\n  {'─'*46}")
     print(f"  📋 [사전규격] 대형 건 및 보호제도 대상 모니터링")
     print(f"  {'─'*46}")
@@ -720,8 +1078,32 @@ def run_alert_check():
             target_count = conn_ps.execute(
                 "SELECT COUNT(*) FROM prespec_monitor WHERE is_target=1 AND opninRgstClseDt >= date('now')"
             ).fetchone()[0]
+            prespec_target_count = conn_ps.execute("""
+                SELECT COUNT(*)
+                FROM prespec_monitor
+                WHERE opninRgstClseDt >= date('now')
+                  AND (
+                    is_target=1
+                    OR (bsnsDivNm = '공사' AND asignBdgtAmt >= 10e8)
+                    OR (bsnsDivNm = '용역' AND asignBdgtAmt >= 5e8)
+                  )
+            """).fetchone()[0] or 0
             if target_count:
                 print(f"  ℹ️  보호제도 대상 사전규격 (마감 전): {target_count}건 (대시보드에서 확인)")
+            if prespec_target_count:
+                prespec_sms_items = conn_ps.execute("""
+                    SELECT bfSpecRgstNo, bsnsDivNm, prdctClsfcNoNm, rlDminsttNm,
+                           asignBdgtAmt, opninRgstClseDt, is_target, target_type
+                    FROM prespec_monitor
+                    WHERE opninRgstClseDt >= date('now')
+                      AND (
+                        is_target=1
+                        OR (bsnsDivNm = '공사' AND asignBdgtAmt >= 10e8)
+                        OR (bsnsDivNm = '용역' AND asignBdgtAmt >= 5e8)
+                      )
+                    ORDER BY asignBdgtAmt DESC
+                    LIMIT 10
+                """).fetchall()
 
             conn_ps.close()
         except Exception as e:
@@ -850,6 +1232,10 @@ def run_alert_check():
                     atype = '수주율변동'
                 elif '발주액' in msg:
                     atype = '발주액변동'
+                elif '공공데이터 API' in msg or '[API]' in msg:
+                    atype = '공공데이터API'
+                elif '디스크 사용률' in msg:
+                    atype = '서버디스크'
                 else:
                     atype = '기타'
 
@@ -920,7 +1306,7 @@ def run_alert_check():
 
     # ────────── 알림 발송 (텔레그램 + 이메일) ──────────
     config = load_config()
-    send_notifications(alerts, suspects, violations, config)
+    send_notifications(alerts, suspects, violations, config, prespec_sms_items, prespec_target_count)
 
     print("==================================================\n")
     return alerts

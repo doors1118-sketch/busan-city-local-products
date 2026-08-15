@@ -13,6 +13,15 @@ from core_calc import (
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
     load_bid_dict, load_award_sets, BUSAN_BIZNO_PREFIXES,
+    is_site_excluded_contract,
+)
+from protection_criteria import (
+    PROTECTION_GROUPS,
+    SPECIALTY_CONSTRUCTION_KEYWORDS,
+    get_protection_law_name,
+    get_protection_threshold,
+    normalize_protection_subtype,
+    protection_law_basis_for_cache,
 )
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -33,8 +42,17 @@ TOP_N = {
     '부산광역시 및 소속기관': 20,
     '정부 및 국가공공기관': 15,
 }
+TARGET_GROUPS = {'부산광역시 및 소속기관', '정부 및 국가공공기관'}
 
 def pct(t,l): return round(l/t*100,1) if t>0 else 0
+
+def is_target_group(lrg):
+    return isinstance(lrg, str) and lrg in TARGET_GROUPS
+
+def is_valid_unit(unit):
+    if unit is None or pd.isna(unit):
+        return False
+    return str(unit).strip() not in ('', 'nan', 'None')
 
 def build_cache():
     start = time.time()
@@ -61,10 +79,11 @@ def build_cache():
     
     # 주소 기반 부산 업체 보강 (낙찰 주소 + corpList 주소)
     n_biznos_base = len(biznos)
+    _conn_addr = sqlite3.connect(DB_PROCUREMENT)
     # 1) 낙찰 테이블: 실제 주소에 "부산" 포함 → 부산 업체
     for _award_tbl in ['busan_award_cnstwk', 'busan_award_servc', 'busan_award_thng']:
         try:
-            for _ar in conn.execute(f"SELECT bidwinnrBizno, bidwinnrAdrs FROM {_award_tbl} WHERE bidwinnrAdrs LIKE '%부산%'").fetchall():
+            for _ar in _conn_addr.execute(f"SELECT bidwinnrBizno, bidwinnrAdrs FROM {_award_tbl} WHERE bidwinnrAdrs LIKE '%부산%'").fetchall():
                 _bno = str(_ar[0]).replace('-','').strip()
                 if _bno and len(_bno) >= 10:
                     biznos.add(_bno)
@@ -72,7 +91,7 @@ def build_cache():
     # 2) corpList 주소(12필드 이상): 주소에 "부산" 포함 → 부산 업체
     for _cl_tbl in ['cnstwk_cntrct', 'servc_cntrct', 'thng_cntrct']:
         try:
-            for (_cl,) in conn.execute(f"SELECT corpList FROM [{_cl_tbl}] WHERE corpList IS NOT NULL AND corpList != ''").fetchall():
+            for (_cl,) in _conn_addr.execute(f"SELECT corpList FROM [{_cl_tbl}] WHERE corpList IS NOT NULL AND corpList != ''").fetchall():
                 for _ch in str(_cl).split('[')[1:]:
                     _ps = _ch.split(']')[0].split('^')
                     if len(_ps) >= 12:
@@ -81,6 +100,7 @@ def build_cache():
                         if _bno and len(_bno) >= 10 and '부산' in _addr:
                             biznos.add(_bno)
         except: pass
+    _conn_addr.close()
     n_addr_added = len(biznos) - n_biznos_base
     print(f"  부산업체(biznos): 마스터+지점 {n_biznos_base:,} + 주소보강 {n_addr_added:,} = {len(biznos):,}")
     
@@ -177,6 +197,15 @@ def build_cache():
         if unit and inst_mid.get(cd,'') == '부산광역시 교육청':
             return '부산교육청'
         return unit
+
+    def resolve_agency_code(row):
+        cd = str(row.get('dminsttCd', '') or row.get('cntrctInsttCd', '') or '').strip()
+        if cd in inst_dict:
+            return cd
+        for dcd in extract_dminstt_codes(row.get('dminsttList', '')):
+            if dcd in inst_dict:
+                return dcd
+        return cd if cd in inst_grp else ''
     
     # ========== 집계 ==========
     all_data = {}    # {분야: {그룹: {total, local}}}
@@ -186,9 +215,10 @@ def build_cache():
     print("  [공사] 계산 중...")
     cnstwk_cols = [c[1] for c in conn.execute("PRAGMA table_info(cnstwk_cntrct)").fetchall()]
     cnstwk_site_col = ', cnstrtsiteRgnNm' if 'cnstrtsiteRgnNm' in cnstwk_cols else ", '' as cnstrtsiteRgnNm"
+    cnstwk_date_col = ', cntrctCnclsDate' if 'cntrctCnclsDate' in cnstwk_cols else ", '' as cntrctCnclsDate"
     df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo{cnstwk_site_col}
-        FROM cnstwk_cntrct WHERE cntrctCnclsDate >= '2026-01-01'""", conn)
+        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo{cnstwk_site_col}{cnstwk_date_col}
+        FROM cnstwk_cntrct""", conn)
     df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     n_before = len(df); df = dedup_by_dcsn(df)
     print(f"    차수 중복제거: {n_before - len(df)}건")
@@ -208,8 +238,9 @@ def build_cache():
         cd, amt, loc = result
         lrg = inst_grp.get(cd)
         unit = get_unit(cd)
-        if not lrg or not unit: continue
-        if lrg == '민간 및 기타기관' or unit == '공익단체': continue
+        if not is_target_group(lrg) or not is_valid_unit(unit): continue
+        unit = str(unit).strip()
+        if unit == '공익단체': continue
         if lrg not in grp_r: grp_r[lrg] = {'total':0,'local':0}
         grp_r[lrg]['total'] += amt; grp_r[lrg]['local'] += loc
         ag_r[unit]['total'] += amt; ag_r[unit]['local'] += loc
@@ -224,8 +255,8 @@ def build_cache():
         # 용역은 cnstrtsiteRgnNm 포함하여 로드
         extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
         df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-            corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo{extra_col}
-            FROM [{tbl}] WHERE cntrctCnclsDate >= '2026-01-01'""", conn)
+            corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
+            FROM [{tbl}]""", conn)
         df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         n_before = len(df); df = dedup_by_dcsn(df)
         if n_before > len(df): print(f"    차수 중복제거: {n_before - len(df)}건")
@@ -251,8 +282,9 @@ def build_cache():
             cd, amt, loc = result
             lrg = inst_grp.get(cd)
             unit = get_unit(cd)
-            if not lrg or not unit: continue
-            if lrg == '민간 및 기타기관' or unit == '공익단체': continue
+            if not is_target_group(lrg) or not is_valid_unit(unit): continue
+            unit = str(unit).strip()
+            if unit == '공익단체': continue
             if lrg not in grp_r: grp_r[lrg] = {'total':0,'local':0}
             grp_r[lrg]['total'] += amt; grp_r[lrg]['local'] += loc
             ag_r[unit]['total'] += amt; ag_r[unit]['local'] += loc
@@ -269,6 +301,7 @@ def build_cache():
         """유출계약의 비고(장기계속/공동이행/지역제한/단독) 생성"""
         tot_amt = float(row.get('totCntrctAmt', 0) or 0)
         thtm_amt = float(row.get('thtmCntrctAmt', 0) or 0)
+        check_amt = tot_amt if tot_amt > 0 else thtm_amt
         is_long = tot_amt > thtm_amt * 1.5 and tot_amt > 0 and thtm_amt > 0
         
         biz_list = parse_corp_shares(row.get('corpList', ''))
@@ -283,12 +316,21 @@ def build_cache():
         busan_share = round(busan_share)
         
         is_busan_grp = '부산' in str(grp or '')
+        matched_cd = resolve_agency_code(row)
+        mid = inst_mid.get(matched_cd, '')
+        name = str(row.get('cntrctNm', '') or row.get('cnstwkNm', '') or '')
+        subtype = normalize_protection_subtype(
+            sector,
+            name=name,
+            main_type=row.get('mainCnsttyNm', ''),
+            type_lrg=row.get('cnstwkTypeLrg', ''),
+            type_dtl=row.get('cnstwkTypeDtl', ''),
+        )
+        contract_date = row.get('cntrctCnclsDate', '') or row.get('cntrctDate', '')
+        threshold = get_protection_threshold(grp, mid, subtype, contract_date)
         
         if sector == '용역':
-            check_amt = tot_amt if tot_amt > 0 else thtm_amt
-            if is_busan_grp and check_amt < 330_000_000:
-                remark = "비정상(지역제한비적용)"
-            elif not is_busan_grp and check_amt < 220_000_000:
+            if threshold and check_amt <= threshold:
                 remark = "비정상(지역제한비적용)"
             else:
                 remark = "단독유출" if not is_joint else ""
@@ -308,19 +350,12 @@ def build_cache():
         else:
             # 단독계약 (유출건이므로 부산업체 지분 0%)
             if sector == '공사':
-                check_amt = tot_amt if tot_amt > 0 else thtm_amt
-                if is_busan_grp:
-                    if check_amt <= 10_000_000_000:
-                        remark = "지역제한 미적용"
-                    else:
-                        # 100억 초과는 지역제한 대상은 아니나, 
-                        # 단독 유출이면 의무공동(40%) 위반임
-                        remark = "의무공동 미적용(단독)"
+                if threshold and check_amt <= threshold:
+                    remark = "지역제한 미적용"
+                elif is_busan_grp:
+                    remark = "의무공동 미적용(단독)"
                 else:
-                    if check_amt <= 8_800_000_000:
-                        remark = "지역제한 미적용"
-                    else:
-                        remark = "장기계속" if is_long else "단독유출"
+                    remark = "장기계속" if is_long else "단독유출"
             else:
                 remark = "장기계속" if is_long else "단독유출"
         return remark
@@ -342,7 +377,7 @@ def build_cache():
     df = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
         prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
         cnstwkMtrlDrctPurchsObjYn, dlvrReqNm FROM shopping_cntrct
-        WHERE dlvrReqRcptDate >= '2026-01-01'""", conn)
+        """, conn)
     df['dlvrReqChgOrd'] = pd.to_numeric(df['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
@@ -371,10 +406,10 @@ def build_cache():
         cd, amt, loc = result
         lrg = inst_grp.get(cd)
         unit = get_unit(cd)
-        if not lrg or not unit: continue
+        if not is_target_group(lrg) or not is_valid_unit(unit): continue
         unit = str(unit).strip()
         if not unit or unit == 'nan': continue
-        if lrg == '민간 및 기타기관' or unit == '공익단체': continue
+        if unit == '공익단체': continue
         if lrg not in grp_r: grp_r[lrg] = {'total':0,'local':0}
         grp_r[lrg]['total'] += amt; grp_r[lrg]['local'] += loc
         ag_r[unit]['total'] += amt; ag_r[unit]['local'] += loc
@@ -564,6 +599,8 @@ def build_cache():
         if nloc < amt * 0.5: continue
         unit = get_unit(cd)
         grp = inst_grp.get(cd, "")
+        if not is_target_group(grp) or not is_valid_unit(unit): continue
+        unit = str(unit).strip()
         # 업체명 추출
         corp_nm = ''
         for chunk in str(row.get('corpList','') or '').split('[')[1:]:
@@ -586,9 +623,10 @@ def build_cache():
         nm_col = 'cntrctNm' if 'cntrctNm' in cols_t else "''"
         extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
         dcsn_col = ', dcsnCntrctNo' if 'dcsnCntrctNo' in cols_t else ''
+        date_col = ', cntrctCnclsDate' if 'cntrctCnclsDate' in cols_t else ''
         df_l = pd.read_sql(f"""SELECT untyCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-            corpList, ntceNo, dminsttList, {nm_col} as cntrctNm, cntrctInsttOfclTelNo, dminsttCd{extra_col}{dcsn_col}
-            FROM [{tbl}] WHERE cntrctCnclsDate >= '2026-01-01'""", conn2)
+            corpList, ntceNo, dminsttList, {nm_col} as cntrctNm, cntrctInsttOfclTelNo, dminsttCd{extra_col}{dcsn_col}{date_col}
+            FROM [{tbl}]""", conn2)
         df_l.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         df_l = dedup_by_dcsn(df_l)
         if tbl == 'servc_cntrct':
@@ -604,6 +642,8 @@ def build_cache():
             if nloc < amt * 0.5: continue
             unit = get_unit(cd)
             grp = inst_grp.get(cd, "")
+            if not is_target_group(grp) or not is_valid_unit(unit): continue
+            unit = str(unit).strip()
             corp_nm = ''
             for chunk in str(row.get('corpList','') or '').split('[')[1:]:
                 parts = chunk.split(']')[0].split('^')
@@ -619,7 +659,7 @@ def build_cache():
             })
 
     # 쇼핑몰 유출계약
-    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn FROM shopping_cntrct WHERE dlvrReqRcptDate >= '2026-01-01'", conn2)
+    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn FROM shopping_cntrct ", conn2)
     df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df_shop.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
@@ -641,6 +681,8 @@ def build_cache():
         nloc = amt - loc
         unit = get_unit(cd)
         grp = inst_grp.get(cd, "")
+        if not is_target_group(grp) or not is_valid_unit(unit): continue
+        unit = str(unit).strip()
         bno = str(row.get('cntrctCorpBizno','')).replace('-','').strip()
         corp_nm = ''
         if bno and bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
@@ -679,50 +721,12 @@ def build_cache():
     # 계약DB에서 출발 → 일반/제한경쟁 → 지분율로 미적용 판단
     print("  [보호제도] 계약 기반 분석 중...")
 
-    SPECIALTY_TYPES = ['전기공사', '정보통신공사', '소방시설공사', '기계설비공사',
-                       '전기', '통신', '소방', '기계설비', '기계공사', '정보통신',
-                       '조경', '실내건축', '철근·콘크리트', '상하수도', '포장',
-                       '철강구조물', '금속구조물창호', '도장', '습식방수', '석공사',
-                       '비계', '지반조성', '철도궤도']
-    # ═══ 법령별 지역제한경쟁입찰 기준 ═══
-    # 국가계약법 (정부기관: 중앙행정기관, 국립대학)
-    PROT_GOV = {'종합공사': 88e8, '전문공사': 10e8, '용역': 2.2e8}
-    # 공기업·준정부기관 계약사무규칙 (국가공공기관)
-    # 2026-04-20 공포: 종합공사 88억→150억 (4/21 계약분부터 적용)
-    PROT_PUB_OLD = {'종합공사': 88e8, '전문공사': 10e8, '용역': 2.2e8}
-    PROT_PUB_NEW = {'종합공사': 150e8, '전문공사': 10e8, '용역': 2.2e8}
-    PUB_NEW_DATE = '2026-04-21'  # 신규 기준 적용 시작일
-    # 지방계약법 (부산시 및 산하기관)
-    # 2026-04-24 공포: 종합공사 100억→150억 (4/24 계약분부터 적용)
-    PROT_BSN_OLD = {'종합공사': 100e8, '전문공사': 10e8, '용역': 3.3e8}
-    PROT_BSN_NEW = {'종합공사': 150e8, '전문공사': 10e8, '용역': 3.3e8}
-    BSN_NEW_DATE = '2026-04-24'  # 신규 기준 적용 시작일
-
-    # 통합 threshold lookup (하위호환용)
-    PROT_THRESHOLDS = {
-        '부산광역시 및 소속기관': PROT_BSN_OLD,
-        '정부 및 국가공공기관': PROT_GOV,
-    }
-
-    def get_prot_threshold(grp, mid, sub, cntrct_date_str):
-        """법령·날짜에 따른 기준액 반환"""
-        dt = str(cntrct_date_str or '')[:10]  # 'YYYY-MM-DD'
-        if grp == '정부 및 국가공공기관':
-            if mid == '국가공공기관':  # 공기업·준정부기관 규칙
-                tbl = PROT_PUB_NEW if dt >= PUB_NEW_DATE else PROT_PUB_OLD
-            else:  # 중앙행정기관, 고등교육기관 → 국가계약법
-                tbl = PROT_GOV
-        elif grp == '부산광역시 및 소속기관':
-            tbl = PROT_BSN_NEW if dt >= BSN_NEW_DATE else PROT_BSN_OLD
-        else:
-            return None
-        return tbl.get(sub)
+    SPECIALTY_TYPES = SPECIALTY_CONSTRUCTION_KEYWORDS
+    PROT_THRESHOLDS = PROTECTION_GROUPS
 
     def get_law_name(grp, mid):
         """법령명 반환"""
-        if grp == '정부 및 국가공공기관':
-            return '공기업·준정부기관 계약사무규칙' if mid == '국가공공기관' else '국가계약법'
-        return '지방계약법'
+        return get_protection_law_name(grp, mid)
 
     # 사립대학 보호제도 제외: 국가계약법 비적용이므로 보호제도 분석 대상 아님
     # 고등교육기관 중 국립대만 허용 (화이트리스트)
@@ -750,24 +754,19 @@ def build_cache():
     for _r in conn.execute("SELECT REPLACE(bidNtceNo,'-',''), cnstrtsiteRgnNm FROM bid_notices_price WHERE cnstrtsiteRgnNm IS NOT NULL").fetchall():
         if _r[0]: site_map[_r[0]] = str(_r[1] or '')
 
-    # 공고 주공종명 lookup (공사 종합/전문 구분용)
-    cnstty_map = {}
-    for _r in conn.execute("SELECT REPLACE(bidNtceNo,'-',''), mainCnsttyNm FROM bid_notices_price WHERE mainCnsttyNm IS NOT NULL AND mainCnsttyNm != ''").fetchall():
-        if _r[0]: cnstty_map[_r[0]] = str(_r[1])
-
     prot_contract_queries = {
         'cnstwk_cntrct': ('공사', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
             dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
             cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
             cnstwkTypeLrg, cnstwkTypeDtl, cntrctCnclsDate
             FROM [cnstwk_cntrct]
-            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm != '수의계약'"""),
+            WHERE cntrctCnclsMthdNm != '수의계약'"""),
         'servc_cntrct': ('용역', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
             dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
             cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
             cntrctCnclsDate
             FROM [servc_cntrct]
-            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm != '수의계약'"""),
+            WHERE cntrctCnclsMthdNm != '수의계약'"""),
     }
 
     for tbl, (sector, query) in prot_contract_queries.items():
@@ -778,6 +777,8 @@ def build_cache():
         rows = rows[~((dcsn.str.len() >= 10) & (~dcsn.str.endswith('00')))]
 
         for _, row in rows.iterrows():
+            if is_site_excluded_contract(row):
+                continue
             ntce_clean = str(row.get('ntceNo', '')).replace('-','').strip()
             method = str(row.get('cntrctCnclsMthdNm', ''))
             amt = float(row.get('thtmCntrctAmt', 0) or 0)
@@ -816,29 +817,34 @@ def build_cache():
                             bypassed = True
                     if not bypassed:
                         continue
-                # 공사 세분류: cnstwkTypeLrg 값 → 키워드 매칭 → 계약명 순으로 확인
-                # ① cnstwkTypeLrg 값 자체로 1차 분류 (가장 정확)
+                # 공사 세분류: cnstwkTypeLrg → mainCnsttyNm → 계약명 순으로 확인
                 type_lrg = str(row.get('cnstwkTypeLrg', '') or '').strip()
                 type_dtl = str(row.get('cnstwkTypeDtl', '') or '').strip()
                 main_type = str(row.get('mainCnsttyNm', '') or '').strip()
-                if type_lrg:
-                    if type_lrg.startswith('전문공사') or type_lrg in ('시설물유지관리공사', '개별법령'):
-                        sub = '전문공사'
-                    elif type_lrg.startswith('종합공사') or type_lrg.startswith('종합건설'):
-                        sub = '종합공사'
-                    # LRG 값이 있지만 위에 해당 안 되면 키워드 fallback
-                    elif any(k in type_lrg for k in SPECIALTY_TYPES): sub = '전문공사'
-                    elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
-                    else: sub = '종합공사'
-                # ② cnstwkTypeLrg 없으면 공고 주공종명 → DTL → 계약명 키워드
-                else:
-                    # 공고 bid_notices_price에서 mainCnsttyNm 조회
-                    bid_cnstty = cnstty_map.get(ntce_clean, '') if ntce_clean else ''
-                    if bid_cnstty and any(k in bid_cnstty for k in SPECIALTY_TYPES): sub = '전문공사'
-                    elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
-                    elif main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
-                    elif any(k in name for k in SPECIALTY_TYPES): sub = '전문공사'
-                    else: sub = '종합공사'
+                # Tier-1: cnstwkTypeLrg 직접 판별 (가장 신뢰)
+                if type_lrg.startswith('전문공사'): sub = '전문공사'
+                elif type_lrg == '시설물유지관리공사': sub = '전문공사'
+                elif type_lrg.startswith('종합공사'): sub = '종합공사'
+                # Tier-2: mainCnsttyNm (공고문 기반)
+                elif main_type and any(k in main_type for k in SPECIALTY_TYPES): sub = '전문공사'
+                # Tier-2b: mainCnsttyNm이 비어있으면 bid_notices_price에서 동적 조회
+                elif not main_type and ntce_clean:
+                    _bn_row = conn.execute("SELECT mainCnsttyNm FROM bid_notices_price WHERE REPLACE(bidNtceNo,'-','')=? LIMIT 1", (ntce_clean,)).fetchone()
+                    if _bn_row and _bn_row[0]:
+                        _bn_type = str(_bn_row[0]).strip()
+                        if any(k in _bn_type for k in SPECIALTY_TYPES): sub = '전문공사'
+                        else: sub = '종합공사'
+                    else:
+                        # Tier-3: 키워드 폴백
+                        if type_lrg and any(k in type_lrg for k in SPECIALTY_TYPES): sub = '전문공사'
+                        elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
+                        elif any(k in name for k in SPECIALTY_TYPES): sub = '전문공사'
+                        else: sub = '종합공사'
+                # Tier-3: 기존 키워드 매칭 (type_lrg/type_dtl/계약명)
+                elif type_lrg and any(k in type_lrg for k in SPECIALTY_TYPES): sub = '전문공사'
+                elif type_dtl and any(k in type_dtl for k in SPECIALTY_TYPES): sub = '전문공사'
+                elif any(k in name for k in SPECIALTY_TYPES): sub = '전문공사'
+                else: sub = '종합공사'
             else:
                 # 용역: 타지역 키워드 필터
                 lrg = inst_dict.get(matched_cd, {}).get('cate_lrg', '')
@@ -851,7 +857,7 @@ def build_cache():
             est_price = price_map.get(ntce_clean, None) or tot_amt or amt
             cntrct_dt = str(row.get('cntrctCnclsDate', '') or '')
             mid = inst_mid.get(matched_cd, '')
-            threshold = get_prot_threshold(grp, mid, sub, cntrct_dt)
+            threshold = get_protection_threshold(grp, mid, sub, cntrct_dt)
             if not threshold: continue
 
             # 낙찰업체 지분 확인
@@ -894,7 +900,7 @@ def build_cache():
 
             elif grp == '부산광역시 및 소속기관':
                 if sector == '공사' and est_price > threshold:
-                    # 100억 이상 공사: 의무공동도급 (40%+ 지역지분)
+                    # 지역제한 기준 초과 공사: 의무공동도급 (40%+ 지역지분)
                     bsn_stats[sub]['기준이하'] += 1
                     prot_by_agency[unit]['total'] += 1
                     prot_by_agency[unit]['grp'] = grp
@@ -943,18 +949,18 @@ def build_cache():
     suui_queries = {
         'cnstwk_cntrct': ('공사', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cnstwkNm as cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo FROM [cnstwk_cntrct]
-            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm='수의계약'
+            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [cnstwk_cntrct]
+            WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
         'servc_cntrct': ('용역', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo FROM [servc_cntrct]
-            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm='수의계약'
+            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [servc_cntrct]
+            WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
         'thng_cntrct': ('물품', """SELECT untyCntrctNo, dminsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo FROM [thng_cntrct]
-            WHERE cntrctCnclsDate >= '2026-01-01' AND cntrctCnclsMthdNm='수의계약'
+            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [thng_cntrct]
+            WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
     }
     suui_stats = defaultdict(lambda: {'total': 0, 'busan': 0, 'non_busan': 0, 'non_busan_amt': 0})
@@ -963,6 +969,8 @@ def build_cache():
         suui_df = pd.read_sql(sql, conn)
         suui_df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         for _, row in suui_df.iterrows():
+            if is_site_excluded_contract(row):
+                continue
             inst_cd = str(row.get('dminsttCd', '')).strip()
             if not inst_cd or inst_cd not in inst_dict:
                 for dcd in extract_dminstt_codes(row.get('dminsttList', '')):
@@ -1042,13 +1050,7 @@ def build_cache():
         "부산시 및 소관기관_지역제한": {sub: dict(bsn_stats[sub]) for sub in bsn_stats},
         "부산시 및 소관기관_의무공동": {sec: dict(bsn_jnt[sec]) for sec in bsn_jnt},
         "수의계약": {key: dict(suui_stats[key]) for key in suui_stats},
-        "_법령기준": {
-            "국가계약법": {"종합공사": 88, "전문공사": 10, "용역": 2.2, "대상": "정부기관(중앙행정기관, 국립대학)"},
-            "공기업·준정부기관 계약사무규칙": {"종합공사": 150, "종합공사_구": 88, "전문공사": 10, "용역": 2.2,
-                "대상": "국가공공기관(공기업, 준정부기관 등)", "변경일": "2026-04-21"},
-            "지방계약법": {"종합공사": 150, "종합공사_구": 100, "전문공사": 10, "용역": 3.3,
-                "대상": "부산광역시 및 소속기관", "변경일": "2026-04-24"},
-        },
+        "_법령기준": protection_law_basis_for_cache(),
     }
     prot_agency_ranking = sorted(
         [{"기관": u, "기관그룹": d['grp'], "기준이하": d['total'], "적용": d['applied'],
@@ -1098,7 +1100,8 @@ def build_cache():
     출자출연_sml_set = {'부산광역시 출연기관', '부산광역시 출자기관', '부산광역시 공기업', '부산광역시 공단'}
     for cd, grp in inst_grp.items():
         unit = get_unit(cd)
-        if unit and grp != '민간 및 기타기관' and unit != '공익단체':
+        if is_target_group(grp) and is_valid_unit(unit) and str(unit).strip() != '공익단체':
+            unit = str(unit).strip()
             unit_to_grp[unit] = grp
             cur_mid = inst_mid.get(cd, '')
             cur_sml = inst_sml.get(cd, '')
@@ -1518,13 +1521,16 @@ def build_cache():
                     if not result: continue
                     cd, amt, loc = result
                     lrg = inst_grp.get(cd)
-                    if not lrg: continue
+                    if not is_target_group(lrg): continue
                     wk[lrg]['total'] += amt; wk[lrg]['local'] += loc
                     wk['전체']['total'] += amt; wk['전체']['local'] += loc
                     # 분야별 + 그룹×분야별 추적
                     wk[nm]['total'] += amt; wk[nm]['local'] += loc
                     wk[f"{lrg}_{nm}"]['total'] += amt; wk[f"{lrg}_{nm}"]['local'] += loc
                     if amt >= 1e8:  # 1억 이상만 추적
+                        unit = get_unit(cd)
+                        if not is_valid_unit(unit): continue
+                        unit = str(unit).strip()
                         _corp = ''; _rgn = ''
                         for _ck in str(row.get('corpList','') or '').split('[')[1:]:
                             _ps = _ck.split(']')[0].split('^')
@@ -1533,7 +1539,7 @@ def build_cache():
                                 _corp = _ps[3].strip() if len(_ps) >= 4 else ''
                                 _rgn = bizno_region.get(_bno, '')
                                 break
-                        contracts.append({"분야": nm, "기관": get_unit(cd) or '', "계약명": str(row.get('cntrctNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp[:30], "지역": _rgn})
+                        contracts.append({"분야": nm, "기관": unit, "계약명": str(row.get('cntrctNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp[:30], "지역": _rgn})
             except:
                 pass
         try:
@@ -1550,17 +1556,20 @@ def build_cache():
                 if not result: continue
                 cd, amt, loc = result
                 lrg = inst_grp.get(cd)
-                if not lrg: continue
+                if not is_target_group(lrg): continue
                 wk[lrg]['total'] += amt; wk[lrg]['local'] += loc
                 wk['전체']['total'] += amt; wk['전체']['local'] += loc
                 # 분야별 + 그룹×분야별 추적
                 wk['쇼핑몰']['total'] += amt; wk['쇼핑몰']['local'] += loc
                 wk[f"{lrg}_쇼핑몰"]['total'] += amt; wk[f"{lrg}_쇼핑몰"]['local'] += loc
                 if amt >= 1e8:
+                    unit = get_unit(cd)
+                    if not is_valid_unit(unit): continue
+                    unit = str(unit).strip()
                     _bno_s = str(row.get('cntrctCorpBizno','')).replace('-','').strip()
                     _corp_s = str(row.get('corpNm','') or '').strip()
                     _rgn_s = bizno_region.get(_bno_s, '')
-                    contracts.append({"분야": "쇼핑몰", "기관": get_unit(cd) or '', "계약명": str(row.get('dlvrReqNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp_s[:30], "지역": _rgn_s})
+                    contracts.append({"분야": "쇼핑몰", "기관": unit, "계약명": str(row.get('dlvrReqNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp_s[:30], "지역": _rgn_s})
         except:
             pass
         return dict(wk), contracts
@@ -1719,7 +1728,7 @@ def build_cache():
                     if not result: continue
                     cd, amt, loc = result
                     lrg = inst_grp.get(cd)
-                    if not lrg: continue
+                    if not is_target_group(lrg): continue
                     day_by_dim['전체']['total'] += amt; day_by_dim['전체']['local'] += loc
                     day_by_dim[sector_name]['total'] += amt; day_by_dim[sector_name]['local'] += loc
                     if lrg in day_by_dim:
@@ -1742,7 +1751,7 @@ def build_cache():
                 if not result: continue
                 cd, amt, loc = result
                 lrg = inst_grp.get(cd)
-                if not lrg: continue
+                if not is_target_group(lrg): continue
                 day_by_dim['전체']['total'] += amt; day_by_dim['전체']['local'] += loc
                 day_by_dim['쇼핑몰']['total'] += amt; day_by_dim['쇼핑몰']['local'] += loc
                 if lrg in day_by_dim:

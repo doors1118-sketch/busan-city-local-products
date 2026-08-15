@@ -27,10 +27,21 @@ MONTHLY_CACHE = 'monthly_cache.json'
 
 CURRENT_YEAR = str(datetime.now().year)
 CURRENT_MONTH = datetime.now().strftime('%m')  # "04"
+TARGET_GROUPS = {'부산광역시 및 소속기관', '정부 및 국가공공기관'}
 
 
 def pct(t, l):
     return round(l / t * 100, 1) if t > 0 else 0
+
+
+def is_target_group(lrg):
+    return isinstance(lrg, str) and lrg in TARGET_GROUPS
+
+
+def is_valid_unit(unit):
+    if unit is None or pd.isna(unit):
+        return False
+    return str(unit).strip() not in ('', 'nan', 'None')
 
 
 def build_monthly():
@@ -149,9 +160,10 @@ def build_monthly():
         cd, amt, loc = result
         lrg = inst_grp.get(cd)
         unit = get_unit(cd)
-        if not lrg or not unit:
+        if not is_target_group(lrg) or not is_valid_unit(unit):
             continue
-        if lrg == '민간 및 기타기관' or unit == '공익단체':
+        unit = str(unit).strip()
+        if unit == '공익단체':
             continue
         dt = str(row.get('cntrctCnclsDate', '') or '')[:7]  # "2026-01"
         if not dt.startswith(CURRENT_YEAR):
@@ -188,9 +200,10 @@ def build_monthly():
             cd, amt, loc = result
             lrg = inst_grp.get(cd)
             unit = get_unit(cd)
-            if not lrg or not unit:
+            if not is_target_group(lrg) or not is_valid_unit(unit):
                 continue
-            if lrg == '민간 및 기타기관' or unit == '공익단체':
+            unit = str(unit).strip()
+            if unit == '공익단체':
                 continue
             dt = str(row.get('cntrctCnclsDate', '') or '')[:7]
             if not dt.startswith(CURRENT_YEAR):
@@ -222,9 +235,10 @@ def build_monthly():
         cd, amt, loc = result
         lrg = inst_grp.get(cd)
         unit = get_unit(cd)
-        if not lrg or not unit:
+        if not is_target_group(lrg) or not is_valid_unit(unit):
             continue
-        if lrg == '민간 및 기타기관' or unit == '공익단체':
+        unit = str(unit).strip()
+        if unit == '공익단체':
             continue
         dt = str(row.get('dlvrReqRcptDate', '') or '')[:7]
         if not dt.startswith(CURRENT_YEAR):

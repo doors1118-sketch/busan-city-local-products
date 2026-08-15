@@ -23,6 +23,8 @@ TECH_PRODUCT_SERVICE_KEY = os.environ.get('TECH_PRODUCT_SERVICE_KEY') or os.envi
 
 # 최신 Snapshot (2023.11.30) - 사업자등록번호, 인증번호, 인증일자, 만료일자 포함 버전
 API_BASE_URL = "https://api.odcloud.kr/api/3033913/v1/uddi:27bb6889-e56d-4cdc-a222-9f02900c81e7"
+RETRY_STATUS_CODES = {429, 502, 503, 504}
+RETRY_DELAYS = [5, 15, 30]
 
 # 인증구분 → 내부 normalized_certification_type 매핑
 CERT_TYPE_MAP = {
@@ -91,6 +93,28 @@ def normalize_date(dt_str: str) -> str:
     return dt_str
 
 
+def fetch_page(params: dict, page: int) -> requests.Response:
+    attempts = len(RETRY_DELAYS) + 1
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = requests.get(API_BASE_URL, params=params, timeout=45)
+            if resp.status_code == 200:
+                return resp
+            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            if resp.status_code == 401:
+                raise RuntimeError("API 인증 실패(401). TECH_PRODUCT_SERVICE_KEY/SERVICE_KEY를 확인하세요.")
+            if resp.status_code not in RETRY_STATUS_CODES:
+                raise RuntimeError(last_error)
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        if attempt < attempts:
+            delay = RETRY_DELAYS[attempt - 1]
+            logger.warning("API page %s retry %s/%s after %ss: %s", page, attempt, attempts - 1, delay, last_error)
+            time.sleep(delay)
+    raise RuntimeError(f"API page {page} retry exhausted: {last_error}")
+
+
 def fetch_all_pages(service_key: str, per_page: int = 500, max_pages: int = 200):
     """기술개발제품 API를 전체 페이지 순회하여 모든 데이터를 수집"""
     all_data = []
@@ -105,15 +129,7 @@ def fetch_all_pages(service_key: str, per_page: int = 500, max_pages: int = 200)
         }
         try:
             logger.info(f"Fetching page {page} (perPage={per_page})...")
-            resp = requests.get(API_BASE_URL, params=params, timeout=30)
-
-            if resp.status_code == 401:
-                logger.error("API 인증 실패 (401). 서비스 키를 확인하세요.")
-                return None
-            if resp.status_code != 200:
-                logger.error(f"API HTTP Error: {resp.status_code}")
-                return None
-
+            resp = fetch_page(params, page)
             data = resp.json()
             total_count = data.get('totalCount', 0)
             current_count = data.get('currentCount', 0)
@@ -131,36 +147,68 @@ def fetch_all_pages(service_key: str, per_page: int = 500, max_pages: int = 200)
             page += 1
             time.sleep(0.2)  # Rate limiting
 
-        except requests.RequestException as e:
-            logger.error(f"API 요청 실패: {e}")
-            return None
         except Exception as e:
-            logger.error(f"파싱 실패: {e}")
-            return None
+            logger.error(f"API/파싱 실패: {e}")
+            raise
 
     logger.info(f"Total fetched: {len(all_data)} items")
     return all_data
 
 
+def write_failure_log(started_at: str, source_name: str, message: str) -> None:
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=10.0)
+        conn.execute("PRAGMA busy_timeout=10000")
+        finished_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("""
+            INSERT INTO etl_job_log (
+                job_name, source_name, started_at, finished_at, status,
+                input_row_count, inserted_count, skipped_count, error_count, error_message
+            ) VALUES (?, ?, ?, ?, 'failed', 0, 0, 0, 1, ?)
+        """, ("import_certified_product_api", source_name, started_at, finished_at, message[:500]))
+        conn.execute("""
+            INSERT INTO source_manifest (
+                source_name, source_type, row_count, source_refreshed_at, status, error_message
+            ) VALUES (?, 'api_full', 0, ?, 'failed', ?)
+            ON CONFLICT(source_name) DO UPDATE SET
+                source_refreshed_at=excluded.source_refreshed_at,
+                status='failed',
+                error_message=excluded.error_message
+        """, (source_name, finished_at, message[:500]))
+        conn.commit()
+        conn.close()
+    except Exception:
+        logger.exception("failed to write failure log")
+
+
 def run_import(dry_run=False, probe=False):
     """
     기술개발제품 인증현황 API를 호출하여 certified_product 테이블에 UPSERT.
-    probe=True이면 1페이지(10건)만 호출하여 통신 상태 확인.
+    probe=True이면 1페이지(10건)만 호출하여 통신 상태만 확인하고 DB에는 기록하지 않음.
     """
     if not TECH_PRODUCT_SERVICE_KEY:
         logger.error("TECH_PRODUCT_SERVICE_KEY 또는 SERVICE_KEY 환경변수가 설정되지 않았습니다.")
         return False
 
+    if probe:
+        dry_run = True
+
     logger.info(f"Starting 기술개발제품 API Import. dry_run={dry_run}, probe={probe}")
 
-    # 1. API 호출
-    if probe:
-        items = fetch_all_pages(TECH_PRODUCT_SERVICE_KEY, per_page=10, max_pages=1)
-    else:
-        items = fetch_all_pages(TECH_PRODUCT_SERVICE_KEY, per_page=500)
+    source_name = "smpp_tech_product_api"
+    started_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if items is None:
-        logger.error("API 호출 실패. 중단.")
+    # 1. API 호출
+    try:
+        if probe:
+            items = fetch_all_pages(TECH_PRODUCT_SERVICE_KEY, per_page=10, max_pages=1)
+        else:
+            items = fetch_all_pages(TECH_PRODUCT_SERVICE_KEY, per_page=500)
+    except Exception as exc:
+        message = f"API 호출 실패: {exc}"
+        logger.error(message)
+        if not dry_run:
+            write_failure_log(started_at, source_name, message)
         return False
 
     if not items:
@@ -184,8 +232,7 @@ def run_import(dry_run=False, probe=False):
     bno_map = {row['canonical_business_no']: row['company_internal_id'] for row in bno_rows if row['canonical_business_no']}
 
     now_date = datetime.date.today().isoformat()
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    source_name = "smpp_tech_product_api"
+    now_str = started_at
 
     inserted_count = 0
     skipped_bno = 0
@@ -297,12 +344,15 @@ def run_import(dry_run=False, probe=False):
         ))
 
         cursor.execute("""
-            INSERT INTO source_manifest (source_name, source_type, row_count, source_refreshed_at, status)
-            VALUES (?, 'api_full', ?, ?, 'success')
+            INSERT INTO source_manifest (
+                source_name, source_type, row_count, source_refreshed_at, status, error_message
+            )
+            VALUES (?, 'api_full', ?, ?, 'success', NULL)
             ON CONFLICT(source_name) DO UPDATE SET
                 row_count=excluded.row_count,
                 source_refreshed_at=excluded.source_refreshed_at,
-                status='success'
+                status='success',
+                error_message=NULL
         """, (source_name, inserted_count, now_str))
 
         conn.commit()
