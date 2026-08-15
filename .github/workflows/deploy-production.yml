@@ -24,7 +24,7 @@ jobs:
       - name: 배포 브랜치 체크아웃
         uses: actions/checkout@v4
         with:
-          ref: codex/monitoring-server-sync-20260611
+          ref: main
 
       - name: 핵심 코드 구문 검사
         run: python -m py_compile api_server.py dashboard.py core_calc.py
