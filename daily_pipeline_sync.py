@@ -14,6 +14,8 @@ import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from public_api_recovery import enqueue_prespec_issues
+
 sys.stdout.reconfigure(encoding='utf-8')
 
 # SSL 및 기본 정보
@@ -105,9 +107,12 @@ def flush_api_issues(target_date):
     conn.executemany("""INSERT INTO api_call_issues
         (target_date, detected_at, api_name, page_no, issue_type, severity, detail, occurrence_count)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+    queued = enqueue_prespec_issues(conn, issues)
     conn.commit()
     conn.close()
     print(f"   ⚠️ 공공데이터 API 이슈 기록: {len(rows)}종 / {len(issues)}건")
+    if queued:
+        print(f"   🔁 사전규격 자동 복구 큐 등록: {queued}일")
     return len(rows)
 
 # === NCloud SENS SMS 알림 (alert_config.json에서 설정 로드) ===

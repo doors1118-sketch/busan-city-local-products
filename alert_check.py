@@ -688,10 +688,30 @@ def check_public_api_issues():
             print(f"  ✅ 정상: 공공데이터 API 실패 기록 테이블 없음")
             return alerts
 
-        rows = conn.execute("""
+        recovery_table_exists = conn.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='api_recovery_queue'
+            LIMIT 1
+        """).fetchone()
+        recovery_filter = ""
+        if recovery_table_exists:
+            recovery_filter = """
+              AND NOT (
+                  api_call_issues.api_name LIKE 'prespec_%'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM api_recovery_queue recovery
+                      WHERE recovery.recovery_type = 'prespec'
+                        AND recovery.target_date = api_call_issues.target_date
+                        AND recovery.status = 'success'
+                  )
+              )
+            """
+        rows = conn.execute(f"""
             SELECT api_name, issue_type, severity, detail, SUM(occurrence_count) AS cnt
             FROM api_call_issues
             WHERE target_date = ?
+            {recovery_filter}
             GROUP BY api_name, issue_type, severity, detail
             ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 ELSE 1 END, cnt DESC, api_name
         """, (target_date,)).fetchall()
