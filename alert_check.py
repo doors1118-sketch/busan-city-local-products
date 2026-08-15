@@ -618,15 +618,10 @@ def check_pipeline_sync():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute("CREATE TABLE IF NOT EXISTS sync_log (sync_date TEXT PRIMARY KEY, completed_at TEXT)")
-        # 어제 날짜 (평일 기준 — 주말이면 금요일)
+        # The collection pipeline runs every day, including weekends.  Always
+        # check the immediately preceding calendar day.
         now = datetime.datetime.now()
-        yesterday = now - datetime.timedelta(days=1)
-        # 주말 보정: 일요일(6) → 금요일, 토요일(5) → 금요일
-        if yesterday.weekday() == 6:  # 일요일
-            yesterday = now - datetime.timedelta(days=2)
-        elif yesterday.weekday() == 5:  # 토요일
-            yesterday = now - datetime.timedelta(days=1)
-        target_date = yesterday.strftime('%Y%m%d')
+        target_date = _previous_collection_date(now)
 
         row = conn.execute("SELECT sync_date, completed_at FROM sync_log WHERE sync_date = ?",
                            (target_date,)).fetchone()
@@ -658,15 +653,10 @@ def check_pipeline_sync():
     return alerts
 
 
-def _previous_collection_date():
-    """Return the previous collection date using the same weekend rule as check_pipeline_sync."""
-    now = datetime.datetime.now()
-    yesterday = now - datetime.timedelta(days=1)
-    if yesterday.weekday() == 6:
-        yesterday = now - datetime.timedelta(days=2)
-    elif yesterday.weekday() == 5:
-        yesterday = now - datetime.timedelta(days=1)
-    return yesterday.strftime('%Y%m%d')
+def _previous_collection_date(now=None):
+    """Return yesterday because the collection pipeline runs seven days a week."""
+    current = now or datetime.datetime.now()
+    return (current - datetime.timedelta(days=1)).strftime('%Y%m%d')
 
 
 def check_public_api_issues():
