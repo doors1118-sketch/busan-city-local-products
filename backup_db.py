@@ -1,192 +1,261 @@
 #!/usr/bin/env python3
-"""DB 백업 → NCP Object Storage (7일 보관, 자동 삭제)
-파이프라인 완료 후 자동 실행.
+"""Create verified SQLite backups and upload them to NCP Object Storage.
+
+The backup is taken through SQLite's online backup API.  A live WAL database
+is never copied as a bare main file.  Temporary files are created one database
+at a time and guarded by a projected disk-usage ceiling.
 """
-import os, sys, gzip, shutil, subprocess, hashlib
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import os
+import shutil
+import sqlite3
+import tempfile
+from contextlib import closing
 from datetime import datetime, timedelta
+from pathlib import Path
 
-# ── 설정 ──
-DB_DIR = '/opt/busan'
-BACKUP_DIR = '/opt/busan/backups'
-DB_FILES = ['procurement_contracts.db', 'busan_agencies_master.db', 'servc_site.db']
-LOCAL_RETENTION_DAYS = 3
-OBJECT_STORAGE_RETENTION_DAYS = 7
-
-# NCP Object Storage (S3 호환) — 환경변수에서 읽음
-NCP_ENDPOINT = 'https://kr.object.ncloudstorage.com'
-NCP_ACCESS_KEY = os.environ.get('NCP_ACCESS_KEY', '')
-NCP_SECRET_KEY = os.environ.get('NCP_SECRET_KEY', '')
-BUCKET_NAME = 'busan-procurement-backup'
-
-# NCP Object Storage is S3-compatible, but newer botocore/boto3 versions may
-# send checksum headers that NCP does not support. Keep checksum behavior at
-# the AWS "only when required" setting regardless of the installed SDK version.
-os.environ.setdefault('AWS_REQUEST_CHECKSUM_CALCULATION', 'when_required')
-os.environ.setdefault('AWS_RESPONSE_CHECKSUM_VALIDATION', 'when_required')
+try:
+    import fcntl
+except ImportError:  # Windows-only test environment; production is Linux.
+    fcntl = None
 
 
-def has_object_storage_config():
-    """NCP Object Storage credentials are optional; local backup must still run."""
+DB_DIR = Path(os.environ.get("BUSAN_DB_DIR", "/opt/busan"))
+BACKUP_DIR = Path(os.environ.get("BUSAN_BACKUP_DIR", "/opt/busan/backups"))
+DB_FILES = (
+    "procurement_contracts.db",
+    "busan_agencies_master.db",
+    "servc_site.db",
+    "busan_companies_master.db",
+    "procurement_license.db",
+)
+
+OPTIONAL_LARGE_DB_FILES = ("chatbot_company.db",)
+# The large DB is included by default, but the capacity guard skips it before
+# writing if the worst-case snapshot+gzip peak would exceed the ceiling.
+INCLUDE_LARGE_DB = os.environ.get("BACKUP_INCLUDE_LARGE_DB", "1") == "1"
+
+LOCAL_RETENTION_DAYS = int(os.environ.get("BACKUP_LOCAL_RETENTION_DAYS", "3"))
+OBJECT_STORAGE_RETENTION_DAYS = int(os.environ.get("BACKUP_OBJECT_RETENTION_DAYS", "7"))
+MAX_PROJECTED_DISK_PERCENT = float(os.environ.get("BACKUP_MAX_PROJECTED_DISK_PERCENT", "88"))
+SAFETY_MARGIN_BYTES = int(os.environ.get("BACKUP_SAFETY_MARGIN_BYTES", str(256 * 1024**2)))
+CAPACITY_LOCK = Path(os.environ.get("BACKUP_CAPACITY_LOCK", str(BACKUP_DIR / ".backup.lock")))
+
+NCP_ENDPOINT = "https://kr.object.ncloudstorage.com"
+NCP_ACCESS_KEY = os.environ.get("NCP_ACCESS_KEY", "")
+NCP_SECRET_KEY = os.environ.get("NCP_SECRET_KEY", "")
+BUCKET_NAME = "busan-procurement-backup"
+
+os.environ.setdefault("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required")
+os.environ.setdefault("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required")
+
+
+def has_object_storage_config() -> bool:
     return bool(NCP_ACCESS_KEY and NCP_SECRET_KEY)
 
 
 def ensure_bucket():
-    """기존 버킷 접근 가능 여부 확인."""
     if not has_object_storage_config():
         raise RuntimeError("NCP_ACCESS_KEY/NCP_SECRET_KEY not configured")
-
     import boto3
     from botocore.config import Config
-    s3_config = Config(
-        s3={'addressing_style': 'path'},
-        request_checksum_calculation='when_required',
-        response_checksum_validation='when_required',
+
+    config = Config(
+        s3={"addressing_style": "path"},
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
     )
-    s3 = boto3.client('s3',
+    client = boto3.client(
+        "s3",
         endpoint_url=NCP_ENDPOINT,
         aws_access_key_id=NCP_ACCESS_KEY,
         aws_secret_access_key=NCP_SECRET_KEY,
-        config=s3_config)
-    s3.head_bucket(Bucket=BUCKET_NAME)
-    print(f"  ✅ 버킷 '{BUCKET_NAME}' 확인")
-    return s3
+        config=config,
+    )
+    client.head_bucket(Bucket=BUCKET_NAME)
+    return client
 
 
-def sha256_file(path):
+def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with open(path, 'rb') as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def object_matches(s3, key, path):
-    """원격 객체 크기와 SHA-256 메타데이터가 로컬 파일과 같은지 확인."""
+def object_matches(client, key: str, path: Path) -> bool:
     checksum = sha256_file(path)
-    size = os.path.getsize(path)
     try:
-        head = s3.head_object(Bucket=BUCKET_NAME, Key=key)
+        head = client.head_object(Bucket=BUCKET_NAME, Key=key)
     except Exception:
         return False
-    metadata = {str(k).lower(): str(v) for k, v in head.get('Metadata', {}).items()}
-    return int(head.get('ContentLength', -1)) == size and metadata.get('sha256') == checksum
+    metadata = {str(k).lower(): str(v) for k, v in head.get("Metadata", {}).items()}
+    return (
+        int(head.get("ContentLength", -1)) == path.stat().st_size
+        and metadata.get("sha256") == checksum
+    )
 
 
-def upload_and_verify(s3, key, path):
+def upload_and_verify(client, key: str, path: Path) -> None:
     checksum = sha256_file(path)
-    s3.upload_file(
-        path,
+    client.upload_file(
+        str(path),
         BUCKET_NAME,
         key,
-        ExtraArgs={'Metadata': {'sha256': checksum}},
+        ExtraArgs={"Metadata": {"sha256": checksum}},
     )
-    head = s3.head_object(Bucket=BUCKET_NAME, Key=key)
-    metadata = {str(k).lower(): str(v) for k, v in head.get('Metadata', {}).items()}
-    if int(head.get('ContentLength', -1)) != os.path.getsize(path):
-        raise RuntimeError(f"원격 객체 크기 검증 실패: {key}")
-    if metadata.get('sha256') != checksum:
-        raise RuntimeError(f"원격 객체 SHA-256 검증 실패: {key}")
+    if not object_matches(client, key, path):
+        raise RuntimeError(f"remote size/SHA-256 verification failed: {key}")
 
 
-def backup_and_upload():
-    print(f"\n{'='*50}")
-    print(f" 📦 DB 백업 시작 ({datetime.now().strftime('%Y-%m-%d %H:%M')})")
-    print(f"{'='*50}\n")
-    
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    today_str = datetime.now().strftime('%Y%m%d')
-    
-    # 1. DB 파일 gzip 압축
-    backup_files = []
-    for db_name in DB_FILES:
-        src = os.path.join(DB_DIR, db_name)
-        if not os.path.exists(src):
-            print(f"  ⚠️ {db_name} 파일 없음 — 건너뜀")
-            continue
-        
-        dst = os.path.join(BACKUP_DIR, f"{db_name}.{today_str}.gz")
-        size_mb = os.path.getsize(src) / 1024 / 1024
-        print(f"  압축 중: {db_name} ({size_mb:.1f}MB) → {os.path.basename(dst)}")
-        
-        with open(src, 'rb') as f_in:
-            with gzip.open(dst, 'wb', compresslevel=6) as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        
-        gz_size = os.path.getsize(dst) / 1024 / 1024
-        ratio = round(gz_size / size_mb * 100, 1) if size_mb > 0 else 0
-        print(f"    → {gz_size:.1f}MB (압축률 {ratio}%)")
-        backup_files.append(dst)
-    
+def projected_peak_percent(source_size: int, filesystem: Path = BACKUP_DIR) -> float:
+    """Worst case: online snapshot + gzip output as large as the source."""
+    usage = shutil.disk_usage(filesystem)
+    projected_used = usage.used + source_size * 2 + SAFETY_MARGIN_BYTES
+    return projected_used * 100 / usage.total
+
+
+def assert_capacity(source: Path, filesystem: Path = BACKUP_DIR) -> None:
+    projected = projected_peak_percent(source.stat().st_size, filesystem)
+    if projected >= MAX_PROJECTED_DISK_PERCENT:
+        raise RuntimeError(
+            f"capacity guard blocked {source.name}: projected peak {projected:.1f}% "
+            f">= limit {MAX_PROJECTED_DISK_PERCENT:.1f}%"
+        )
+
+
+def sqlite_quick_check(path: Path) -> None:
+    uri = f"file:{path}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=30)) as connection:
+        result = connection.execute("PRAGMA quick_check").fetchone()
+    if not result or result[0] != "ok":
+        raise RuntimeError(f"SQLite quick_check failed for {path.name}: {result!r}")
+
+
+def atomic_sqlite_gzip_backup(source: Path, destination: Path) -> Path:
+    """Back up a live SQLite DB, verify it, gzip it, and publish atomically."""
+    assert_capacity(source, destination.parent)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    raw_fd, raw_name = tempfile.mkstemp(
+        prefix=f".{source.name}.", suffix=".sqlite.tmp", dir=destination.parent
+    )
+    os.close(raw_fd)
+    raw_path = Path(raw_name)
+    gzip_path = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
+    try:
+        source_uri = f"file:{source}?mode=ro"
+        with closing(sqlite3.connect(source_uri, uri=True, timeout=60)) as source_db:
+            with closing(sqlite3.connect(raw_path, timeout=60)) as backup_db:
+                source_db.backup(backup_db, pages=4096, sleep=0.05)
+        sqlite_quick_check(raw_path)
+
+        with raw_path.open("rb") as input_file:
+            with gzip.open(gzip_path, "wb", compresslevel=6) as output_file:
+                shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+        with gzip.open(gzip_path, "rb") as compressed:
+            while compressed.read(1024 * 1024):
+                pass
+        os.replace(gzip_path, destination)
+        return destination
+    finally:
+        raw_path.unlink(missing_ok=True)
+        raw_path.with_name(f"{raw_path.name}-wal").unlink(missing_ok=True)
+        raw_path.with_name(f"{raw_path.name}-shm").unlink(missing_ok=True)
+        gzip_path.unlink(missing_ok=True)
+
+
+def acquire_capacity_lock():
+    CAPACITY_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    handle = CAPACITY_LOCK.open("a+")
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def selected_database_files() -> tuple[str, ...]:
+    return DB_FILES + (OPTIONAL_LARGE_DB_FILES if INCLUDE_LARGE_DB else ())
+
+
+def backup_and_upload() -> bool:
+    print(f"DB backup started at {datetime.now():%Y-%m-%d %H:%M}")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y%m%d")
+    backup_files: list[Path] = []
+    failures: list[str] = []
+
+    lock_handle = acquire_capacity_lock()
+    try:
+        for database_name in selected_database_files():
+            source = DB_DIR / database_name
+            if not source.exists():
+                print(f"SKIP missing database: {database_name}")
+                continue
+            destination = BACKUP_DIR / f"{database_name}.{today}.gz"
+            try:
+                atomic_sqlite_gzip_backup(source, destination)
+                print(
+                    f"OK local backup: {database_name} "
+                    f"source={source.stat().st_size} compressed={destination.stat().st_size}"
+                )
+                backup_files.append(destination)
+            except Exception as exc:
+                failures.append(f"{database_name}: {type(exc).__name__}: {exc}")
+                print(f"FAIL local backup: {failures[-1]}")
+    finally:
+        lock_handle.close()
+
     if not backup_files:
-        print("  ❌ 백업할 파일 없음")
+        print("FAIL no database backup was created")
         return False
-    
-    # 2. NCP Object Storage 업로드
-    print(f"\n  [Object Storage 업로드]")
-    s3 = None
-    if not has_object_storage_config():
-        print("  ⚠️ 원격 백업 비활성: NCP_ACCESS_KEY/NCP_SECRET_KEY 미설정")
-        print("  → 로컬 백업은 유지됩니다. 원격 백업 재개 시 .env에 유효한 NCP Object Storage 키를 설정하세요.")
-    else:
+
+    client = None
+    if has_object_storage_config():
         try:
-            s3 = ensure_bucket()
-            for fpath in backup_files:
-                fname = os.path.basename(fpath)
-                s3_key = f"daily/{fname}"
-                fsize = os.path.getsize(fpath) / 1024 / 1024
-                print(f"    업로드: {fname} ({fsize:.1f}MB) → s3://{BUCKET_NAME}/{s3_key}")
-                upload_and_verify(s3, s3_key, fpath)
-            print(f"  ✅ 업로드 완료 ({len(backup_files)}개 파일)")
-        except Exception as e:
-            print(f"  ⚠️ 업로드 실패: {e}")
-            print(f"  → 로컬 백업은 유지됩니다.")
-    
-    # 3. 오래된 로컬 백업 삭제
-    print(f"\n  [로컬 정리] {LOCAL_RETENTION_DAYS}일 초과 백업 삭제")
+            client = ensure_bucket()
+            for backup_path in backup_files:
+                key = f"daily/{backup_path.name}"
+                upload_and_verify(client, key, backup_path)
+                print(f"OK remote backup: {key}")
+        except Exception as exc:
+            failures.append(f"Object Storage: {type(exc).__name__}: {exc}")
+            print(f"FAIL remote backup: {failures[-1]}")
+    else:
+        failures.append("Object Storage: credentials not configured")
+        print("FAIL remote backup: credentials not configured")
+
     local_cutoff = datetime.now() - timedelta(days=LOCAL_RETENTION_DAYS)
-    deleted = 0
-    for f in os.listdir(BACKUP_DIR):
-        fpath = os.path.join(BACKUP_DIR, f)
-        if os.path.isfile(fpath) and f.endswith('.gz'):
-            mtime = datetime.fromtimestamp(os.path.getmtime(fpath))
-            if mtime < local_cutoff:
-                key = f"daily/{f}"
-                if s3 is not None and not object_matches(s3, key, fpath):
-                    print(f"    원격 재업로드·검증: {f}")
-                    upload_and_verify(s3, key, fpath)
-                if s3 is not None and object_matches(s3, key, fpath):
-                    os.remove(fpath)
-                    print(f"    삭제: {f} (원격 크기·SHA-256 검증 완료)")
-                    deleted += 1
-                else:
-                    print(f"    보존: {f} (원격 검증 안 됨)")
-    print(f"  정리 완료: {deleted}개 삭제, {len(os.listdir(BACKUP_DIR))}개 보관 중")
-    
-    # 4. 오래된 Object Storage 백업 삭제
-    if s3 is not None:
-        print(f"\n  [Object Storage 정리] {OBJECT_STORAGE_RETENTION_DAYS}일 초과 백업 삭제")
+    for backup_path in BACKUP_DIR.glob("*.gz"):
+        if datetime.fromtimestamp(backup_path.stat().st_mtime) >= local_cutoff:
+            continue
+        key = f"daily/{backup_path.name}"
+        if client is not None and object_matches(client, key, backup_path):
+            backup_path.unlink()
+            print(f"OK local retention delete after remote verification: {backup_path.name}")
+        else:
+            print(f"KEEP local backup without verified remote copy: {backup_path.name}")
+
+    if client is not None:
         object_cutoff = datetime.now() - timedelta(days=OBJECT_STORAGE_RETENTION_DAYS)
         try:
-            objs = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix='daily/')
-            s3_deleted = 0
-            for obj in objs.get('Contents', []):
-                key = obj['Key']
-                last_mod = obj['LastModified'].replace(tzinfo=None)
-                if last_mod < object_cutoff:
-                    s3.delete_object(Bucket=BUCKET_NAME, Key=key)
-                    print(f"    삭제: {key}")
-                    s3_deleted += 1
-            print(f"  정리 완료: {s3_deleted}개 삭제")
-        except Exception as e:
-            print(f"  ⚠️ Object Storage 정리 실패: {e}")
-    else:
-        print(f"\n  [Object Storage 정리] 통과 (S3 연결 안 됨)")
-    
-    print(f"\n{'='*50}")
-    print(f" ✅ DB 백업 완료!")
-    print(f"{'='*50}\n")
-    return True
+            paginator = client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix="daily/"):
+                for item in page.get("Contents", []):
+                    if item["LastModified"].replace(tzinfo=None) < object_cutoff:
+                        client.delete_object(Bucket=BUCKET_NAME, Key=item["Key"])
+                        print(f"OK remote retention delete: {item['Key']}")
+        except Exception as exc:
+            failures.append(f"remote retention: {type(exc).__name__}: {exc}")
+            print(f"FAIL remote retention: {failures[-1]}")
+
+    print(f"DB backup finished: created={len(backup_files)} failures={len(failures)}")
+    return not failures
 
 
-if __name__ == '__main__':
-    backup_and_upload()
+if __name__ == "__main__":
+    raise SystemExit(0 if backup_and_upload() else 1)
