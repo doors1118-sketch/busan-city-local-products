@@ -12,8 +12,8 @@ from core_calc import (
     parse_corp_shares, extract_dminstt_codes, dedup_by_dcsn,
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
-    load_bid_dict, load_award_sets, BUSAN_BIZNO_PREFIXES,
-    is_site_excluded_contract,
+    load_bid_dict, load_award_sets,
+    is_site_excluded_contract, resolve_supplier_localities,
 )
 from protection_criteria import (
     PROTECTION_GROUPS,
@@ -22,6 +22,12 @@ from protection_criteria import (
     get_protection_threshold,
     normalize_protection_subtype,
     protection_law_basis_for_cache,
+)
+from locality_rate_resolver import (
+    LocalityRateConfig,
+    LocalityResolverSet,
+    open_locality_resolvers,
+    read_locality_config,
 )
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -54,7 +60,39 @@ def is_valid_unit(unit):
         return False
     return str(unit).strip() not in ('', 'nan', 'None')
 
-def build_cache():
+def _eligible_agency_codes():
+    with sqlite3.connect(DB_AGENCIES) as conn_ag:
+        return {
+            str(row[0]).strip()
+            for row in conn_ag.execute("SELECT dminsttCd FROM agency_master")
+            if str(row[0]).strip()
+        }
+
+
+def build_cache(
+    *,
+    locality_config: LocalityRateConfig | None = None,
+    locality_resolvers: LocalityResolverSet | None = None,
+):
+    config = locality_config or read_locality_config()
+    if locality_resolvers is not None:
+        if locality_resolvers.config != config:
+            raise ValueError("locality resolver context does not match command configuration")
+        return _build_cache(locality_resolvers)
+    if config.mode != 'legacy':
+        raise ValueError(
+            "shadow and snapshot cache builds require a shared generation resolver context"
+        )
+    with open_locality_resolvers(
+        DB_PROCUREMENT,
+        DB_COMPANIES,
+        config,
+        eligible_agency_codes=_eligible_agency_codes(),
+    ) as resolvers:
+        return _build_cache(resolvers)
+
+
+def _build_cache(locality_resolvers):
     start = time.time()
     print("[캐시 생성] 시작...")
     
@@ -206,6 +244,27 @@ def build_cache():
             if dcd in inst_dict:
                 return dcd
         return cd if cd in inst_grp else ''
+
+    def resolved_supplier_rows(row, sector, matched_cd):
+        return resolve_supplier_localities(
+            row,
+            inst_dict,
+            biznos,
+            locality_resolvers[sector],
+            sector,
+            matched_cd=matched_cd,
+            is_shopping=sector == '쇼핑몰',
+        )
+
+    def first_nonlocal_corp_name(row, sector, matched_cd):
+        _, decisions = resolved_supplier_rows(row, sector, matched_cd)
+        for chunk in str(row.get('corpList', '') or '').split('[')[1:]:
+            parts = chunk.split(']')[0].split('^')
+            if len(parts) >= 10:
+                bno = str(parts[9]).replace('-', '').strip()
+                if not decisions.get(bno, False) and len(parts) >= 4:
+                    return parts[3].strip()
+        return ''
     
     # ========== 집계 ==========
     all_data = {}    # {분야: {그룹: {total, local}}}
@@ -215,9 +274,9 @@ def build_cache():
     print("  [공사] 계산 중...")
     cnstwk_cols = [c[1] for c in conn.execute("PRAGMA table_info(cnstwk_cntrct)").fetchall()]
     cnstwk_site_col = ', cnstrtsiteRgnNm' if 'cnstrtsiteRgnNm' in cnstwk_cols else ", '' as cnstrtsiteRgnNm"
-    cnstwk_date_col = ', cntrctCnclsDate' if 'cntrctCnclsDate' in cnstwk_cols else ", '' as cntrctCnclsDate"
-    df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo{cnstwk_site_col}{cnstwk_date_col}
+    df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd,
+        totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm,
+        cntrctInsttOfclTelNo, cntrctCnclsDate{cnstwk_site_col}
         FROM cnstwk_cntrct""", conn)
     df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     n_before = len(df); df = dedup_by_dcsn(df)
@@ -233,7 +292,9 @@ def build_cache():
         result = process_contract_row(row, inst_dict, biznos,
                                        use_location_filter=True,
                                        bid_dict=bid_dict,
-                                       award_set=award_sets['공사'])
+                                       award_set=award_sets['공사'],
+                                       sector='공사',
+                                       locality_resolver=locality_resolvers['공사'])
         if not result: continue
         cd, amt, loc = result
         lrg = inst_grp.get(cd)
@@ -254,7 +315,7 @@ def build_cache():
         print(f"  [{name}] 계산 중...")
         # 용역은 cnstrtsiteRgnNm 포함하여 로드
         extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
-        df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
+        df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
             corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
             FROM [{tbl}]""", conn)
         df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
@@ -275,7 +336,9 @@ def build_cache():
             result = process_contract_row(row, inst_dict, biznos,
                                            use_location_filter=True,
                                            bid_dict=bid_dict,
-                                           award_set=award_sets[award_key])
+                                           award_set=award_sets[award_key],
+                                           sector=name,
+                                           locality_resolver=locality_resolvers[name])
             if not result:
                 n_filtered += 1
                 continue
@@ -297,7 +360,7 @@ def build_cache():
 
     
     # ── 유출계약 비고란 생성 함수 ──
-    def gen_비고(row, sector, grp, biznos, bid_dict=None):
+    def gen_비고(row, sector, grp, busan_share, bid_dict=None):
         """유출계약의 비고(장기계속/공동이행/지역제한/단독) 생성"""
         tot_amt = float(row.get('totCntrctAmt', 0) or 0)
         thtm_amt = float(row.get('thtmCntrctAmt', 0) or 0)
@@ -308,11 +371,6 @@ def build_cache():
         n_comp = len(biz_list)
         is_joint = n_comp >= 2
         
-        # 부산업체 지분 계산
-        busan_share = 0
-        for bno, share in biz_list:
-            if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
-                busan_share += share
         busan_share = round(busan_share)
         
         is_busan_grp = '부산' in str(grp or '')
@@ -376,7 +434,7 @@ def build_cache():
     print("  [쇼핑몰] 계산 중...")
     df = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
         prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
-        cnstwkMtrlDrctPurchsObjYn, dlvrReqNm FROM shopping_cntrct
+        cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct
         """, conn)
     df['dlvrReqChgOrd'] = pd.to_numeric(df['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
@@ -401,7 +459,14 @@ def build_cache():
     _DISTRICTS = {"중구", "서구", "동구", "영도구", "부산진구", "동래구", "남구", "북구", "해운대구", "사하구", "금정구", "강서구", "연제구", "수영구", "사상구", "기장군"}
     
     for _, row in df.iterrows():
-        result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
+        result = process_contract_row(
+            row,
+            inst_dict,
+            biznos,
+            is_shopping=True,
+            sector='쇼핑몰',
+            locality_resolver=locality_resolvers['쇼핑몰'],
+        )
         if not result: continue
         cd, amt, loc = result
         lrg = inst_grp.get(cd)
@@ -591,7 +656,8 @@ def build_cache():
     for _, row in df_filtered.iterrows():
         res = process_contract_row(row, inst_dict, biznos,
                                     use_location_filter=True,
-                                    bid_dict=bid_dict, award_set=award_sets['공사'])
+                                    bid_dict=bid_dict, award_set=award_sets['공사'],
+                                    sector='공사', locality_resolver=locality_resolvers['공사'])
         if not res: continue
         cd, amt, loc = res
         if amt == 0: continue
@@ -602,18 +668,12 @@ def build_cache():
         if not is_target_group(grp) or not is_valid_unit(unit): continue
         unit = str(unit).strip()
         # 업체명 추출
-        corp_nm = ''
-        for chunk in str(row.get('corpList','') or '').split('[')[1:]:
-            parts = chunk.split(']')[0].split('^')
-            if len(parts) >= 10:
-                bno = str(parts[9]).replace('-','').strip()
-                if bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES) and len(parts) >= 4:
-                    corp_nm = parts[3].strip(); break
+        corp_nm = first_nonlocal_corp_name(row, '공사', cd)
         leak_contracts.append({
             "분야": "공사", "수요기관": unit or '', "계약명": str(row.get('cnstwkNm',''))[:60],
             "계약액": round(amt), "유출액": round(nloc),
             "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
-            "그룹": grp, "비고": gen_비고(row, '공사', grp, biznos, bid_dict),
+            "그룹": grp, "비고": gen_비고(row, '공사', grp, loc / amt * 100, bid_dict),
         })
     
     # 용역/물품 유출계약
@@ -622,10 +682,10 @@ def build_cache():
         cols_t = [r[1] for r in conn2.execute(f"PRAGMA table_info({tbl})").fetchall()]
         nm_col = 'cntrctNm' if 'cntrctNm' in cols_t else "''"
         extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
-        dcsn_col = ', dcsnCntrctNo' if 'dcsnCntrctNo' in cols_t else ''
-        date_col = ', cntrctCnclsDate' if 'cntrctCnclsDate' in cols_t else ''
-        df_l = pd.read_sql(f"""SELECT untyCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-            corpList, ntceNo, dminsttList, {nm_col} as cntrctNm, cntrctInsttOfclTelNo, dminsttCd{extra_col}{dcsn_col}{date_col}
+        df_l = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
+            totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
+            {nm_col} as cntrctNm, cntrctInsttOfclTelNo, dminsttCd,
+            cntrctCnclsDate{extra_col}
             FROM [{tbl}]""", conn2)
         df_l.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
         df_l = dedup_by_dcsn(df_l)
@@ -634,7 +694,8 @@ def build_cache():
         for _, row in df_l.iterrows():
             res = process_contract_row(row, inst_dict, biznos,
                                         use_location_filter=True,
-                                        bid_dict=bid_dict, award_set=award_sets[awk])
+                                        bid_dict=bid_dict, award_set=award_sets[awk],
+                                        sector=sector, locality_resolver=locality_resolvers[sector])
             if not res: continue
             cd, amt, loc = res
             if amt == 0: continue
@@ -644,49 +705,64 @@ def build_cache():
             grp = inst_grp.get(cd, "")
             if not is_target_group(grp) or not is_valid_unit(unit): continue
             unit = str(unit).strip()
-            corp_nm = ''
-            for chunk in str(row.get('corpList','') or '').split('[')[1:]:
-                parts = chunk.split(']')[0].split('^')
-                if len(parts) >= 10:
-                    bno = str(parts[9]).replace('-','').strip()
-                    if bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES) and len(parts) >= 4:
-                        corp_nm = parts[3].strip(); break
+            corp_nm = first_nonlocal_corp_name(row, sector, cd)
             leak_contracts.append({
                 "분야": sector, "수요기관": unit or '', "계약명": str(row.get('cntrctNm',''))[:60],
                 "계약액": round(amt), "유출액": round(nloc),
                 "유출율": round(nloc/amt*100, 1), "수주업체": corp_nm[:40],
-                "그룹": grp, "비고": gen_비고(row, sector, grp, biznos, bid_dict),
+                "그룹": grp, "비고": gen_비고(row, sector, grp, loc / amt * 100, bid_dict),
             })
 
     # 쇼핑몰 유출계약
-    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn FROM shopping_cntrct ", conn2)
+    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqRcptDate FROM shopping_cntrct ", conn2)
     df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df_shop.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
     df_shop, _, _ = filter_shopping_by_site(df_shop, conn2, set(inst_dict.keys()), inst_dict=inst_dict)
     
-    # 그룹핑 (dlvrReqNo 단위 합산)
+    # Canonical product rows are resolved before the legacy delivery-level display grouping.
     df_shop['prdctAmt'] = pd.to_numeric(df_shop['prdctAmt'], errors='coerce').fillna(0)
-    grouped_shop = df_shop.groupby([
+    resolved_shop_rows = []
+    for _, canonical_row in df_shop.iterrows():
+        result = process_contract_row(
+            canonical_row,
+            inst_dict,
+            biznos,
+            is_shopping=True,
+            sector='쇼핑몰',
+            locality_resolver=locality_resolvers['쇼핑몰'],
+        )
+        if result is None:
+            continue
+        cd, amt, loc = result
+        item = canonical_row.to_dict()
+        item['_locality_cd'] = cd
+        item['_locality_amt'] = amt
+        item['_locality_loc'] = loc
+        resolved_shop_rows.append(item)
+    resolved_shop = pd.DataFrame(
+        resolved_shop_rows,
+        columns=[*df_shop.columns, '_locality_cd', '_locality_amt', '_locality_loc'],
+    )
+    grouped_shop = resolved_shop.groupby([
         'dlvrReqNo', 'dminsttCd', 'cntrctCorpBizno', 'corpNm', 'dlvrReqNm', 'cnstwkMtrlDrctPurchsObjYn'
     ], as_index=False, dropna=False).agg({
-        'prdctAmt': 'sum'
+        '_locality_amt': 'sum',
+        '_locality_loc': 'sum',
+        '_locality_cd': 'first',
     })
     
     for _, row in grouped_shop.iterrows():
-        result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
-        if not result: continue
-        cd, amt, loc = result
+        cd = row['_locality_cd']
+        amt = row['_locality_amt']
+        loc = row['_locality_loc']
         if amt == 0: continue
         nloc = amt - loc
         unit = get_unit(cd)
         grp = inst_grp.get(cd, "")
         if not is_target_group(grp) or not is_valid_unit(unit): continue
         unit = str(unit).strip()
-        bno = str(row.get('cntrctCorpBizno','')).replace('-','').strip()
-        corp_nm = ''
-        if bno and bno not in biznos and not (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
-            corp_nm = str(row.get('corpNm','')).strip()
+        corp_nm = str(row.get('corpNm','')).strip() if loc <= 0 else ''
         if nloc >= amt * 0.5:
             leak_contracts.append({
                 "분야": "쇼핑몰", "수요기관": unit or '', "계약명": str(row.get('dlvrReqNm',''))[:60],
@@ -756,13 +832,15 @@ def build_cache():
 
     prot_contract_queries = {
         'cnstwk_cntrct': ('공사', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
-            dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
+            untyCntrctNo, cntrctInsttCd, dminsttCd, dminsttList,
+            cntrctCnclsMthdNm, dcsnCntrctNo,
             cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
             cnstwkTypeLrg, cnstwkTypeDtl, cntrctCnclsDate
             FROM [cnstwk_cntrct]
             WHERE cntrctCnclsMthdNm != '수의계약'"""),
         'servc_cntrct': ('용역', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
-            dminsttCd, dminsttList, cntrctCnclsMthdNm, dcsnCntrctNo,
+            untyCntrctNo, cntrctInsttCd, dminsttCd, dminsttList,
+            cntrctCnclsMthdNm, dcsnCntrctNo,
             cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
             cntrctCnclsDate
             FROM [servc_cntrct]
@@ -861,9 +939,12 @@ def build_cache():
             if not threshold: continue
 
             # 낙찰업체 지분 확인
-            blist = parse_corp_shares(row.get('corpList', ''))
-            if not blist: continue
-            local_share = sum(s for b, s in blist if b in biznos or (len(b)>=3 and b[:3] in BUSAN_BIZNO_PREFIXES))
+            blist, locality_decisions = resolved_supplier_rows(row, sector, matched_cd)
+            local_share = sum(
+                share
+                for bno, share in blist
+                if locality_decisions[str(bno).replace('-', '').strip()]
+            )
 
             # 수주업체 추출 (대표 1개사)
             corp_names = [parts[3].strip() for chunk in str(row.get('corpList', '')).split('[')[1:] if len((parts := chunk.split(']')[0].split('^'))) >= 4]
@@ -947,19 +1028,19 @@ def build_cache():
     # --- B) 수의계약 (장기계속 후속차수 제외: 최초계약만 포함) ---
     # dcsnCntrctNo 끝2자리 '00' = 최초계약, 그 외 = 후속차수(이미 업체 결정된 건)
     suui_queries = {
-        'cnstwk_cntrct': ('공사', """SELECT untyCntrctNo, dminsttCd, corpList,
+        'cnstwk_cntrct': ('공사', """SELECT untyCntrctNo, dcsnCntrctNo, dminsttCd, cntrctInsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cnstwkNm as cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [cnstwk_cntrct]
+            cntrctInsttOfclTelNo, ntceNo, cntrctCnclsDate FROM [cnstwk_cntrct]
             WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
-        'servc_cntrct': ('용역', """SELECT untyCntrctNo, dminsttCd, corpList,
+        'servc_cntrct': ('용역', """SELECT untyCntrctNo, dcsnCntrctNo, dminsttCd, cntrctInsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [servc_cntrct]
+            cntrctInsttOfclTelNo, ntceNo, cntrctCnclsDate FROM [servc_cntrct]
             WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
-        'thng_cntrct': ('물품', """SELECT untyCntrctNo, dminsttCd, corpList,
+        'thng_cntrct': ('물품', """SELECT untyCntrctNo, dcsnCntrctNo, dminsttCd, cntrctInsttCd, corpList,
             totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo, dcsnCntrctNo FROM [thng_cntrct]
+            cntrctInsttOfclTelNo, ntceNo, cntrctCnclsDate FROM [thng_cntrct]
             WHERE cntrctCnclsMthdNm='수의계약'
             AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
     }
@@ -989,11 +1070,18 @@ def build_cache():
                 if not bypassed and bid_dict and ntce_no and ntce_no in bid_dict:
                     bypassed = check_busan_restriction(bid_dict[ntce_no].get('rgnLmtInfo'))
                 if not bypassed: continue
-            biz_list = parse_corp_shares(row.get('corpList', ''))
-            if not biz_list: continue
-            
             # --- agency_suui_details logic ---
-            res = process_contract_row(row, inst_dict, biznos, use_location_filter=True, bid_dict=bid_dict, award_set=award_sets.get(sector, set()))
+            p_loc = 0
+            res = process_contract_row(
+                row,
+                inst_dict,
+                biznos,
+                use_location_filter=True,
+                bid_dict=bid_dict,
+                award_set=award_sets.get(sector, set()),
+                sector=sector,
+                locality_resolver=locality_resolvers[sector],
+            )
             if res:
                 _, p_amt, p_loc = res
                 if p_amt > 0:
@@ -1006,18 +1094,12 @@ def build_cache():
                     agency_suui_details[unit]["분야별"][sector]["수주액"] += p_loc
                     pnloc = p_amt - p_loc
                     if pnloc >= p_amt * 0.5:
-                        corp_nmm = ''
-                        for chunk in str(row.get('corpList','') or '').split('[')[1:]:
-                            parts = chunk.split(']')[0].split('^')
-                            if len(parts) >= 10:
-                                bnn = str(parts[9]).replace('-','').strip()
-                                if bnn not in biznos and not (len(bnn) >= 3 and bnn[:3] in BUSAN_BIZNO_PREFIXES) and len(parts) >= 4:
-                                    corp_nmm = parts[3].strip(); break
+                        corp_nmm = first_nonlocal_corp_name(row, sector, inst_cd)
                         agency_suui_details[unit]["유출계약"][sector].append({
                             "분야": sector, "수요기관": unit, "계약명": str(row.get('cntrctNm', '') or '')[:60],
                             "계약액": round(p_amt), "유출액": round(pnloc),
                             "유출율": round(pnloc/p_amt*100, 1) if p_amt>0 else 0, "수주업체": corp_nmm[:40], "그룹": grp,
-                            "비고": gen_비고(row, sector, grp, biznos, bid_dict)
+                            "비고": gen_비고(row, sector, grp, p_loc / p_amt * 100, bid_dict)
                         })
             # ---------------------------------
             
@@ -1025,7 +1107,7 @@ def build_cache():
             suui_stats[key]['total'] += 1
             amt = float(row.get('thtmCntrctAmt', 0) or 0)
             if amt == 0: amt = float(row.get('totCntrctAmt', 0) or 0)
-            if sum(1 for bno, _ in biz_list if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES)) > 0:
+            if p_loc > 0:
                 suui_stats[key]['busan'] += 1
                 suui_stats[key]['busan_amt'] = suui_stats[key].get('busan_amt', 0) + amt
             else:
@@ -1506,9 +1588,9 @@ def build_cache():
             extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
             try:
                 wdf = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
-                    totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
+                    dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
                     {'cnstwkNm' if tbl=='cnstwk_cntrct' else 'cntrctNm'} as cntrctNm,
-                    cntrctInsttOfclTelNo{extra_col}
+                    cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
                     FROM [{tbl}]
                     WHERE cntrctCnclsDate >= '{start_s}' AND cntrctCnclsDate <= '{end_s}'""", conn)
                 wdf.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
@@ -1517,7 +1599,9 @@ def build_cache():
                     result = process_contract_row(row, inst_dict, biznos,
                                                    use_location_filter=True,
                                                    bid_dict=bid_dict,
-                                                   award_set=award_sets.get(award_key, set()))
+                                                   award_set=award_sets.get(award_key, set()),
+                                                   sector=nm,
+                                                   locality_resolver=locality_resolvers[nm])
                     if not result: continue
                     cd, amt, loc = result
                     lrg = inst_grp.get(cd)
@@ -1540,19 +1624,26 @@ def build_cache():
                                 _rgn = bizno_region.get(_bno, '')
                                 break
                         contracts.append({"분야": nm, "기관": unit, "계약명": str(row.get('cntrctNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp[:30], "지역": _rgn})
-            except:
-                pass
+            except Exception:
+                raise
         try:
             sdf = pd.read_sql(f"""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
                 prdctAmt, cntrctCorpBizno, corpNm, prdctClsfcNoNm,
-                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm
+                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
                 FROM shopping_cntrct
                 WHERE dlvrReqRcptDate >= '{start_s}' AND dlvrReqRcptDate <= '{end_s}'""", conn)
             sdf['dlvrReqChgOrd'] = pd.to_numeric(sdf['dlvrReqChgOrd'], errors='coerce').fillna(0)
             sdf.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
             sdf.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
             for _, row in sdf.iterrows():
-                result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
+                result = process_contract_row(
+                    row,
+                    inst_dict,
+                    biznos,
+                    is_shopping=True,
+                    sector='쇼핑몰',
+                    locality_resolver=locality_resolvers['쇼핑몰'],
+                )
                 if not result: continue
                 cd, amt, loc = result
                 lrg = inst_grp.get(cd)
@@ -1570,8 +1661,8 @@ def build_cache():
                     _corp_s = str(row.get('corpNm','') or '').strip()
                     _rgn_s = bizno_region.get(_bno_s, '')
                     contracts.append({"분야": "쇼핑몰", "기관": unit, "계약명": str(row.get('dlvrReqNm','') or '')[:50], "계약액": round(amt), "수주액": round(loc), "유출액": round(amt - loc), "수주업체": _corp_s[:30], "지역": _rgn_s})
-        except:
-            pass
+        except Exception:
+            raise
         return dict(wk), contracts
     
     this_week_data, this_week_contracts = calc_weekly(this_monday, this_sunday)
@@ -1713,9 +1804,9 @@ def build_cache():
         for tbl, sector_name, award_key in [('cnstwk_cntrct','공사','공사'),('servc_cntrct','용역','용역'),('thng_cntrct','물품','물품')]:
             try:
                 ddf = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
-                    totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
+                    dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
                     {'cnstwkNm' if tbl=='cnstwk_cntrct' else 'cntrctNm'} as cntrctNm,
-                    cntrctInsttOfclTelNo
+                    cntrctInsttOfclTelNo, cntrctCnclsDate
                     FROM [{tbl}]
                     WHERE cntrctCnclsDate = '{ds}'""", conn)
                 ddf.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
@@ -1724,7 +1815,9 @@ def build_cache():
                     result = process_contract_row(row, inst_dict, biznos,
                                                    use_location_filter=True,
                                                    bid_dict=bid_dict,
-                                                   award_set=award_sets.get(award_key, set()))
+                                                   award_set=award_sets.get(award_key, set()),
+                                                   sector=sector_name,
+                                                   locality_resolver=locality_resolvers[sector_name])
                     if not result: continue
                     cd, amt, loc = result
                     lrg = inst_grp.get(cd)
@@ -1736,18 +1829,26 @@ def build_cache():
                     gs_key = f"{lrg}_{sector_name}"
                     if gs_key in day_by_dim:
                         day_by_dim[gs_key]['total'] += amt; day_by_dim[gs_key]['local'] += loc
-            except: pass
+            except Exception:
+                raise
         # 쇼핑몰
         try:
             sdf2 = pd.read_sql(f"""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
                 prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
-                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm
+                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
                 FROM shopping_cntrct WHERE dlvrReqRcptDate = '{ds}'""", conn)
             sdf2['dlvrReqChgOrd'] = pd.to_numeric(sdf2['dlvrReqChgOrd'], errors='coerce').fillna(0)
             sdf2.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
             sdf2.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
             for _, row in sdf2.iterrows():
-                result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
+                result = process_contract_row(
+                    row,
+                    inst_dict,
+                    biznos,
+                    is_shopping=True,
+                    sector='쇼핑몰',
+                    locality_resolver=locality_resolvers['쇼핑몰'],
+                )
                 if not result: continue
                 cd, amt, loc = result
                 lrg = inst_grp.get(cd)
@@ -1759,7 +1860,8 @@ def build_cache():
                 gs_key = f"{lrg}_쇼핑몰"
                 if gs_key in day_by_dim:
                     day_by_dim[gs_key]['total'] += amt; day_by_dim[gs_key]['local'] += loc
-        except: pass
+        except Exception:
+            raise
         
         if d_offset > 0:  # 오늘 제외
             for d in dims:
@@ -1798,7 +1900,7 @@ def build_cache():
         c = cum_compare[d]
         print(f"      {d}: {c['현재_수주율']}% vs {c['7일평균_수주율']}% = {c['증감']:+.1f}%p")
     
-    import tempfile, os, math
+    import math
     # NaN/Inf 치환: Pandas 계산 결과에 NaN이 섞이면 FastAPI가 500 에러 발생
     def sanitize_nan(obj):
         if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
@@ -1810,19 +1912,8 @@ def build_cache():
         return obj
     cache = sanitize_nan(cache)
     
-    # Atomic write: 임시파일에 쓴 후 rename → API 서버가 불완전 캐시를 읽는 것 방지
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json', dir=os.path.dirname(CACHE_FILE) or '.')
-    try:
-        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, CACHE_FILE)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-    
     elapsed = time.time() - start
-    print(f"\n[캐시 생성 완료] {CACHE_FILE} ({elapsed:.1f}초)")
+    print(f"\n[캐시 계산 완료] ({elapsed:.1f}초)")
     print(f"  전체 수주율: {cache['1_전체']['수주율']}%")
     for g in groups:
         r = cache['5_기관랭킹_전체'][g]
@@ -1831,6 +1922,8 @@ def build_cache():
             print(f"    ▲ {a['비교단위']:25s} {a['발주액']/1e8:.1f}억 수주율 {a['수주율']}%")
         for a in r['하위'][:3]:
             print(f"    ▼ {a['비교단위']:25s} {a['발주액']/1e8:.1f}억 수주율 {a['수주율']}%")
+    return cache
 
 if __name__ == '__main__':
-    build_cache()
+    result = build_cache()
+    print(f"[캐시] 미발행 미리보기: 전체 수주율 {result['1_전체']['수주율']}%")

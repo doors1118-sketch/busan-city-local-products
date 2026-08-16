@@ -14,6 +14,12 @@ from core_calc import (
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
     load_bid_dict, load_award_sets,
 )
+from locality_rate_resolver import (
+    LocalityRateConfig,
+    LocalityResolverSet,
+    open_locality_resolvers,
+    read_locality_config,
+)
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -58,7 +64,8 @@ def print_tree(stats_dict, sector_name):
 
 def process_dataframe(df, busan_inst_dict, busan_comp_biznos,
                       is_shopping=False, use_location_filter=False,
-                      bid_dict=None, award_ntce_set=None):
+                      bid_dict=None, award_ntce_set=None, *,
+                      sector, locality_resolver):
     """core_calc의 process_contract_row를 사용하여 그룹별 통계 산출"""
     stats = {}
     
@@ -69,6 +76,8 @@ def process_dataframe(df, busan_inst_dict, busan_comp_biznos,
             use_location_filter=use_location_filter,
             bid_dict=bid_dict,
             award_set=award_ntce_set,
+            sector=sector,
+            locality_resolver=locality_resolver,
         )
         if result is None:
             continue
@@ -92,7 +101,36 @@ def process_dataframe(df, busan_inst_dict, busan_comp_biznos,
     return stats
 
 
-def main():
+def _eligible_agency_codes():
+    with sqlite3.connect(DB_AGENCIES) as conn_ag:
+        return {
+            str(row[0]).strip()
+            for row in conn_ag.execute("SELECT dminsttCd FROM agency_master")
+            if str(row[0]).strip()
+        }
+
+
+def main(
+    *,
+    locality_config: LocalityRateConfig | None = None,
+    locality_resolvers: LocalityResolverSet | None = None,
+):
+    config = locality_config or read_locality_config()
+    if locality_resolvers is not None:
+        if locality_resolvers.config != config:
+            raise ValueError("locality resolver context does not match command configuration")
+        return _main(locality_resolvers)
+    with open_locality_resolvers(
+        DB_PROCUREMENT,
+        DB_COMPANIES,
+        config,
+        eligible_agency_codes=_eligible_agency_codes(),
+        read_only=True,
+    ) as resolvers:
+        return _main(resolvers)
+
+
+def _main(locality_resolvers):
     start = time.time()
     print("1. 마스터 DB (기관/업체) 로딩 중...")
     
@@ -123,7 +161,8 @@ def main():
     
     # --- [A. 공사] ---
     df_const = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo
+        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo,
+        dminsttCd, cntrctCnclsDate
         FROM cnstwk_cntrct""", conn_pr)
     df_const.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     n_b = len(df_const); df_const = dedup_by_dcsn(df_const)
@@ -134,11 +173,13 @@ def main():
     
     stats_const = process_dataframe(df_const_filtered, busan_inst_dict, busan_comp_biznos,
                                      use_location_filter=True, bid_dict=bid_dict,
-                                     award_ntce_set=award_sets['공사'])
+                                     award_ntce_set=award_sets['공사'], sector='공사',
+                                     locality_resolver=locality_resolvers['공사'])
     
     # --- [B. 용역] ---
     df_servc = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cnstrtsiteRgnNm, dminsttCd
+        corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cnstrtsiteRgnNm, dminsttCd,
+        cntrctCnclsDate
         FROM servc_cntrct""", conn_pr)
     df_servc.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     df_servc = dedup_by_dcsn(df_servc)
@@ -146,21 +187,25 @@ def main():
     if n_site > 0: print(f"  용역 현장 타지역 {n_site}건 배제 ({amt_site/1e8:.0f}억)")
     stats_servc = process_dataframe(df_servc, busan_inst_dict, busan_comp_biznos,
                                      use_location_filter=True, bid_dict=bid_dict,
-                                     award_ntce_set=award_sets['용역'])
+                                     award_ntce_set=award_sets['용역'], sector='용역',
+                                     locality_resolver=locality_resolvers['용역'])
     
     # --- [C. 물품] ---
     df_thng = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo
+        corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, dminsttCd,
+        cntrctCnclsDate
         FROM thng_cntrct""", conn_pr)
     df_thng.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
     df_thng = dedup_by_dcsn(df_thng)
     stats_thng = process_dataframe(df_thng, busan_inst_dict, busan_comp_biznos,
                                     use_location_filter=True, bid_dict=bid_dict,
-                                    award_ntce_set=award_sets['물품'])
+                                    award_ntce_set=award_sets['물품'], sector='물품',
+                                    locality_resolver=locality_resolvers['물품'])
     
     # --- [D. 쇼핑몰] ---
     df_shop = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt,
-        cntrctCorpBizno, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm FROM shopping_cntrct""", conn_pr)
+        cntrctCorpBizno, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
+        FROM shopping_cntrct""", conn_pr)
     df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
     df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
     df_shop.drop_duplicates(subset=['dlvrReqNo', 'prdctSno'], keep='first', inplace=True)
@@ -170,7 +215,14 @@ def main():
         df_shop, conn_pr, set(busan_inst_dict.keys()), inst_dict=busan_inst_dict)
     print(f"  🚨 [쇼핑몰 현장배제] 공사자재 타지역 {n_shop_drop}건 배제 ({amt_shop_drop:,.0f}원)")
     
-    stats_shop = process_dataframe(df_shop, busan_inst_dict, busan_comp_biznos, is_shopping=True)
+    stats_shop = process_dataframe(
+        df_shop,
+        busan_inst_dict,
+        busan_comp_biznos,
+        is_shopping=True,
+        sector='쇼핑몰',
+        locality_resolver=locality_resolvers['쇼핑몰'],
+    )
     
     conn_pr.close()
     

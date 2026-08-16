@@ -1932,6 +1932,12 @@ class SnapshotResolver:
             )
         return contract
 
+    def canonical_contract(
+        self, row: CanonicalContract | Mapping[str, Any]
+    ) -> CanonicalContract:
+        """Validate and expose the canonical row consumed by rate calculations."""
+        return self._contract(row)
+
     def _generation_owner(self) -> str:
         return f"{_GENERATION_OWNER_PREFIX}{self.generation_id}"
 

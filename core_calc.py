@@ -586,12 +586,76 @@ def filter_shopping_by_site(df, conn, busan_agency_cds, inst_dict=None):
 # ============================================================
 # 4. 핵심: 계약 데이터 → (기관코드, 금액, 지역수주액) 산출
 # ============================================================
+def resolve_supplier_localities(
+    row,
+    inst_dict,
+    biznos,
+    locality_resolver,
+    sector,
+    *,
+    matched_cd,
+    is_shopping=False,
+):
+    """Return canonical supplier shares and resolver locality decisions."""
+    resolver_row = dict(row)
+    resolver_row['sector'] = sector
+    resolver_row['_locality_selected_agency'] = matched_cd
+    eligibility_check = getattr(
+        locality_resolver, 'require_eligible_agency_codes', None
+    )
+    if eligibility_check is not None:
+        eligibility_check(inst_dict.keys())
+    if is_shopping:
+        biz_nos = [
+            (str(row.get('cntrctCorpBizno', '')).replace('-', '').strip(), 100.0)
+        ]
+    else:
+        biz_nos = parse_corp_shares(row.get('corpList', ''))
+    decision_biz_nos = biz_nos
+    canonicalize = getattr(locality_resolver, 'canonical_contract', None)
+    if canonicalize is not None:
+        canonical = canonicalize(resolver_row)
+        decision_biz_nos = [
+            (supplier.bizno, supplier.share_pct)
+            for supplier in canonical.suppliers
+        ]
+    aggregated = defaultdict(float)
+    for bno, share in decision_biz_nos:
+        normalized = str(bno).replace('-', '').strip()
+        aggregated[normalized] += share
+    decisions = {}
+    for bno, share in sorted(aggregated.items()):
+        legacy_is_local = bno in biznos or (
+            len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES
+        )
+        decisions[bno] = locality_resolver.resolve(
+            resolver_row, bno, share, legacy_is_local
+        )
+    return biz_nos, decisions
+
+
 def process_contract_row(row, inst_dict, biznos, is_shopping=False,
                          use_location_filter=False, bid_dict=None, award_set=None,
                          locality_resolver=None, sector=None):
     """단일 계약 행 처리 → (matched_cd, amt, local_amt) 또는 None (배제)"""
     if not is_shopping and is_site_excluded_contract(row):
         return None
+
+    if locality_resolver is not None:
+        if not sector:
+            sector = '쇼핑몰' if is_shopping else None
+        if not sector:
+            raise ValueError('sector is required when locality_resolver is supplied')
+        eligibility_check = getattr(
+            locality_resolver, 'require_eligible_agency_codes', None
+        )
+        if eligibility_check is not None:
+            eligibility_check(inst_dict.keys())
+        canonicalize = getattr(locality_resolver, 'canonical_contract', None)
+        if canonicalize is not None:
+            validation_row = dict(row)
+            validation_row['sector'] = sector
+            canonicalize(validation_row)
 
     if is_shopping:
         amt = float(row.get('prdctAmt', 0))
@@ -639,28 +703,15 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
             if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
                 loc_amt += amt * (share / 100.0)
     else:
-        if not sector:
-            sector = '쇼핑몰' if is_shopping else None
-        if not sector:
-            raise ValueError('sector is required when locality_resolver is supplied')
-        resolver_row = dict(row)
-        resolver_row['sector'] = sector
-        resolver_row['_locality_selected_agency'] = matched_cd
-        eligibility_check = getattr(
-            locality_resolver, 'require_eligible_agency_codes', None
+        biz_nos, decisions = resolve_supplier_localities(
+            row,
+            inst_dict,
+            biznos,
+            locality_resolver,
+            sector,
+            matched_cd=matched_cd,
+            is_shopping=is_shopping,
         )
-        if eligibility_check is not None:
-            eligibility_check(inst_dict.keys())
-        aggregated = defaultdict(float)
-        for bno, share in biz_nos:
-            normalized = str(bno).replace('-', '').strip()
-            aggregated[normalized] += share
-        decisions = {}
-        for bno, share in sorted(aggregated.items()):
-            legacy_is_local = bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES)
-            decisions[bno] = locality_resolver.resolve(
-                resolver_row, bno, share, legacy_is_local
-            )
         for bno, share in biz_nos:
             normalized = str(bno).replace('-', '').strip()
             if decisions[normalized]:

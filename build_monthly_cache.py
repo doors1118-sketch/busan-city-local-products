@@ -15,7 +15,12 @@ from core_calc import (
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site,
     process_contract_row,
     load_bid_dict, load_award_sets, load_expanded_biznos,
-    BUSAN_BIZNO_PREFIXES,
+)
+from locality_rate_resolver import (
+    LocalityRateConfig,
+    LocalityResolverSet,
+    open_locality_resolvers,
+    read_locality_config,
 )
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -44,7 +49,39 @@ def is_valid_unit(unit):
     return str(unit).strip() not in ('', 'nan', 'None')
 
 
-def build_monthly():
+def _eligible_agency_codes():
+    with sqlite3.connect(DB_AGENCIES) as conn_ag:
+        return {
+            str(row[0]).strip()
+            for row in conn_ag.execute("SELECT dminsttCd FROM agency_master")
+            if str(row[0]).strip()
+        }
+
+
+def build_monthly(
+    *,
+    locality_config: LocalityRateConfig | None = None,
+    locality_resolvers: LocalityResolverSet | None = None,
+):
+    config = locality_config or read_locality_config()
+    if locality_resolvers is not None:
+        if locality_resolvers.config != config:
+            raise ValueError("locality resolver context does not match command configuration")
+        return _build_monthly(locality_resolvers)
+    if config.mode != 'legacy':
+        raise ValueError(
+            "shadow and snapshot cache builds require a shared generation resolver context"
+        )
+    with open_locality_resolvers(
+        DB_PROCUREMENT,
+        DB_COMPANIES,
+        config,
+        eligible_agency_codes=_eligible_agency_codes(),
+    ) as resolvers:
+        return _build_monthly(resolvers)
+
+
+def _build_monthly(locality_resolvers):
     start = time.time()
     print("[월별캐시] 시작...")
 
@@ -143,7 +180,7 @@ def build_monthly():
 
     # ── 공사 ──
     print("  [공사] 로딩...")
-    df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
+    df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
         corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate, cnstrtsiteRgnNm
         FROM cnstwk_cntrct""", conn)
     df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
@@ -154,7 +191,9 @@ def build_monthly():
         result = process_contract_row(row, inst_dict, biznos,
                                        use_location_filter=True,
                                        bid_dict=bid_dict,
-                                       award_set=award_sets['공사'])
+                                       award_set=award_sets['공사'],
+                                       sector='공사',
+                                       locality_resolver=locality_resolvers['공사'])
         if not result:
             continue
         cd, amt, loc = result
@@ -182,7 +221,7 @@ def build_monthly():
     for tbl, name, award_key in [('servc_cntrct', '용역', '용역'), ('thng_cntrct', '물품', '물품')]:
         print(f"  [{name}] 로딩...")
         extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
-        df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
+        df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
             corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate{extra_col}
             FROM [{tbl}]""", conn)
         df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
@@ -194,7 +233,9 @@ def build_monthly():
             result = process_contract_row(row, inst_dict, biznos,
                                            use_location_filter=True,
                                            bid_dict=bid_dict,
-                                           award_set=award_sets[award_key])
+                                           award_set=award_sets[award_key],
+                                           sector=name,
+                                           locality_resolver=locality_resolvers[name])
             if not result:
                 continue
             cd, amt, loc = result
@@ -229,7 +270,14 @@ def build_monthly():
     df, _, _ = filter_shopping_by_site(df, conn, set(inst_dict.keys()), inst_dict=inst_dict)
 
     for _, row in df.iterrows():
-        result = process_contract_row(row, inst_dict, biznos, is_shopping=True)
+        result = process_contract_row(
+            row,
+            inst_dict,
+            biznos,
+            is_shopping=True,
+            sector='쇼핑몰',
+            locality_resolver=locality_resolvers['쇼핑몰'],
+        )
         if not result:
             continue
         cd, amt, loc = result
@@ -588,12 +636,11 @@ def build_monthly():
                 기관별[unit]['분야별_월간'][sector] = calc_monthly(s_data, all_months)
     output['기관별'] = 기관별
 
-    # ── 저장 ──
-    with open(MONTHLY_CACHE, 'w', encoding='utf-8') as f:
-        json.dump(output, f, ensure_ascii=False, indent=1)
     sz = len(json.dumps(output, ensure_ascii=False)) / 1024 / 1024
-    print(f"[월별캐시] 완료! {MONTHLY_CACHE} ({sz:.1f}MB, {len(기관목록)}개 기관, {time.time()-start:.1f}초)")
+    print(f"[월별캐시] 계산 완료 ({sz:.1f}MB, {len(기관목록)}개 기관, {time.time()-start:.1f}초)")
+    return output
 
 
 if __name__ == '__main__':
-    build_monthly()
+    result = build_monthly()
+    print(f"[월별캐시] 미발행 미리보기: {len(result.get('기관별', {}))}개 기관")

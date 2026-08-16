@@ -14,12 +14,48 @@ from core_calc import (
     is_non_busan_contract, check_busan_restriction, process_contract_row,
     load_bid_dict, load_award_sets
 )
+from locality_rate_resolver import (
+    LocalityRateConfig,
+    LocalityResolverSet,
+    open_locality_resolvers,
+    read_locality_config,
+)
 
 DB_AGENCIES = 'busan_agencies_master.db'
 DB_COMPANIES = 'busan_companies_master.db'
 DB_PROCUREMENT = 'procurement_contracts.db'
 
-def generate_agency_excel(agency_name: str) -> io.BytesIO:
+def _eligible_agency_codes():
+    with sqlite3.connect(DB_AGENCIES) as conn_ag:
+        return {
+            str(row[0]).strip()
+            for row in conn_ag.execute("SELECT dminsttCd FROM agency_master")
+            if str(row[0]).strip()
+        }
+
+
+def generate_agency_excel(
+    agency_name: str,
+    *,
+    locality_config: LocalityRateConfig | None = None,
+    locality_resolvers: LocalityResolverSet | None = None,
+) -> io.BytesIO:
+    config = locality_config or read_locality_config()
+    if locality_resolvers is not None:
+        if locality_resolvers.config != config:
+            raise ValueError("locality resolver context does not match request configuration")
+        return _generate_agency_excel(agency_name, locality_resolvers)
+    with open_locality_resolvers(
+        DB_PROCUREMENT,
+        DB_COMPANIES,
+        config,
+        eligible_agency_codes=_eligible_agency_codes(),
+        read_only=True,
+    ) as resolvers:
+        return _generate_agency_excel(agency_name, resolvers)
+
+
+def _generate_agency_excel(agency_name: str, locality_resolvers) -> io.BytesIO:
     """특정 기관명(비교단위)이 포함된 모든 기관의 전체 계약내역 엑셀 생성 (BytesIO)"""
     
     # 1. 기관 코드 조회 (비교단위 기준 검색)
@@ -68,7 +104,9 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
                 is_shopping=is_shopping,
                 use_location_filter=True,
                 bid_dict=bid_dict,
-                award_set=award_set
+                award_set=award_set,
+                sector=sector_name,
+                locality_resolver=locality_resolvers[sector_name],
             )
             if not result:
                 continue
@@ -183,7 +221,7 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
     t0 = time.time()
     with open('log.txt', 'a') as f:
         f.write(f"공사 시작\n")
-    df_const = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM cnstwk_cntrct", conn_pr)
+    df_const = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM cnstwk_cntrct", conn_pr)
     df_const = pre_filter(df_const)
     df_const = core_calc.dedup_by_dcsn(df_const)
     df_const, _, _ = filter_cnstwk_by_site(df_const, bid_df)
@@ -201,7 +239,7 @@ def generate_agency_excel(agency_name: str) -> io.BytesIO:
     
     # 물품
     t0 = time.time()
-    df_thng = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM thng_cntrct", conn_pr)
+    df_thng = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM thng_cntrct", conn_pr)
     df_thng = pre_filter(df_thng)
     df_thng = core_calc.dedup_by_dcsn(df_thng)
     process_and_append(df_thng, "물품", award_set=award_sets['물품'])
