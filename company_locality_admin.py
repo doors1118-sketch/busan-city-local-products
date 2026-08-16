@@ -17,6 +17,7 @@ from maintenance_lock import (
     _set_write_fence_in_transaction,
     maintenance_lock,
     maintenance_write_permission,
+    require_locality_paths,
 )
 
 
@@ -281,20 +282,23 @@ def _run_transition(
     **options: Any,
 ) -> None:
     """Inspect closed database files, then open both connections under the shared lock."""
-    if paths.company_db_path is None or paths.procurement_db_path is None:
+    configured = require_locality_paths(paths)
+    if configured.company_db_path is None or configured.procurement_db_path is None:
         raise TransitionError("dual-database transitions require configured database paths")
-    assert_databases_quiesced((paths.company_db_path, paths.procurement_db_path), process_inspector)
-    with maintenance_lock(paths.maintenance_path, 5):
-        company_conn = connection_factory(paths.company_db_path)
-        procurement_conn = connection_factory(paths.procurement_db_path)
+    assert_databases_quiesced(
+        (configured.company_db_path, configured.procurement_db_path), process_inspector
+    )
+    with maintenance_lock(configured.maintenance_path, 5):
+        company_conn = connection_factory(configured.company_db_path)
+        procurement_conn = connection_factory(configured.procurement_db_path)
         try:
             operation(
                 company_conn,
                 procurement_conn,
-                maintenance_path=paths.maintenance_path,
-                journal_path=paths.journal_path,
-                marker_path=paths.marker_path,
-                pointer_path=paths.pointer_path,
+                maintenance_path=configured.maintenance_path,
+                journal_path=configured.journal_path,
+                marker_path=configured.marker_path,
+                pointer_path=configured.pointer_path,
                 process_inspector=process_inspector,
                 operator=operator,
                 reason=reason,

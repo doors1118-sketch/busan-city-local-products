@@ -1,6 +1,9 @@
 import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import textwrap
 import threading
 import unittest
 from pathlib import Path
@@ -331,6 +334,128 @@ class LocalityWriteTransitionTests(unittest.TestCase):
         recover_locality_transition(**self._call_arguments())
         self.assertTrue(self.marker_path.exists())
         self.assertEqual(self._activation_rows(), [0, 0])
+
+    def test_fresh_process_rejects_unconfigured_a_vs_b_partial_pause_bypass(self):
+        alternate_root = Path(self.tempdir.name) / "alternate"
+        alternate_root.mkdir()
+        alternate_procurement = alternate_root / "procurement.db"
+        source = sqlite3.connect(self.procurement_path)
+        target = sqlite3.connect(alternate_procurement)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        alternate_pointer = alternate_root / "active_locality_generation.json"
+        alternate_pointer.write_text('{"active_generation_id":null}', encoding="ascii")
+
+        script = textwrap.dedent(
+            """
+            import json
+            from pathlib import Path
+            import sqlite3
+            import sys
+
+            from company_locality import apply_company_changes
+            from company_locality_admin import pause_locality_writes
+            from maintenance_lock import LocalityPaths, WriteFenceError
+
+            company, procurement, root, alternate_procurement, alternate_root = map(Path, sys.argv[1:])
+            paths_a = LocalityPaths(
+                company,
+                procurement,
+                root / "maintenance.lock",
+                root / "transition.json",
+                root / "locality_writes_paused",
+                root / "active_locality_generation.json",
+            )
+            paths_b = LocalityPaths(
+                company,
+                alternate_procurement,
+                alternate_root / "maintenance.lock",
+                alternate_root / "transition.json",
+                alternate_root / "locality_writes_paused",
+                alternate_root / "active_locality_generation.json",
+            )
+            transition_blocked = False
+            partial_pause = False
+            try:
+                pause_locality_writes(
+                    paths_a,
+                    sqlite3.connect,
+                    process_inspector=lambda _path: [],
+                    operator="operator",
+                    reason="maintenance",
+                    fail_at="after_procurement_commit",
+                )
+            except WriteFenceError:
+                transition_blocked = True
+            except RuntimeError:
+                partial_pause = True
+
+            writer_blocked = False
+            connection = sqlite3.connect(company)
+            try:
+                apply_company_changes(
+                    connection,
+                    [{
+                        "bizno": "1234567890",
+                        "rgnNm": "\ubd80\uc0b0",
+                        "hdoffceDivNm": "\ubcf8\uc0ac",
+                        "chgDt": "202608160900",
+                    }],
+                    "20260816",
+                    "unconfigured-bypass",
+                    "2026-08-16 12:00:00+09:00",
+                    paths=paths_b,
+                )
+            except WriteFenceError:
+                writer_blocked = True
+            finally:
+                connection.close()
+
+            activation_rows = []
+            for path in (company, procurement):
+                connection = sqlite3.connect(path)
+                activation_rows.append(
+                    connection.execute(
+                        "SELECT writes_enabled FROM locality_activation_state WHERE singleton_id=1"
+                    ).fetchone()[0]
+                )
+                connection.close()
+            print(json.dumps({
+                "transition_blocked": transition_blocked,
+                "partial_pause": partial_pause,
+                "writer_blocked": writer_blocked,
+                "activation_rows": activation_rows,
+            }, sort_keys=True))
+            """
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(self.company_path),
+                str(self.procurement_path),
+                self.tempdir.name,
+                str(alternate_procurement),
+                str(alternate_root),
+            ],
+            cwd=Path(__file__).parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "activation_rows": [1, 1],
+                "partial_pause": False,
+                "transition_blocked": True,
+                "writer_blocked": True,
+            },
+        )
 
     def test_marker_last_crash_remains_recoverable_and_fenced(self):
         pause_locality_writes(**self._call_arguments())

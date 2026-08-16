@@ -94,13 +94,11 @@ def configure_locality_paths(paths: LocalityPaths) -> None:
 
 
 def require_locality_paths(paths: LocalityPaths | None = None) -> LocalityPaths:
-    if _deployed_paths is not None:
-        if paths is not None and paths != _deployed_paths:
-            raise WriteFenceError("supplied locality paths differ from the deployed configuration")
-        return _deployed_paths
-    if paths is None:
+    if _deployed_paths is None:
         raise WriteFenceError("a deployment-level LocalityPaths configuration is required")
-    return paths
+    if paths is not None and paths != _deployed_paths:
+        raise WriteFenceError("supplied locality paths differ from the deployed configuration")
+    return _deployed_paths
 
 
 def install_write_guard(conn: sqlite3.Connection) -> dict[str, int]:
