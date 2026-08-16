@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 import json
 import os
 from pathlib import Path
@@ -12,6 +12,7 @@ from typing import Any, Callable
 from company_locality import Resolution, resolve_company_conflict
 from locality_quiesce import assert_databases_quiesced, dual_exclusive_transition
 from maintenance_lock import (
+    LocalityPaths,
     _activation_row,
     _set_write_fence_in_transaction,
     maintenance_lock,
@@ -119,7 +120,7 @@ def _write_marker(marker_path: Path) -> None:
     _fsync_file(marker_path, b"locality writes paused\n")
 
 
-def pause_locality_writes(
+def _pause_locality_writes_open(
     company_conn: sqlite3.Connection,
     procurement_conn: sqlite3.Connection,
     *,
@@ -132,6 +133,8 @@ def pause_locality_writes(
     reason: str,
     first_snapshot: bool = False,
     fail_at: str | None = None,
+    _quiesced: bool = False,
+    _lock_held: bool = False,
 ) -> None:
     """Fsync a pause record and disable both writer rows under exclusive locks."""
     company_path = _database_path(company_conn)
@@ -139,8 +142,10 @@ def pause_locality_writes(
     journal = Path(journal_path)
     marker = Path(marker_path)
     pointer = Path(pointer_path)
-    assert_databases_quiesced((company_path, procurement_path), process_inspector)
-    with maintenance_lock(maintenance_path, 5):
+    if not _quiesced:
+        assert_databases_quiesced((company_path, procurement_path), process_inspector)
+    lock_context = nullcontext() if _lock_held else maintenance_lock(maintenance_path, 5)
+    with lock_context:
         generation_id = _pointer_generation(pointer)
         _activation_rows_agree(company_conn, procurement_conn, generation_id, writes_enabled=True)
         _write_journal(journal, operation="pause", generation_id=generation_id, operator=operator, reason=reason)
@@ -167,7 +172,7 @@ def pause_locality_writes(
         _activation_rows_agree(company_conn, procurement_conn, generation_id, writes_enabled=False)
 
 
-def resume_locality_writes(
+def _resume_locality_writes_open(
     company_conn: sqlite3.Connection,
     procurement_conn: sqlite3.Connection,
     *,
@@ -179,6 +184,8 @@ def resume_locality_writes(
     operator: str,
     reason: str,
     fail_at: str | None = None,
+    _quiesced: bool = False,
+    _lock_held: bool = False,
 ) -> None:
     """Enable verified peer rows, then remove the journal and marker in order."""
     company_path = _database_path(company_conn)
@@ -186,8 +193,10 @@ def resume_locality_writes(
     journal = Path(journal_path)
     marker = Path(marker_path)
     pointer = Path(pointer_path)
-    assert_databases_quiesced((company_path, procurement_path), process_inspector)
-    with maintenance_lock(maintenance_path, 5):
+    if not _quiesced:
+        assert_databases_quiesced((company_path, procurement_path), process_inspector)
+    lock_context = nullcontext() if _lock_held else maintenance_lock(maintenance_path, 5)
+    with lock_context:
         if not marker.exists() or not journal.exists():
             raise TransitionError("resume requires a durable paused transition")
         generation_id = _pointer_generation(pointer)
@@ -211,7 +220,7 @@ def resume_locality_writes(
         _remove_fsynced(marker)
 
 
-def recover_locality_transition(
+def _recover_locality_transition_open(
     company_conn: sqlite3.Connection,
     procurement_conn: sqlite3.Connection,
     *,
@@ -223,6 +232,8 @@ def recover_locality_transition(
     operator: str,
     reason: str,
     fail_at: str | None = None,
+    _quiesced: bool = False,
+    _lock_held: bool = False,
 ) -> None:
     """Reconcile both databases to the pointer while retaining the fail-closed marker."""
     company_path = _database_path(company_conn)
@@ -230,8 +241,10 @@ def recover_locality_transition(
     journal = Path(journal_path)
     marker = Path(marker_path)
     pointer = Path(pointer_path)
-    assert_databases_quiesced((company_path, procurement_path), process_inspector)
-    with maintenance_lock(maintenance_path, 5):
+    if not _quiesced:
+        assert_databases_quiesced((company_path, procurement_path), process_inspector)
+    lock_context = nullcontext() if _lock_held else maintenance_lock(maintenance_path, 5)
+    with lock_context:
         if not marker.exists():
             raise TransitionError("recovery requires a durable paused marker")
         generation_id = _pointer_generation(pointer)
@@ -255,6 +268,105 @@ def recover_locality_transition(
                 _set_write_fence_in_transaction(procurement_conn, False, operator, reason, active_generation_id=generation_id)
         _fail_if_requested(fail_at, "after_company_commit")
         _activation_rows_agree(company_conn, procurement_conn, generation_id, writes_enabled=False)
+
+
+def _run_transition(
+    operation: Callable[..., None],
+    paths: LocalityPaths,
+    connection_factory: Callable[[Path], sqlite3.Connection],
+    *,
+    process_inspector: Callable[[Path], list[object]],
+    operator: str,
+    reason: str,
+    **options: Any,
+) -> None:
+    """Inspect closed database files, then open both connections under the shared lock."""
+    if paths.company_db_path is None or paths.procurement_db_path is None:
+        raise TransitionError("dual-database transitions require configured database paths")
+    assert_databases_quiesced((paths.company_db_path, paths.procurement_db_path), process_inspector)
+    with maintenance_lock(paths.maintenance_path, 5):
+        company_conn = connection_factory(paths.company_db_path)
+        procurement_conn = connection_factory(paths.procurement_db_path)
+        try:
+            operation(
+                company_conn,
+                procurement_conn,
+                maintenance_path=paths.maintenance_path,
+                journal_path=paths.journal_path,
+                marker_path=paths.marker_path,
+                pointer_path=paths.pointer_path,
+                process_inspector=process_inspector,
+                operator=operator,
+                reason=reason,
+                _quiesced=True,
+                _lock_held=True,
+                **options,
+            )
+        finally:
+            procurement_conn.close()
+            company_conn.close()
+
+
+def pause_locality_writes(
+    paths: LocalityPaths,
+    connection_factory: Callable[[Path], sqlite3.Connection],
+    *,
+    process_inspector: Callable[[Path], list[object]],
+    operator: str,
+    reason: str,
+    first_snapshot: bool = False,
+    fail_at: str | None = None,
+) -> None:
+    _run_transition(
+        _pause_locality_writes_open,
+        paths,
+        connection_factory,
+        process_inspector=process_inspector,
+        operator=operator,
+        reason=reason,
+        first_snapshot=first_snapshot,
+        fail_at=fail_at,
+    )
+
+
+def resume_locality_writes(
+    paths: LocalityPaths,
+    connection_factory: Callable[[Path], sqlite3.Connection],
+    *,
+    process_inspector: Callable[[Path], list[object]],
+    operator: str,
+    reason: str,
+    fail_at: str | None = None,
+) -> None:
+    _run_transition(
+        _resume_locality_writes_open,
+        paths,
+        connection_factory,
+        process_inspector=process_inspector,
+        operator=operator,
+        reason=reason,
+        fail_at=fail_at,
+    )
+
+
+def recover_locality_transition(
+    paths: LocalityPaths,
+    connection_factory: Callable[[Path], sqlite3.Connection],
+    *,
+    process_inspector: Callable[[Path], list[object]],
+    operator: str,
+    reason: str,
+    fail_at: str | None = None,
+) -> None:
+    _run_transition(
+        _recover_locality_transition_open,
+        paths,
+        connection_factory,
+        process_inspector=process_inspector,
+        operator=operator,
+        reason=reason,
+        fail_at=fail_at,
+    )
 
 
 __all__ = [

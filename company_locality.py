@@ -209,6 +209,12 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             data_generation INTEGER NOT NULL,
             control_revision INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS company_locality_resolution_event (
+            event_id INTEGER PRIMARY KEY,
+            resolution_id INTEGER NOT NULL,
+            FOREIGN KEY(event_id) REFERENCES company_locality_event(id),
+            FOREIGN KEY(resolution_id) REFERENCES company_locality_resolution(id)
+        );
         """
     )
     conn.execute(
@@ -228,7 +234,29 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS company_locality_resolution_identity "
         "ON company_locality_resolution(resolution_key)"
     )
-    from maintenance_lock import install_write_guard
+    from maintenance_lock import install_write_guard, maintenance_write_permission
+
+    with maintenance_write_permission(conn):
+        for resolution_id, event_ids_json in conn.execute(
+            "SELECT id, event_ids_json FROM company_locality_resolution"
+        ):
+            try:
+                event_ids = json.loads(event_ids_json)
+            except (TypeError, json.JSONDecodeError) as error:
+                raise RuntimeError("stored locality resolution has invalid event ids") from error
+            if not isinstance(event_ids, list) or any(not isinstance(event_id, int) for event_id in event_ids):
+                raise RuntimeError("stored locality resolution has invalid event ids")
+            for event_id in event_ids:
+                bound = conn.execute(
+                    "SELECT resolution_id FROM company_locality_resolution_event WHERE event_id = ?", (event_id,)
+                ).fetchone()
+                if bound is not None and bound[0] != resolution_id:
+                    raise RuntimeError("stored locality resolutions select one event more than once")
+                if bound is None:
+                    conn.execute(
+                        "INSERT INTO company_locality_resolution_event (event_id, resolution_id) VALUES (?, ?)",
+                        (event_id, resolution_id),
+                    )
 
     install_write_guard(conn)
     _install_generation_triggers(conn)
@@ -236,7 +264,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
 
 def _install_generation_triggers(conn: sqlite3.Connection) -> None:
-    cache_input = ("company_locality_status", "company_locality_event", "company_locality_resolution")
+    cache_input = ("company_locality_status", "company_locality_event", "company_locality_resolution", "company_locality_resolution_event")
     control = (
         "company_sync_job_log",
         "company_sync_response_metric",
@@ -266,6 +294,7 @@ def _install_write_guards(conn: sqlite3.Connection) -> None:
         "company_locality_status",
         "company_locality_event",
         "company_locality_resolution",
+        "company_locality_resolution_event",
         "company_sync_job_log",
         "company_sync_response_metric",
         "locality_activation_state",
@@ -332,17 +361,36 @@ def _bootstrap_master_rows(conn: sqlite3.Connection, observed_at: str) -> None:
         )
 
 
-def ensure_locality_schema(conn: sqlite3.Connection) -> None:
+def ensure_locality_schema(conn: sqlite3.Connection, *, paths: Any = None) -> None:
     """Install locality tables and bootstrap any existing supplier master rows."""
-    from maintenance_lock import locality_paths, maintenance_lock, maintenance_write_permission
+    from maintenance_lock import maintenance_lock, maintenance_write_permission, require_locality_paths
 
+    configured = require_locality_paths(paths)
     owns_transaction = not conn.in_transaction
-    with maintenance_lock(locality_paths(conn).maintenance_path, 5):
+    with maintenance_lock(configured.maintenance_path, 5):
         _create_schema(conn)
         with maintenance_write_permission(conn):
             _bootstrap_master_rows(conn, _now())
         if owns_transaction:
             conn.commit()
+
+
+def _require_locality_schema(conn: sqlite3.Connection) -> None:
+    required = {
+        "company_locality_status",
+        "company_locality_event",
+        "company_locality_resolution",
+        "company_locality_resolution_event",
+    }
+    present = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (" + ", ".join("?" for _ in required) + ")",
+            tuple(required),
+        )
+    }
+    if present != required:
+        raise RuntimeError("locality schema has not been initialized")
 
 
 def _update_master(conn: sqlite3.Connection, item: Any, bizno: str) -> None:
@@ -426,11 +474,13 @@ def apply_company_changes(
     source_date: str,
     job_id: str,
     verified_at: str,
+    *,
+    paths: Any = None,
 ) -> ChangeSummary:
     """Apply a complete staged supplier batch in source-effective-time order."""
     from maintenance_lock import guarded_write_session
 
-    ensure_locality_schema(conn)
+    _require_locality_schema(conn)
     staged = []
     invalid = []
     for sequence, item in enumerate(items):
@@ -450,7 +500,7 @@ def apply_company_changes(
         )
         staged.append(record + (locality_hash, descriptive_hash))
     counts = {"received": len(staged) + len(invalid), "applied": 0, "duplicates": 0, "ignored": 0, "retrograde": 0, "conflicts": 0, "invalid": 0}
-    with guarded_write_session(conn):
+    with guarded_write_session(conn, paths=paths):
         for _, item, bizno, region, head_office, source_chg_dt, new_status, _, _ in invalid:
             if bizno:
                 _insert_event(
@@ -530,7 +580,7 @@ def apply_company_changes(
 
 
 def active_local_biznos(conn: sqlite3.Connection) -> set[str]:
-    ensure_locality_schema(conn)
+    _require_locality_schema(conn)
     return {
         row[0]
         for row in conn.execute(
@@ -540,7 +590,7 @@ def active_local_biznos(conn: sqlite3.Connection) -> set[str]:
 
 
 def status_at(conn: sqlite3.Connection, bizno: str, effective_at: str) -> str | None:
-    ensure_locality_schema(conn)
+    _require_locality_schema(conn)
     normalized = normalize_bizno(bizno)
     at, date_only = _parse_timestamp(effective_at, allow_date=True)
     if not normalized or at is None:
@@ -580,7 +630,14 @@ def status_at(conn: sqlite3.Connection, bizno: str, effective_at: str) -> str | 
         (normalized, point),
     ):
         candidates.append((row[0], 1, row[1]))
-    return max(candidates)[2] if candidates else None
+    if not candidates:
+        return None
+    latest_time = max(candidate[0] for candidate in candidates)
+    latest = [candidate for candidate in candidates if candidate[0] == latest_time]
+    if any(candidate[1] == 1 for candidate in latest):
+        latest = [candidate for candidate in latest if candidate[1] == 1]
+    latest_statuses = {candidate[2] for candidate in latest}
+    return next(iter(latest_statuses)) if len(latest_statuses) == 1 else None
 
 
 def resolve_company_conflict(
@@ -592,10 +649,12 @@ def resolve_company_conflict(
     reason: str,
     evidence: Any,
     generation_id: str = "manual",
+    *,
+    paths: Any = None,
 ) -> Resolution:
     from maintenance_lock import guarded_write_session
 
-    ensure_locality_schema(conn)
+    _require_locality_schema(conn)
     ordered_ids = sorted({int(event_id) for event_id in event_ids})
     if not ordered_ids or selected_status not in VALID_STATUSES:
         raise ValueError("a conflict selection and valid status are required")
@@ -608,7 +667,7 @@ def resolve_company_conflict(
         (event_ids_json, selected_status, canonical_effective, evidence_json, operator, reason, generation_id)
     )
     placeholders = ", ".join("?" for _ in ordered_ids)
-    with guarded_write_session(conn):
+    with guarded_write_session(conn, paths=paths):
         events = conn.execute(
             f"SELECT id, bizno FROM company_locality_event WHERE id IN ({placeholders}) "
             "AND disposition = 'quarantined_conflict'",
@@ -617,6 +676,19 @@ def resolve_company_conflict(
         if len(events) != len(ordered_ids) or len({row[1] for row in events}) != 1:
             raise ValueError("event_ids must name conflicts for one supplier")
         bizno = events[0][1]
+        mapped = conn.execute(
+            f"""
+            SELECT resolution_id, resolution_key
+            FROM company_locality_resolution_event AS binding
+            JOIN company_locality_resolution AS resolution ON resolution.id = binding.resolution_id
+            WHERE binding.event_id IN ({placeholders})
+            """,
+            ordered_ids,
+        ).fetchall()
+        if mapped:
+            if len(mapped) == len(ordered_ids) and len({row[0] for row in mapped}) == 1 and mapped[0][1] == resolution_key:
+                return Resolution(mapped[0][0], bizno, selected_status, canonical_effective)
+            raise ValueError("a quarantined event already has a different resolution")
         before = conn.execute(
             "SELECT status, source_effective_at FROM company_locality_status WHERE bizno = ?", (bizno,)
         ).fetchone()
@@ -639,6 +711,11 @@ def resolve_company_conflict(
         if existing is None:
             raise RuntimeError("resolution insert did not persist")
         if cursor.rowcount:
+            for event_id in ordered_ids:
+                conn.execute(
+                    "INSERT INTO company_locality_resolution_event (event_id, resolution_id) VALUES (?, ?)",
+                    (event_id, existing[0]),
+                )
             if before is None or before[1] <= canonical_effective:
                 reason_by_status = {
                     "active_local": None,
@@ -665,11 +742,11 @@ def resolve_company_conflict(
         return Resolution(existing[0], bizno, selected_status, canonical_effective)
 
 
-def start_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *, started_at: str | None = None, **metrics: Any) -> None:
+def start_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *, started_at: str | None = None, paths: Any = None, **metrics: Any) -> None:
     from maintenance_lock import guarded_write_session
 
-    ensure_locality_schema(conn)
-    with guarded_write_session(conn):
+    _require_locality_schema(conn)
+    with guarded_write_session(conn, paths=paths):
         conn.execute(
             """
             INSERT INTO company_sync_job_log (job_name, source_date, status, expected_rows, received_rows,
@@ -686,10 +763,10 @@ def start_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *,
         )
 
 
-def finish_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *, completed_at: str | None = None, **metrics: Any) -> None:
+def finish_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *, completed_at: str | None = None, paths: Any = None, **metrics: Any) -> None:
     from maintenance_lock import guarded_write_session
 
-    with guarded_write_session(conn):
+    with guarded_write_session(conn, paths=paths):
         conn.execute(
             "UPDATE company_sync_job_log SET status='success', completed_at=?, expected_rows=COALESCE(?, expected_rows), "
             "received_rows=COALESCE(?, received_rows), page_count=COALESCE(?, page_count) WHERE job_name=? AND source_date=?",
@@ -697,10 +774,10 @@ def finish_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *
         )
 
 
-def fail_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, error_detail: str, *, completed_at: str | None = None) -> None:
+def fail_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, error_detail: str, *, completed_at: str | None = None, paths: Any = None) -> None:
     from maintenance_lock import guarded_write_session
 
-    with guarded_write_session(conn):
+    with guarded_write_session(conn, paths=paths):
         conn.execute(
             "UPDATE company_sync_job_log SET status='failed', completed_at=?, error_detail=? WHERE job_name=? AND source_date=?",
             (completed_at or _now(), error_detail, job_name, source_date),

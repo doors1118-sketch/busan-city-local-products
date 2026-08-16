@@ -8,6 +8,7 @@ from pathlib import Path
 from company_locality import apply_company_changes, ensure_locality_schema
 from maintenance_lock import (
     CheckpointError,
+    LocalityPaths,
     WriteFenceError,
     checkpoint_wal,
     guarded_write_session,
@@ -16,6 +17,7 @@ from maintenance_lock import (
     read_data_generation,
     set_write_fence,
 )
+from maintenance_lock import configure_locality_paths
 
 
 class MaintenanceLockTests(unittest.TestCase):
@@ -23,9 +25,13 @@ class MaintenanceLockTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tempdir.name) / "company.db"
         self.lock_path = Path(self.tempdir.name) / "locks" / "maintenance.lock"
+        root = Path(self.tempdir.name)
+        self.paths = LocalityPaths(None, None, self.lock_path, root / "transition.json", root / "marker", root / "pointer.json")
+        configure_locality_paths(self.paths)
+        self.paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
         self.conn = sqlite3.connect(self.db_path)
         self.conn.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
-        ensure_locality_schema(self.conn)
+        ensure_locality_schema(self.conn, paths=self.paths)
 
     def tearDown(self):
         self.conn.close()
@@ -111,10 +117,16 @@ class MaintenanceLockTests(unittest.TestCase):
                 self.conn.execute("SELECT 1")
 
     def test_guarded_session_rejects_paused_marker_before_writing(self):
-        marker = Path(self.tempdir.name) / "locality_writes_paused"
+        marker = self.paths.marker_path
         marker.write_text("paused", encoding="ascii")
         with self.assertRaises(WriteFenceError):
-            with guarded_write_session(self.conn, marker_path=marker):
+                with guarded_write_session(self.conn, paths=self.paths):
+                    self.conn.execute("SELECT 1")
+
+    def test_no_peer_configuration_requires_a_durable_coordinator(self):
+        self.paths.pointer_path.unlink()
+        with self.assertRaises(WriteFenceError):
+            with guarded_write_session(self.conn, paths=self.paths):
                 self.conn.execute("SELECT 1")
 
     def test_protected_table_rejects_direct_writes_even_before_fencing(self):
@@ -134,4 +146,41 @@ class MaintenanceLockTests(unittest.TestCase):
                 "20260816",
                 "blocked",
                 "2026-08-16 12:00:00+09:00",
+            )
+
+    def test_writer_requires_explicit_writable_initialization(self):
+        uninitialized = sqlite3.connect(Path(self.tempdir.name) / "uninitialized.db")
+        try:
+            uninitialized.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+            with self.assertRaises(RuntimeError):
+                apply_company_changes(
+                    uninitialized,
+                    [{"bizno": "1234567890", "rgnNm": "부산", "hdoffceDivNm": "본사", "chgDt": "202608160900"}],
+                    "20260816",
+                    "requires-init",
+                    "2026-08-16 12:00:00+09:00",
+                )
+        finally:
+            uninitialized.close()
+
+    def test_writer_uses_the_deployed_coordination_paths_not_its_database_parent(self):
+        coordination = Path(self.tempdir.name) / "coordination"
+        paths = LocalityPaths(
+            company_db_path=self.db_path,
+            procurement_db_path=Path(self.tempdir.name) / "other-db" / "procurement.db",
+            maintenance_path=coordination / "maintenance.lock",
+            journal_path=coordination / "transition.json",
+            marker_path=coordination / "locality_writes_paused",
+            pointer_path=coordination / "active_locality_generation.json",
+        )
+        paths.marker_path.parent.mkdir(parents=True)
+        paths.marker_path.write_text("paused", encoding="ascii")
+        with self.assertRaises(WriteFenceError):
+            apply_company_changes(
+                self.conn,
+                [{"bizno": "1234567890", "rgnNm": "부산", "hdoffceDivNm": "본사", "chgDt": "202608160900"}],
+                "20260816",
+                "coordinator-fenced",
+                "2026-08-16 12:00:00+09:00",
+                paths=paths,
             )

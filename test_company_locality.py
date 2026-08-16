@@ -1,5 +1,7 @@
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
 from company_locality import (
     active_local_biznos,
@@ -7,6 +9,8 @@ from company_locality import (
     ensure_locality_schema,
     status_at,
 )
+from maintenance_lock import LocalityPaths
+from maintenance_lock import configure_locality_paths
 
 
 NOW = "2026-08-16 12:00:00+09:00"
@@ -26,6 +30,11 @@ def source_item(bizno, region, division, changed_at, **extra):
 
 class CompanyLocalityTransitionTests(unittest.TestCase):
     def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        root = Path(self.tempdir.name)
+        self.paths = LocalityPaths(None, None, root / "maintenance.lock", root / "transition.json", root / "marker", root / "pointer.json")
+        configure_locality_paths(self.paths)
+        self.paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
         self.conn = sqlite3.connect(":memory:")
         self.conn.execute(
             """
@@ -44,10 +53,11 @@ class CompanyLocalityTransitionTests(unittest.TestCase):
             ("1234567890", "Bootstrap", "부산광역시", "본사", "", "부산광역시"),
         )
         self.conn.commit()
-        ensure_locality_schema(self.conn)
+        ensure_locality_schema(self.conn, paths=self.paths)
 
     def tearDown(self):
         self.conn.close()
+        self.tempdir.cleanup()
 
     def test_existing_master_rows_bootstrap_as_current_local(self):
         row = self.conn.execute(
@@ -262,3 +272,25 @@ class CompanyLocalityTransitionTests(unittest.TestCase):
             "quarantined_conflict",
         )
         self.assertIsNone(status_at(self.conn, "1234567890", "2026-08-16 09:00:01"))
+
+    def test_status_lookup_is_safe_on_a_read_only_connection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "company.db"
+            writable = sqlite3.connect(path)
+            writable.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+            writable.execute("INSERT INTO company_master VALUES ('1234567890', '')")
+            ensure_locality_schema(writable)
+            apply_company_changes(
+                writable,
+                [source_item("1234567890", "경남", "본사", "202608160900")],
+                "20260816",
+                "readonly",
+                NOW,
+            )
+            writable.close()
+            readonly = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+            try:
+                self.assertEqual(status_at(readonly, "1234567890", "2026-08-16 09:00:01"), "moved_out")
+                self.assertEqual(active_local_biznos(readonly), set())
+            finally:
+                readonly.close()

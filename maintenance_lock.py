@@ -8,7 +8,6 @@ from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
-import tempfile
 import threading
 import time
 from typing import Any, Iterator
@@ -29,10 +28,30 @@ class CheckpointError(RuntimeError):
 
 @dataclass(frozen=True)
 class LocalityPaths:
+    company_db_path: Path | None
+    procurement_db_path: Path | None
     maintenance_path: Path
     journal_path: Path
     marker_path: Path
     pointer_path: Path
+
+    def __post_init__(self) -> None:
+        if (self.company_db_path is None) != (self.procurement_db_path is None):
+            raise ValueError("company and procurement database paths must be configured together")
+        for field in (
+            "company_db_path",
+            "procurement_db_path",
+            "maintenance_path",
+            "journal_path",
+            "marker_path",
+            "pointer_path",
+        ):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(self, field, Path(value).expanduser().resolve())
+
+
+_deployed_paths: LocalityPaths | None = None
 
 
 _thread_locks: dict[Path, threading.Lock] = {}
@@ -52,16 +71,17 @@ def _database_path(conn: sqlite3.Connection) -> Path | None:
     return None
 
 
-def locality_paths(conn: sqlite3.Connection) -> LocalityPaths:
-    """Derive the one shared transition path set for a database directory."""
-    database_path = _database_path(conn)
-    root = database_path.parent if database_path else Path(tempfile.gettempdir())
-    return LocalityPaths(
-        maintenance_path=root / "locality_maintenance.lock",
-        journal_path=root / "locality_transition.json",
-        marker_path=root / "locality_writes_paused",
-        pointer_path=root / "active_locality_generation.json",
-    )
+def configure_locality_paths(paths: LocalityPaths) -> None:
+    """Install the one deployment-level, fully resolved locality configuration."""
+    global _deployed_paths
+    _deployed_paths = paths
+
+
+def require_locality_paths(paths: LocalityPaths | None = None) -> LocalityPaths:
+    configured = paths or _deployed_paths
+    if configured is None:
+        raise WriteFenceError("a deployment-level LocalityPaths configuration is required")
+    return configured
 
 
 def install_write_guard(conn: sqlite3.Connection) -> dict[str, int]:
@@ -130,17 +150,34 @@ def _assert_writes_open(
     journal_path: Path,
     marker_path: Path,
     pointer_path: Path,
-    peer_conn: sqlite3.Connection | None,
+    paths: LocalityPaths,
 ) -> None:
     if journal_path.exists() or marker_path.exists():
         raise WriteFenceError("locality writes are paused")
     row = _activation_row(conn)
     if row is None or not row[0]:
         raise WriteFenceError("persisted locality write fence is closed")
-    if peer_conn is not None:
-        peer = _activation_row(peer_conn)
+    current_path = _database_path(conn)
+    peer_path = None
+    if current_path is not None and paths.company_db_path == current_path:
+        peer_path = paths.procurement_db_path
+    elif current_path is not None and paths.procurement_db_path == current_path:
+        peer_path = paths.company_db_path
+    elif paths.company_db_path is not None or paths.procurement_db_path is not None:
+        raise WriteFenceError("writer database is not part of the deployed locality configuration")
+    if peer_path is not None:
+        try:
+            peer_conn = sqlite3.connect(f"file:{peer_path.as_posix()}?mode=ro", uri=True)
+            peer = _activation_row(peer_conn)
+        except sqlite3.Error as error:
+            raise WriteFenceError("peer activation state is unavailable") from error
+        finally:
+            if "peer_conn" in locals():
+                peer_conn.close()
         if peer is None or not peer[0] or peer[1] != row[1]:
             raise WriteFenceError("locality activation rows disagree")
+    elif not pointer_path.exists():
+        raise WriteFenceError("a durable locality coordinator is required when no peer database is configured")
     if pointer_path.exists():
         try:
             pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
@@ -155,21 +192,17 @@ def _assert_writes_open(
 def guarded_write_session(
     conn: sqlite3.Connection,
     *,
-    journal_path: str | Path | None = None,
-    marker_path: str | Path | None = None,
-    pointer_path: str | Path | None = None,
-    peer_conn: sqlite3.Connection | None = None,
-    maintenance_path: str | Path | None = None,
+    paths: LocalityPaths | None = None,
     timeout_seconds: float = 5,
     acquire_lock: bool = True,
 ) -> Iterator[sqlite3.Connection]:
     """Open the only supported write path after fence and peer checks pass."""
     install_write_guard(conn)
-    defaults = locality_paths(conn)
-    resolved_journal = Path(journal_path) if journal_path is not None else defaults.journal_path
-    resolved_marker = Path(marker_path) if marker_path is not None else defaults.marker_path
-    resolved_pointer = Path(pointer_path) if pointer_path is not None else defaults.pointer_path
-    resolved_lock = Path(maintenance_path) if maintenance_path is not None else defaults.maintenance_path
+    configured = require_locality_paths(paths)
+    resolved_journal = configured.journal_path
+    resolved_marker = configured.marker_path
+    resolved_pointer = configured.pointer_path
+    resolved_lock = configured.maintenance_path
     lock_context = maintenance_lock(resolved_lock, timeout_seconds) if acquire_lock else nullcontext()
     with lock_context:
         _assert_writes_open(
@@ -177,7 +210,7 @@ def guarded_write_session(
             journal_path=resolved_journal,
             marker_path=resolved_marker,
             pointer_path=resolved_pointer,
-            peer_conn=peer_conn,
+            paths=configured,
         )
         started_transaction = not conn.in_transaction
         if started_transaction:
@@ -226,12 +259,14 @@ def set_write_fence(
     *,
     active_generation_id: str | None | object = _UNSET,
     ever_snapshot_activated: bool | None = None,
+    paths: LocalityPaths | None = None,
 ) -> None:
     """Single-database primitive; dual-database transitions use the admin command."""
-    from company_locality import ensure_locality_schema
+    from company_locality import _require_locality_schema
 
-    ensure_locality_schema(conn)
-    with maintenance_lock(locality_paths(conn).maintenance_path, 5):
+    configured = require_locality_paths(paths)
+    _require_locality_schema(conn)
+    with maintenance_lock(configured.maintenance_path, 5):
         conn.execute("BEGIN IMMEDIATE")
         try:
             with maintenance_write_permission(conn, fence_admin=True):
