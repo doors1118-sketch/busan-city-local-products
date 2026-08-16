@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 import sqlite3
-from typing import Any, Iterable, Mapping
+from typing import Any, Collection, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from company_locality import normalize_bizno, status_at
@@ -325,6 +325,8 @@ def create_baseline_manifest(
     conn: sqlite3.Connection,
     canonical_rows: Iterable[CanonicalContract],
     baseline_id: str,
+    *,
+    eligible_agency_codes: Collection[str] | None = None,
 ) -> BaselineManifest:
     """Persist immutable canonical expectations and mark exact coverage complete or failed."""
     from maintenance_lock import guarded_write_session
@@ -388,7 +390,11 @@ def create_baseline_manifest(
                 baseline_id,
             ),
         )
-    coverage = verify_baseline_manifest(conn, baseline_id)
+    coverage = verify_baseline_manifest(
+        conn,
+        baseline_id,
+        eligible_agency_codes=eligible_agency_codes,
+    )
     with guarded_write_session(conn):
         conn.execute(
             "UPDATE locality_baseline_manifest SET status=? WHERE baseline_id=?",
@@ -400,7 +406,12 @@ def create_baseline_manifest(
     return manifest
 
 
-def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> BaselineCoverage:
+def verify_baseline_manifest(
+    conn: sqlite3.Connection,
+    baseline_id: str,
+    *,
+    eligible_agency_codes: Collection[str] | None = None,
+) -> BaselineCoverage:
     manifest = _manifest_row(conn, baseline_id)
     if manifest is None:
         raise KeyError(f"unknown baseline manifest: {baseline_id}")
@@ -436,10 +447,19 @@ def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> Base
     source_contracts: dict[tuple[str, str, str], tuple[int, str]] = {}
     source_suppliers: dict[tuple[str, str, str, str], int] = {}
     populated_sectors: set[str] = set()
-    source_enumeration_valid = True
+    source_enumeration_valid = eligible_agency_codes is not None
     for sector in REQUIRED_SECTORS:
+        if eligible_agency_codes is None:
+            continue
         try:
-            rows = list(iter_canonical_contracts(conn, sector, (None, manifest.cutover_at)))
+            rows = list(
+                iter_canonical_contracts(
+                    conn,
+                    sector,
+                    (None, manifest.cutover_at),
+                    eligible_agency_codes=eligible_agency_codes,
+                )
+            )
         except (sqlite3.Error, RuntimeError, ValueError):
             source_enumeration_valid = False
             continue
@@ -595,6 +615,7 @@ class SnapshotResolver:
         now: str | None = None,
         cutover_at: str,
         generation_id: str = "unassigned",
+        eligible_agency_codes: Collection[str] | None = None,
     ) -> None:
         if mode not in VALID_MODES:
             raise ValueError("locality mode must be legacy, shadow, or snapshot")
@@ -608,7 +629,9 @@ class SnapshotResolver:
         self.cutover_at = cutover_at
         self._cutover = cutover
         self.generation_id = generation_id
+        self.eligible_agency_codes = eligible_agency_codes
         self._pending: dict[tuple[str, str, str, str], _SnapshotCandidate] = {}
+        self._validated_baselines: dict[str, tuple[int, BaselineManifest]] = {}
 
     def _contract(self, row: CanonicalContract | Mapping[str, Any]) -> CanonicalContract:
         if isinstance(row, CanonicalContract):
@@ -616,7 +639,11 @@ class SnapshotResolver:
         sector = row.get("sector") or row.get("_locality_sector")
         if not sector:
             raise ValueError("sector is required for locality snapshot resolution")
-        return canonical_contract_from_row(row, str(sector))
+        return canonical_contract_from_row(
+            row,
+            str(sector),
+            eligible_agency_codes=self.eligible_agency_codes,
+        )
 
     @staticmethod
     def _key(contract: CanonicalContract, bizno: str) -> tuple[str, str, str, str]:
@@ -657,8 +684,6 @@ class SnapshotResolver:
         manifest = _manifest_row(self.procurement_conn, baseline_id)
         if manifest is None or manifest.status != "complete":
             raise MissingHistoricalSnapshot("pre-cutover snapshot baseline is not complete")
-        if not verify_baseline_manifest(self.procurement_conn, baseline_id).complete:
-            raise MissingHistoricalSnapshot("pre-cutover snapshot baseline coverage is invalid")
         manifest_cutover, manifest_date_only = _parse_at(manifest.cutover_at)
         if (
             manifest.classifier_version != CLASSIFIER_VERSION
@@ -669,6 +694,7 @@ class SnapshotResolver:
             or manifest.cache_generation_id != existing[5]
         ):
             raise MissingHistoricalSnapshot("pre-cutover snapshot baseline metadata is invalid")
+        self._validate_baseline_once(baseline_id, manifest)
         expected_contract = self.procurement_conn.execute(
             """
             SELECT amount_won, content_fingerprint
@@ -693,6 +719,49 @@ class SnapshotResolver:
             or existing[2] != "legacy_baseline_v1"
         ):
             raise MissingHistoricalSnapshot("pre-cutover snapshot is not an owned baseline member")
+
+    def _validate_baseline_once(
+        self,
+        baseline_id: str,
+        manifest: BaselineManifest,
+    ) -> None:
+        from maintenance_lock import read_data_generation
+
+        source_generation = read_data_generation(self.procurement_conn)
+        cached = self._validated_baselines.get(baseline_id)
+        if cached is not None:
+            if cached[0] != source_generation:
+                raise MissingHistoricalSnapshot(
+                    "source data generation drifted during snapshot resolution"
+                )
+            if cached[1] != manifest:
+                raise MissingHistoricalSnapshot(
+                    "baseline manifest drifted during snapshot resolution"
+                )
+            return
+        if self.eligible_agency_codes is None:
+            raise MissingHistoricalSnapshot(
+                "historical baseline validation requires eligible agency codes"
+            )
+        coverage = verify_baseline_manifest(
+            self.procurement_conn,
+            baseline_id,
+            eligible_agency_codes=self.eligible_agency_codes,
+        )
+        if read_data_generation(self.procurement_conn) != source_generation:
+            raise MissingHistoricalSnapshot(
+                "source data generation drifted during baseline validation"
+            )
+        current_manifest = _manifest_row(self.procurement_conn, baseline_id)
+        if current_manifest != manifest:
+            raise MissingHistoricalSnapshot(
+                "baseline manifest drifted during baseline validation"
+            )
+        if not coverage.complete:
+            raise MissingHistoricalSnapshot(
+                "pre-cutover snapshot baseline coverage is invalid"
+            )
+        self._validated_baselines[baseline_id] = (source_generation, manifest)
 
     def _stage(
         self,

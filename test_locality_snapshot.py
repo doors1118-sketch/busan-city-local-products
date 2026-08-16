@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from company_locality import apply_company_changes, ensure_locality_schema
 from contract_population import (
@@ -16,9 +17,9 @@ from locality_snapshot import (
     SnapshotContentMismatch,
     SnapshotResolver,
     UnknownLocality,
-    create_baseline_manifest,
+    create_baseline_manifest as _create_baseline_manifest,
     ensure_snapshot_schema,
-    verify_baseline_manifest,
+    verify_baseline_manifest as _verify_baseline_manifest,
 )
 from maintenance_lock import (
     LocalityPaths,
@@ -33,6 +34,24 @@ NOW = "2026-08-16 12:00:00+09:00"
 CUTOVER = "2026-08-16 10:00:00+09:00"
 BASELINE_ID = "baseline-v1"
 REQUIRED_SECTORS = ("공사", "용역", "물품", "쇼핑몰")
+ELIGIBLE_AGENCY_CODES = frozenset({"A1"})
+
+
+def create_baseline_manifest(conn, rows, baseline_id):
+    return _create_baseline_manifest(
+        conn,
+        rows,
+        baseline_id,
+        eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
+    )
+
+
+def verify_baseline_manifest(conn, baseline_id):
+    return _verify_baseline_manifest(
+        conn,
+        baseline_id,
+        eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
+    )
 
 
 def corp_entry(bizno, share):
@@ -113,7 +132,11 @@ def current_canonical_source(conn):
     return [
         row
         for sector in REQUIRED_SECTORS
-        for row in iter_canonical_contracts(conn, sector)
+        for row in iter_canonical_contracts(
+            conn,
+            sector,
+            eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
+        )
     ]
 
 
@@ -178,6 +201,7 @@ class SnapshotTestCase(unittest.TestCase):
             now=NOW,
             cutover_at=CUTOVER,
             generation_id=kwargs.pop("generation_id", "generation-1"),
+            eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
             **kwargs,
         )
 
@@ -254,6 +278,62 @@ class SnapshotResolverTests(SnapshotTestCase):
 
         with self.assertRaisesRegex(MissingHistoricalSnapshot, "coverage|baseline"):
             self.resolver().resolve(historical, "1234567890", 100.0, True)
+
+    def test_repeated_historical_resolves_validate_all_sectors_once(self):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+
+        with patch(
+            "locality_snapshot.iter_canonical_contracts",
+            wraps=iter_canonical_contracts,
+        ) as canonical_scan:
+            self.assertTrue(
+                resolver.resolve(historical, "1234567890", 100.0, True)
+            )
+            self.assertTrue(
+                resolver.resolve(historical, "1234567890", 100.0, True)
+            )
+
+        self.assertEqual(canonical_scan.call_count, 4)
+
+    def test_source_generation_drift_invalidates_cached_validation_without_rescan(self):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+
+        with patch(
+            "locality_snapshot.iter_canonical_contracts",
+            wraps=iter_canonical_contracts,
+        ) as canonical_scan:
+            resolver.resolve(historical, "1234567890", 100.0, True)
+            with maintenance_write_permission(self.proc_conn):
+                self.proc_conn.execute(
+                    "UPDATE locality_generation_clock "
+                    "SET data_generation=data_generation+1 WHERE singleton_id=1"
+                )
+            with self.assertRaisesRegex(MissingHistoricalSnapshot, "generation|drift"):
+                resolver.resolve(historical, "1234567890", 100.0, True)
+
+        self.assertEqual(canonical_scan.call_count, 4)
+
+    def test_manifest_drift_invalidates_cached_validation_without_rescan(self):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+
+        with patch(
+            "locality_snapshot.iter_canonical_contracts",
+            wraps=iter_canonical_contracts,
+        ) as canonical_scan:
+            resolver.resolve(historical, "1234567890", 100.0, True)
+            with maintenance_write_permission(self.proc_conn):
+                self.proc_conn.execute(
+                    "UPDATE locality_baseline_manifest "
+                    "SET manifest_fingerprint='changed' WHERE baseline_id=?",
+                    (BASELINE_ID,),
+                )
+            with self.assertRaisesRegex(MissingHistoricalSnapshot, "manifest|metadata|drift"):
+                resolver.resolve(historical, "1234567890", 100.0, True)
+
+        self.assertEqual(canonical_scan.call_count, 4)
 
     def test_snapshot_rejects_invalid_complete_manifest_metadata(self):
         historical = self.complete_source_baseline()
@@ -586,6 +666,103 @@ class BaselineManifestTests(SnapshotTestCase):
         coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
 
         self.assertFalse(coverage.complete)
+
+    def test_historical_baseline_fingerprints_first_eligible_agency_candidate(self):
+        create_contract_source_tables(self.proc_conn)
+        insert_required_sector_source(self.proc_conn)
+        self.proc_conn.execute(
+            "UPDATE cnstwk_cntrct "
+            "SET dminsttCd='UNKNOWN', dminsttList='[1^A1^Agency^x]'"
+        )
+        rows = current_canonical_source(self.proc_conn)
+        construction = next(row for row in rows if row.sector == "공사")
+        resolver = self.resolver(mode="shadow")
+        for row in rows:
+            for supplier in row.suppliers:
+                resolver.seed(
+                    row,
+                    supplier.bizno,
+                    supplier.share_pct,
+                    True,
+                    "legacy_baseline_v1",
+                    BASELINE_ID,
+                )
+        resolver.flush()
+
+        manifest = create_baseline_manifest(self.proc_conn, rows, BASELINE_ID)
+
+        self.assertEqual(construction.agency, "A1")
+        self.assertEqual(manifest.status, "complete")
+        self.assertTrue(verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete)
+
+    def test_historical_baseline_without_eligible_agencies_fails_closed(self):
+        create_contract_source_tables(self.proc_conn)
+        insert_required_sector_source(self.proc_conn)
+        rows = [
+            row
+            for sector in REQUIRED_SECTORS
+            for row in iter_canonical_contracts(self.proc_conn, sector)
+        ]
+        resolver = self.resolver(mode="shadow")
+        for row in rows:
+            for supplier in row.suppliers:
+                resolver.seed(
+                    row,
+                    supplier.bizno,
+                    supplier.share_pct,
+                    True,
+                    "legacy_baseline_v1",
+                    BASELINE_ID,
+                )
+        resolver.flush()
+
+        manifest = _create_baseline_manifest(self.proc_conn, rows, BASELINE_ID)
+
+        self.assertEqual(manifest.status, "failed")
+
+    def test_same_day_post_cutover_new_family_does_not_change_historical_baseline(self):
+        self.build_source_baseline()
+        self.proc_conn.execute(
+            "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "UNTY-LATE",
+                "LATE-000100",
+                "A1",
+                "",
+                "C1",
+                999,
+                0,
+                corp_entry("1234567890", "100"),
+                "2026-08-16T11:00:00+09:00",
+                "2026-08-16",
+                "",
+                "",
+            ),
+        )
+
+        self.assertTrue(verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete)
+
+    def test_same_day_post_cutover_revision_does_not_displace_historical_revision(self):
+        self.build_source_baseline()
+        self.proc_conn.execute(
+            "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "UNTY-공사",
+                "CONST-000101",
+                "A1",
+                "",
+                "C1",
+                999,
+                0,
+                corp_entry("1234567890", "100"),
+                "2026-08-16T11:00:00+09:00",
+                "2026-08-16",
+                "",
+                "",
+            ),
+        )
+
+        self.assertTrue(verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete)
 
     def test_manifest_verification_rejects_exact_source_dimension_drift(self):
         self.build_source_baseline()

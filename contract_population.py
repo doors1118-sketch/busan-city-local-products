@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from typing import Any, Iterator, Mapping
+from typing import Any, Collection, Iterator, Mapping
 from zoneinfo import ZoneInfo
 
 
@@ -48,6 +48,10 @@ class MissingSupplierIdentity(CanonicalContractError):
 
 
 class MissingGoverningDate(CanonicalContractError):
+    pass
+
+
+class MissingAgencyIdentity(CanonicalContractError):
     pass
 
 
@@ -197,6 +201,20 @@ def agency_code_candidates(row: Mapping[str, Any], shopping: bool = False) -> tu
     return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
+def select_agency_code(
+    row: Mapping[str, Any],
+    shopping: bool = False,
+    eligible_agency_codes: Collection[str] | None = None,
+) -> str | None:
+    candidates = agency_code_candidates(row, shopping)
+    if eligible_agency_codes is None:
+        return candidates[0] if candidates else None
+    return next(
+        (candidate for candidate in candidates if candidate in eligible_agency_codes),
+        None,
+    )
+
+
 def _supplier_chunks(raw: str, sector: str) -> Iterator[list[str]]:
     offset = 0
     while offset < len(raw):
@@ -269,7 +287,12 @@ def _shopping_revision(value: Any) -> str:
     return str(int(integral))
 
 
-def canonical_contract_from_row(row: Mapping[str, Any], sector: str) -> CanonicalContract:
+def canonical_contract_from_row(
+    row: Mapping[str, Any],
+    sector: str,
+    *,
+    eligible_agency_codes: Collection[str] | None = None,
+) -> CanonicalContract:
     try:
         canonical_sector, _, shopping = _SECTORS[_text(sector).lower() if _text(sector).isascii() else _text(sector)]
     except KeyError as error:
@@ -295,7 +318,12 @@ def canonical_contract_from_row(row: Mapping[str, Any], sector: str) -> Canonica
             revision = ""
         if not contract_key:
             raise MissingContractIdentity(f"{canonical_sector} contract has no canonical contract key")
-    agency = normalize_contract_key(_first_text(*agency_code_candidates(values, shopping)))
+    selected_agency = select_agency_code(values, shopping, eligible_agency_codes)
+    if eligible_agency_codes is not None and not selected_agency:
+        raise MissingAgencyIdentity(
+            f"{canonical_sector} contract has no eligible agency code"
+        )
+    agency = normalize_contract_key(selected_agency)
     contract_date = _governing_date(values, shopping)
     suppliers = _parse_suppliers(values, shopping, canonical_sector)
     source_order = tuple(
@@ -334,23 +362,55 @@ def _revision_rank(revision: str) -> tuple[int, int | str]:
     return (1, int(revision)) if revision.isdigit() else (0, revision)
 
 
+def _date_value(value: Any) -> tuple[datetime | None, bool]:
+    normalized = _normalize_date(value)
+    if not normalized:
+        return None, False
+    if len(normalized) == 10:
+        return datetime.strptime(normalized, "%Y-%m-%d").replace(tzinfo=SEOUL), True
+    return datetime.fromisoformat(normalized).astimezone(SEOUL), False
+
+
 def _in_date_range(contract_date: str, date_range: tuple[Any, Any] | None) -> bool:
     if date_range is None:
         return True
     if len(date_range) != 2:
         raise ValueError("date_range must contain inclusive start and end values")
-    if not contract_date:
+    contract_at, contract_date_only = _date_value(contract_date)
+    if contract_at is None:
         return False
-    day = contract_date[:10]
-    start = _normalize_date(date_range[0])[:10]
-    end = _normalize_date(date_range[1])[:10]
-    return (not start or day >= start) and (not end or day <= end)
+    for bound_value, is_start in ((date_range[0], True), (date_range[1], False)):
+        bound_at, bound_date_only = _date_value(bound_value)
+        if bound_at is None:
+            continue
+        if contract_date_only and not bound_date_only:
+            if contract_at.date() == bound_at.date():
+                raise CanonicalContractError(
+                    "date-only governing date is ambiguous at a timed cutoff"
+                )
+            if is_start and contract_at.date() < bound_at.date():
+                return False
+            if not is_start and contract_at.date() > bound_at.date():
+                return False
+            continue
+        if bound_date_only:
+            if is_start and contract_at.date() < bound_at.date():
+                return False
+            if not is_start and contract_at.date() > bound_at.date():
+                return False
+        elif is_start and contract_at < bound_at:
+            return False
+        elif not is_start and contract_at > bound_at:
+            return False
+    return True
 
 
 def iter_canonical_contracts(
     conn: sqlite3.Connection,
     sector: str,
     date_range: tuple[Any, Any] | None = None,
+    *,
+    eligible_agency_codes: Collection[str] | None = None,
 ) -> Iterator[CanonicalContract]:
     """Yield the one latest, collision-free canonical revision per contract family."""
     key = _text(sector)
@@ -363,7 +423,11 @@ def iter_canonical_contracts(
     columns = [description[0] for description in cursor.description]
     by_identity: dict[tuple[str, str, str], list[CanonicalContract]] = {}
     for source in cursor:
-        contract = canonical_contract_from_row(dict(zip(columns, source)), canonical_sector)
+        contract = canonical_contract_from_row(
+            dict(zip(columns, source)),
+            canonical_sector,
+            eligible_agency_codes=eligible_agency_codes,
+        )
         if not _in_date_range(contract.contract_date, date_range):
             continue
         by_identity.setdefault(contract.identity, []).append(contract)

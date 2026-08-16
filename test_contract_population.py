@@ -11,6 +11,7 @@ from contract_population import (
     content_fingerprint,
     iter_canonical_contracts,
 )
+from core_calc import process_contract_row
 
 
 def corp_entry(bizno, share):
@@ -227,6 +228,68 @@ class CanonicalContractPopulationTests(unittest.TestCase):
 
         self.assertEqual(row.agency, "D200")
 
+    def test_canonical_and_calculation_choose_first_eligible_agency_candidate(self):
+        source = {
+            "untyCntrctNo": "U-1",
+            "dcsnCntrctNo": "DEC-000100",
+            "dminsttCd": "UNKNOWN",
+            "dminsttList": "[1^VALID^Agency^x]",
+            "cntrctInsttCd": "FALLBACK",
+            "thtmCntrctAmt": 100,
+            "corpList": corp_entry("1234567890", "100"),
+            "cntrctCnclsDate": "2026-08-01",
+        }
+        agencies = {"VALID": {"cate_lrg": "group"}}
+
+        canonical = canonical_contract_from_row(
+            source, "용역", eligible_agency_codes=agencies
+        )
+        calculated = process_contract_row(source, agencies, {"1234567890"})
+
+        self.assertEqual(canonical.agency, "VALID")
+        self.assertEqual(calculated[0], canonical.agency)
+
+    def test_eligible_agency_selection_covers_realistic_source_variants(self):
+        fixtures = (
+            ("UNKNOWN", "[Demand Agency^LIST-1]", "CONTRACT-1", {"LIST-1"}, "LIST1"),
+            ("PRIMARY-2", "[Demand Agency^LIST-2]", "CONTRACT-2", {"PRIMARY-2", "LIST-2"}, "PRIMARY2"),
+            ("UNKNOWN", "", "CONTRACT-3", {"CONTRACT-3"}, "CONTRACT3"),
+        )
+        for primary, demand_list, contracting, eligible, expected in fixtures:
+            with self.subTest(expected=expected):
+                row = canonical_contract_from_row(
+                    {
+                        "untyCntrctNo": "U-1",
+                        "dcsnCntrctNo": "DEC-000100",
+                        "dminsttCd": primary,
+                        "dminsttList": demand_list,
+                        "cntrctInsttCd": contracting,
+                        "thtmCntrctAmt": 100,
+                        "corpList": corp_entry("1234567890", "100"),
+                        "cntrctCnclsDate": "2026-08-01",
+                    },
+                    "용역",
+                    eligible_agency_codes=eligible,
+                )
+                self.assertEqual(row.agency, expected)
+
+    def test_calculation_returns_none_when_no_agency_candidate_is_eligible(self):
+        source = {
+            "dminsttCd": "UNKNOWN",
+            "dminsttList": "[1^ALSO-UNKNOWN^Agency^x]",
+            "cntrctInsttCd": "FALLBACK",
+            "thtmCntrctAmt": 100,
+            "corpList": corp_entry("1234567890", "100"),
+        }
+
+        self.assertIsNone(
+            process_contract_row(
+                source,
+                {"VALID": {"cate_lrg": "group"}},
+                {"1234567890"},
+            )
+        )
+
     def test_representative_central_and_self_procured_rows_cover_all_four_sectors(self):
         fixtures = (
             (
@@ -371,6 +434,59 @@ class CanonicalContractPopulationTests(unittest.TestCase):
 
         self.assertEqual([row.contract_key for row in construction], ["NEW0001"])
         self.assertEqual([row.contract_key for row in shopping], ["DLVR1:1"])
+
+    def test_exact_cutoff_excludes_same_day_post_cutover_new_family(self):
+        self.insert_non_shopping(
+            dcsn="EARLY-000100", contract_date="2026-08-16T09:00:00+09:00"
+        )
+        self.insert_non_shopping(
+            dcsn="LATE-000100", contract_date="2026-08-16T11:00:00+09:00"
+        )
+
+        rows = list(
+            iter_canonical_contracts(
+                self.conn,
+                "공사",
+                (None, "2026-08-16T10:00:00+09:00"),
+            )
+        )
+
+        self.assertEqual([row.contract_key for row in rows], ["EARLY0001"])
+
+    def test_exact_cutoff_selects_pre_cutover_revision_before_later_revision(self):
+        self.insert_non_shopping(
+            dcsn="FAMILY-000100", amount=100, contract_date="2026-08-16T09:00:00+09:00"
+        )
+        self.insert_non_shopping(
+            dcsn="FAMILY-000101", amount=200, contract_date="2026-08-16T11:00:00+09:00"
+        )
+
+        rows = list(
+            iter_canonical_contracts(
+                self.conn,
+                "공사",
+                (None, "2026-08-16T10:00:00+09:00"),
+            )
+        )
+
+        self.assertEqual(
+            [(row.contract_revision, row.amount_won) for row in rows],
+            [("00", 100)],
+        )
+
+    def test_date_only_contract_on_timed_cutoff_day_fails_closed(self):
+        self.insert_non_shopping(
+            dcsn="AMBIG-000100", contract_date="2026-08-16"
+        )
+
+        with self.assertRaisesRegex(CanonicalContractError, "date-only|cutoff"):
+            list(
+                iter_canonical_contracts(
+                    self.conn,
+                    "공사",
+                    (None, "2026-08-16T10:00:00+09:00"),
+                )
+            )
 
 
 if __name__ == "__main__":

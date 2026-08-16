@@ -12,7 +12,7 @@ import os
 import re
 from collections import defaultdict
 
-from contract_population import agency_code_candidates
+from contract_population import select_agency_code
 
 # ============================================================
 # 1. 상수
@@ -605,11 +605,7 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         if np.isnan(amt): amt = 0
         biz_nos = parse_corp_shares(row.get('corpList', ''))
 
-    matched_cd = None
-    for candidate in agency_code_candidates(row, is_shopping):
-        if candidate in inst_dict:
-            matched_cd = candidate
-            break
+    matched_cd = select_agency_code(row, is_shopping, inst_dict)
             
     if matched_cd is None:
         return None
