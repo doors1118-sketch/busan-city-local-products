@@ -275,20 +275,11 @@ class SnapshotResolverTests(SnapshotTestCase):
         self.assertEqual(canonical_scan.call_count, 0)
 
     def source_refresh_state(self):
-        source_tables = (
-            "cnstwk_cntrct",
-            "servc_cntrct",
-            "thng_cntrct",
-            "shopping_cntrct",
-        )
-        placeholders = ",".join("?" for _ in source_tables)
         return {
             "schema": self.proc_conn.execute(
-                f"SELECT type, name, tbl_name, sql FROM sqlite_master "
-                f"WHERE name IN ({placeholders}) OR "
-                f"(type='trigger' AND tbl_name IN ({placeholders})) "
-                "ORDER BY type, name",
-                (*source_tables, *source_tables),
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "WHERE type IN ('table','index','view','trigger') "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY type, name"
             ).fetchall(),
             "construction": self.proc_conn.execute(
                 "SELECT * FROM cnstwk_cntrct ORDER BY rowid"
@@ -932,6 +923,190 @@ class SnapshotResolverTests(SnapshotTestCase):
             self.resolver().resolve(historical, "1234567890", 100.0, True)
         )
 
+    def test_source_schema_plan_rejects_escaped_rename_destination_atomically(self):
+        self.complete_source_baseline()
+        before = self.source_refresh_state()
+        original_sql = self.proc_conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='cnstwk_cntrct'"
+        ).fetchone()[0]
+        original_row = self.proc_conn.execute(
+            "SELECT * FROM cnstwk_cntrct"
+        ).fetchone()
+
+        def escaped_replacement(plan):
+            plan.execute(
+                "ALTER TABLE cnstwk_cntrct RENAME TO escaped_source_copy"
+            )
+            plan.execute(original_sql)
+            plan.execute(
+                "INSERT INTO cnstwk_cntrct "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                original_row,
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "destination is not approved"):
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-escaped-rename",
+                reason="reject unapproved rename residue",
+                replace=escaped_replacement,
+            )
+
+        self.assertEqual(self.source_refresh_state(), before)
+        self.assertIsNone(
+            self.proc_conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='escaped_source_copy'"
+            ).fetchone()
+        )
+
+    def test_source_schema_refresh_rejects_indirect_view_schema_rewrite(self):
+        create_contract_source_tables(self.proc_conn)
+        self.proc_conn.execute(
+            "CREATE VIEW construction_amounts AS "
+            "SELECT thtmCntrctAmt FROM cnstwk_cntrct"
+        )
+        self.complete_source_baseline()
+        before = self.source_refresh_state()
+        original_sql = self.proc_conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='cnstwk_cntrct'"
+        ).fetchone()[0]
+        original_row = self.proc_conn.execute(
+            "SELECT * FROM cnstwk_cntrct"
+        ).fetchone()
+
+        def view_rewriting_plan(plan):
+            plan.execute(
+                "ALTER TABLE cnstwk_cntrct RENAME TO busan_award_servc"
+            )
+            plan.execute(original_sql)
+            plan.execute(
+                "INSERT INTO cnstwk_cntrct "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                original_row,
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "schema effect: view"):
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-view-rewrite",
+                reason="reject indirect unrelated schema rewrite",
+                replace=view_rewriting_plan,
+            )
+
+        self.assertEqual(self.source_refresh_state(), before)
+
+    def test_source_schema_refresh_rejects_extra_source_trigger_before_plan(self):
+        self.complete_source_baseline()
+        self.proc_conn.execute(
+            "CREATE TRIGGER source_clock_escape AFTER UPDATE ON cnstwk_cntrct "
+            "BEGIN UPDATE locality_generation_clock "
+            "SET data_generation=data_generation+100 WHERE singleton_id=1; END"
+        )
+        self.proc_conn.commit()
+        before = self.source_refresh_state()
+
+        with self.assertRaisesRegex(RuntimeError, "trigger surface"):
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-extra-trigger",
+                reason="reject indirect source side effects",
+                replace=lambda plan: plan.execute(
+                    "UPDATE cnstwk_cntrct SET thtmCntrctAmt=707"
+                ),
+            )
+
+        self.assertEqual(self.source_refresh_state(), before)
+
+    def test_source_schema_plan_creates_approved_evidence_index_and_pins_it(self):
+        self.proc_conn.execute(
+            "CREATE TABLE busan_award_servc "
+            "(bidwinnrBizno TEXT, bidNtceNo TEXT)"
+        )
+        self.complete_source_baseline()
+        generation = read_data_generation(self.proc_conn)
+        control_revision = read_control_revision(self.proc_conn)
+        table_signature = self.proc_conn.execute(
+            "SELECT table_signature FROM locality_source_schema_state "
+            "WHERE singleton_id=1"
+        ).fetchone()[0]
+
+        refresh_source_schema(
+            self.proc_conn,
+            operator="operator-award-index",
+            reason="install deployed award lookup index",
+            replace=lambda plan: plan.execute(
+                "CREATE INDEX IF NOT EXISTS idx_award_bizno "
+                "ON busan_award_servc (bidwinnrBizno)"
+            ),
+        )
+
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT tbl_name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_award_bizno'"
+            ).fetchone(),
+            ("busan_award_servc",),
+        )
+        self.assertNotEqual(
+            self.proc_conn.execute(
+                "SELECT table_signature FROM locality_source_schema_state "
+                "WHERE singleton_id=1"
+            ).fetchone()[0],
+            table_signature,
+        )
+        self.assertEqual(read_data_generation(self.proc_conn), generation + 1)
+        self.assertEqual(read_control_revision(self.proc_conn), control_revision + 2)
+
+    def test_source_schema_plan_rejects_index_on_missing_column_without_residue(self):
+        self.proc_conn.execute(
+            "CREATE TABLE busan_award_servc "
+            "(bidwinnrBizno TEXT, bidNtceNo TEXT)"
+        )
+        self.complete_source_baseline()
+        before = self.source_refresh_state()
+
+        with self.assertRaisesRegex(RuntimeError, "index column is not approved"):
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-bad-index-column",
+                reason="reject an index expression outside the owner schema",
+                replace=lambda plan: plan.execute(
+                    "CREATE INDEX idx_award_bad "
+                    "ON busan_award_servc (missing_column)"
+                ),
+            )
+
+        self.assertEqual(self.source_refresh_state(), before)
+        self.assertIsNone(
+            self.proc_conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='index' AND name='idx_award_bad'"
+            ).fetchone()
+        )
+
+    def test_source_schema_plan_rejects_index_on_unapproved_owner(self):
+        self.proc_conn.execute(
+            "CREATE TABLE outside_source (data_generation INTEGER)"
+        )
+        self.complete_source_baseline()
+        before = self.source_refresh_state()
+
+        with self.assertRaisesRegex(RuntimeError, "target is not approved"):
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-bad-index-owner",
+                reason="reject index outside source ownership",
+                replace=lambda plan: plan.execute(
+                    "CREATE INDEX idx_control_escape "
+                    "ON outside_source (data_generation)"
+                ),
+            )
+
+        self.assertEqual(self.source_refresh_state(), before)
+
     def test_source_schema_editor_rejects_commit_rollback_and_transaction_sql(self):
         self.complete_source_baseline()
         forbidden = (
@@ -1513,6 +1688,15 @@ class SnapshotResolverTests(SnapshotTestCase):
         self.assertFalse(resolver.resolve(self.new_contract, "1234567890", 100.0, False))
         self.assertEqual(resolver.flush(), 0)
         self.assertEqual(self.proc_conn.execute("SELECT COUNT(*) FROM contract_supplier_locality").fetchone()[0], 0)
+
+    def test_legacy_mode_returns_without_reading_caller_transaction(self):
+        resolver = self.resolver(mode="legacy")
+        self.proc_conn.execute("BEGIN")
+
+        self.assertTrue(
+            resolver.resolve(self.new_contract, "1234567890", 100.0, True)
+        )
+        self.proc_conn.rollback()
 
     def test_shadow_mode_records_candidate_but_returns_legacy(self):
         resolver = self.resolver(mode="shadow")

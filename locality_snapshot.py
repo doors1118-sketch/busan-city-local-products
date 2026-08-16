@@ -141,8 +141,19 @@ class _SourceSchemaOperation:
     kind: str
     target: str
     sql: str
+    destination: str | None
+    index_name: str | None
+    columns: tuple[str, ...]
     rows: tuple[_FrozenBindings, ...]
     many: bool
+
+
+@dataclass(frozen=True)
+class _RefreshControlBoundary:
+    clock: tuple[int, int]
+    state: tuple[tuple[Any, ...], ...]
+    audit: tuple[tuple[Any, ...], ...]
+    audit_sequence: int | None
 
 
 class SourceSchemaEditor:
@@ -181,9 +192,25 @@ class SourceSchemaEditor:
     ) -> None:
         if self.__sealed:
             raise SnapshotError("source schema replacement plan is already sealed")
-        kind, target, normalized_sql = _validate_source_operation(sql)
+        (
+            kind,
+            target,
+            normalized_sql,
+            destination,
+            index_name,
+            columns,
+        ) = _validate_source_operation(sql)
         self.__operations.append(
-            _SourceSchemaOperation(kind, target, normalized_sql, rows, many)
+            _SourceSchemaOperation(
+                kind=kind,
+                target=target,
+                sql=normalized_sql,
+                destination=destination,
+                index_name=index_name,
+                columns=columns,
+                rows=rows,
+                many=many,
+            )
         )
 
 
@@ -567,19 +594,43 @@ def _signature(payload: object) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _source_trigger_signature(conn: sqlite3.Connection, tables: Collection[str]) -> str:
-    expected = _expected_source_trigger_sql(tables)
-    if not expected:
-        return _signature([])
-    placeholders = ",".join("?" for _ in expected)
-    actual = {
+def _source_trigger_surface(
+    conn: sqlite3.Connection, tables: Collection[str]
+) -> dict[str, str]:
+    table_names = tuple(sorted(tables))
+    if not table_names:
+        return {}
+    placeholders = ",".join("?" for _ in table_names)
+    return {
         name: _normalize_sql(sql)
         for name, sql in conn.execute(
             f"SELECT name, sql FROM sqlite_master WHERE type='trigger' "
-            f"AND name IN ({placeholders})",
-            tuple(sorted(expected)),
+            f"AND tbl_name IN ({placeholders})",
+            table_names,
         )
     }
+
+
+def _validate_source_trigger_surface(
+    conn: sqlite3.Connection,
+    tables: Collection[str],
+    *,
+    require_complete: bool,
+) -> None:
+    actual = _source_trigger_surface(conn, tables)
+    expected = {
+        name: _normalize_sql(sql)
+        for name, sql in _expected_source_trigger_sql(tables).items()
+    }
+    if any(expected.get(name) != sql for name, sql in actual.items()):
+        raise SnapshotError("source schema trigger surface contains an unapproved trigger")
+    if require_complete and actual != expected:
+        raise SnapshotError("source schema trigger surface is incomplete or divergent")
+
+
+def _source_trigger_signature(conn: sqlite3.Connection, tables: Collection[str]) -> str:
+    expected = _expected_source_trigger_sql(tables)
+    actual = _source_trigger_surface(conn, tables)
     normalized_expected = {
         name: _normalize_sql(sql) for name, sql in expected.items()
     }
@@ -597,11 +648,17 @@ def _expected_source_trigger_signature(tables: Collection[str]) -> str:
 
 
 def _source_table_signature(conn: sqlite3.Connection, tables: Collection[str]) -> str:
+    selected_tables = set(tables)
     rows = conn.execute(
-        "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%' "
+        "ORDER BY type, name"
     ).fetchall()
     selected = [
-        (name, _normalize_sql(sql)) for name, sql in rows if name in set(tables)
+        (object_type, name, owner, _normalize_sql(sql))
+        for object_type, name, owner, sql in rows
+        if (object_type == "table" and name in selected_tables)
+        or (object_type == "index" and owner in selected_tables)
     ]
     return _signature(selected)
 
@@ -667,6 +724,17 @@ _SQL_IDENTIFIER = (
     r'(?:"[A-Za-z_][A-Za-z0-9_]*"|`[A-Za-z_][A-Za-z0-9_]*`|'
     r'\[[A-Za-z_][A-Za-z0-9_]*\]|[A-Za-z_][A-Za-z0-9_]*)'
 )
+_ALTER_RENAME_PATTERN = re.compile(
+    rf"^ALTER\s+TABLE\s+({_SQL_IDENTIFIER})\s+RENAME\s+TO\s+"
+    rf"({_SQL_IDENTIFIER})$",
+    re.IGNORECASE,
+)
+_CREATE_INDEX_PATTERN = re.compile(
+    rf"^CREATE\s+INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    rf"({_SQL_IDENTIFIER})\s+ON\s+({_SQL_IDENTIFIER})\s*\(\s*"
+    rf"({_SQL_IDENTIFIER}(?:\s*,\s*{_SQL_IDENTIFIER})*)\s*\)$",
+    re.IGNORECASE,
+)
 _SOURCE_OPERATION_PATTERNS = (
     (
         "create_table",
@@ -679,13 +747,6 @@ _SOURCE_OPERATION_PATTERNS = (
         "drop_table",
         re.compile(
             rf"^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "alter_table",
-        re.compile(
-            rf"^ALTER\s+TABLE\s+({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
             re.IGNORECASE,
         ),
     ),
@@ -763,7 +824,9 @@ def _unquote_sql_identifier(value: str) -> str:
     return value
 
 
-def _validate_source_operation(sql: str) -> tuple[str, str, str]:
+def _validate_source_operation(
+    sql: str,
+) -> tuple[str, str, str, str | None, str | None, tuple[str, ...]]:
     statement = str(sql).strip()
     if statement.endswith(";"):
         statement = statement[:-1].rstrip()
@@ -774,8 +837,49 @@ def _validate_source_operation(sql: str) -> tuple[str, str, str]:
         or "/*" in statement
         or "*/" in statement
         or _UNSAFE_SOURCE_SQL.search(statement)
-        or _CONTROL_SOURCE_SQL.search(statement)
     ):
+        raise SnapshotError(
+            "source schema plan rejects transaction control, control tables, or unsafe SQL"
+        )
+
+    alter_match = _ALTER_RENAME_PATTERN.fullmatch(statement)
+    if alter_match is not None:
+        target = _unquote_sql_identifier(alter_match.group(1)).lower()
+        destination = _unquote_sql_identifier(alter_match.group(2)).lower()
+        if target not in _SOURCE_SCHEMA_TARGETS:
+            raise SnapshotError(
+                f"source schema plan target is not approved: {target}"
+            )
+        if destination not in _SOURCE_SCHEMA_TARGETS:
+            raise SnapshotError(
+                "source schema plan ALTER destination is not approved: "
+                f"{destination}"
+            )
+        return "alter_rename", target, statement, destination, None, ()
+    if statement.upper().startswith("ALTER"):
+        raise SnapshotError("source schema plan operation kind is not approved")
+
+    index_match = _CREATE_INDEX_PATTERN.fullmatch(statement)
+    if index_match is not None:
+        index_name = _unquote_sql_identifier(index_match.group(1)).lower()
+        target = _unquote_sql_identifier(index_match.group(2)).lower()
+        columns = tuple(
+            _unquote_sql_identifier(column.strip()).lower()
+            for column in index_match.group(3).split(",")
+        )
+        if target not in _SOURCE_SCHEMA_TARGETS:
+            raise SnapshotError(
+                f"source schema plan target is not approved: {target}"
+            )
+        if index_name.startswith(("sqlite_", "locality_")):
+            raise SnapshotError("source schema plan index name is not approved")
+        if len(set(columns)) != len(columns):
+            raise SnapshotError("source schema plan index columns must be unique")
+        return "create_index", target, statement, None, index_name, columns
+    if statement.upper().startswith("CREATE INDEX"):
+        raise SnapshotError("source schema plan index definition is not approved")
+
+    if _CONTROL_SOURCE_SQL.search(statement):
         raise SnapshotError(
             "source schema plan rejects transaction control, control tables, or unsafe SQL"
         )
@@ -788,8 +892,152 @@ def _validate_source_operation(sql: str) -> tuple[str, str, str]:
             raise SnapshotError(
                 f"source schema plan target is not approved: {target}"
             )
-        return kind, target, statement
+        return kind, target, statement, None, None, ()
     raise SnapshotError("source schema plan operation kind is not approved")
+
+
+def _validate_source_index(
+    conn: sqlite3.Connection,
+    operation: _SourceSchemaOperation,
+    *,
+    require_existing: bool,
+) -> None:
+    columns = {
+        str(row[1]).lower()
+        for row in conn.execute(f'PRAGMA table_info("{operation.target}")')
+    }
+    if not columns:
+        raise SnapshotError(
+            f"source schema plan index owner does not exist: {operation.target}"
+        )
+    missing = [column for column in operation.columns if column not in columns]
+    if missing:
+        raise SnapshotError(
+            "source schema plan index column is not approved by the owner schema: "
+            + ", ".join(missing)
+        )
+    existing = conn.execute(
+        "SELECT name, tbl_name, sql FROM sqlite_master "
+        "WHERE type='index' AND lower(name)=?",
+        (operation.index_name,),
+    ).fetchone()
+    if existing is None:
+        if require_existing:
+            raise SnapshotError("source schema plan index was not created")
+        return
+    try:
+        existing_spec = _validate_source_operation(existing[2])
+    except SnapshotError as error:
+        raise SnapshotError(
+            "source schema plan index name collides with an unapproved definition"
+        ) from error
+    if (
+        existing_spec[0] != "create_index"
+        or str(existing[1]).lower() != operation.target
+        or existing_spec[1] != operation.target
+        or existing_spec[4] != operation.index_name
+        or existing_spec[5] != operation.columns
+    ):
+        raise SnapshotError(
+            "source schema plan index name collides with an unapproved definition"
+        )
+
+
+def _complete_user_schema(
+    conn: sqlite3.Connection,
+) -> dict[tuple[str, str], tuple[str, str]]:
+    return {
+        (str(object_type).lower(), str(name).lower()): (
+            str(owner).lower(),
+            _normalize_sql(sql),
+        )
+        for object_type, name, owner, sql in conn.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('table','index','view','trigger') "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        )
+    }
+
+
+def _validate_source_schema_effects(
+    before: Mapping[tuple[str, str], tuple[str, str]],
+    after: Mapping[tuple[str, str], tuple[str, str]],
+    protected_before: Collection[str],
+    protected_after: Collection[str],
+    operations: Collection[_SourceSchemaOperation],
+) -> None:
+    required_tables = set(CANONICAL_SOURCE_TABLES) | set(protected_before)
+    missing = sorted(required_tables - set(protected_after))
+    if missing:
+        raise SnapshotError(
+            "source schema refresh requires protected source tables: "
+            + ", ".join(missing)
+        )
+
+    permitted_triggers = set(
+        _expected_source_trigger_sql(set(protected_before) | set(protected_after))
+    )
+    planned_indexes = {
+        operation.index_name: operation.target
+        for operation in operations
+        if operation.kind == "create_index" and operation.index_name is not None
+    }
+    for key in sorted(set(before) | set(after)):
+        if before.get(key) == after.get(key):
+            continue
+        object_type, name = key
+        current = after.get(key)
+        if object_type == "table" and name in _SOURCE_SCHEMA_TARGETS:
+            continue
+        if object_type == "trigger" and name in permitted_triggers:
+            continue
+        if (
+            object_type == "index"
+            and name in planned_indexes
+            and current is not None
+            and current[0] == planned_indexes[name]
+        ):
+            continue
+        raise SnapshotError(
+            "source schema refresh left an unapproved schema effect: "
+            f"{object_type} {name}"
+        )
+
+
+def _refresh_control_boundary(conn: sqlite3.Connection) -> _RefreshControlBoundary:
+    clock_row = conn.execute(
+        "SELECT data_generation, control_revision "
+        "FROM locality_generation_clock WHERE singleton_id=1"
+    ).fetchone()
+    if clock_row is None:
+        raise SnapshotError("source schema refresh control clock is missing")
+    sequence_row = conn.execute(
+        "SELECT seq FROM sqlite_sequence "
+        "WHERE name='locality_source_schema_audit'"
+    ).fetchone()
+    return _RefreshControlBoundary(
+        clock=(int(clock_row[0]), int(clock_row[1])),
+        state=tuple(
+            conn.execute(
+                "SELECT * FROM locality_source_schema_state ORDER BY singleton_id"
+            ).fetchall()
+        ),
+        audit=tuple(
+            conn.execute(
+                "SELECT * FROM locality_source_schema_audit ORDER BY id"
+            ).fetchall()
+        ),
+        audit_sequence=int(sequence_row[0]) if sequence_row is not None else None,
+    )
+
+
+def _assert_unchanged_refresh_boundary(
+    conn: sqlite3.Connection, expected: _RefreshControlBoundary
+) -> None:
+    if _refresh_control_boundary(conn) != expected:
+        raise SnapshotError(
+            "source schema plan changed refresh state, audit, or control clocks"
+        )
 
 
 def _execute_source_schema_plan(
@@ -799,13 +1047,25 @@ def _execute_source_schema_plan(
     for operation in operations:
         if not isinstance(operation, _SourceSchemaOperation):
             raise SnapshotError("source schema plan contains an invalid operation")
-        kind, target, statement = _validate_source_operation(operation.sql)
-        if (kind, target, statement) != (
+        validated = _validate_source_operation(operation.sql)
+        if validated != (
             operation.kind,
             operation.target,
             operation.sql,
+            operation.destination,
+            operation.index_name,
+            operation.columns,
         ):
             raise SnapshotError("source schema plan changed after validation")
+        if operation.many and operation.kind in {
+            "alter_rename",
+            "create_index",
+            "create_table",
+            "drop_table",
+        }:
+            raise SnapshotError("source schema DDL cannot use executemany")
+        if operation.kind == "create_index":
+            _validate_source_index(conn, operation, require_existing=False)
         if operation.many:
             conn.executemany(
                 operation.sql,
@@ -815,6 +1075,8 @@ def _execute_source_schema_plan(
             if len(operation.rows) != 1:
                 raise SnapshotError("source schema execute operation has invalid bindings")
             conn.execute(operation.sql, _thaw_bindings(operation.rows[0]))
+        if operation.kind == "create_index":
+            _validate_source_index(conn, operation, require_existing=True)
 
 
 def _drop_source_triggers(conn: sqlite3.Connection, tables: Collection[str]) -> None:
@@ -850,6 +1112,8 @@ def refresh_source_schema(
         editor = SourceSchemaEditor()
         replace(editor)
         plan = _seal_source_schema_plan(editor)
+    normalized_operator = str(operator).strip()
+    normalized_reason = str(reason).strip()
 
     def inject(stage: str) -> None:
         if fail_after == stage:
@@ -859,27 +1123,37 @@ def refresh_source_schema(
         _assert_refresh_transaction(conn)
         conn.execute(f"SAVEPOINT {_REFRESH_SAVEPOINT}")
         schema_version_before = conn.execute("PRAGMA schema_version").fetchone()[0]
-        _drop_source_triggers(conn, _existing_protected_source_tables(conn))
+        protected_before = _existing_protected_source_tables(conn)
+        _validate_source_trigger_surface(
+            conn, protected_before, require_complete=bool(plan)
+        )
+        schema_before = _complete_user_schema(conn)
+        control_before = _refresh_control_boundary(conn)
+        _drop_source_triggers(conn, protected_before)
         _execute_source_schema_plan(conn, plan)
         _assert_refresh_transaction(conn)
+        _assert_unchanged_refresh_boundary(conn, control_before)
         inject("after_replacement")
         protected_tables = _existing_protected_source_tables(conn)
-        missing = sorted(set(CANONICAL_SOURCE_TABLES) - set(protected_tables))
-        if missing:
-            raise SnapshotError(
-                "source schema refresh requires canonical tables: "
-                + ", ".join(missing)
-            )
         for table in protected_tables:
             _install_table_triggers(
                 conn, table, "data_generation", replace=True
             )
         _assert_refresh_transaction(conn)
-        inject("after_trigger_reinstall")
+        _assert_unchanged_refresh_boundary(conn, control_before)
         trigger_signature = _source_trigger_signature(conn, protected_tables)
         expected_signature = _expected_source_trigger_signature(protected_tables)
         if trigger_signature != expected_signature:
             raise SnapshotError("source schema trigger signature validation failed")
+        schema_after = _complete_user_schema(conn)
+        _validate_source_schema_effects(
+            schema_before,
+            schema_after,
+            protected_before,
+            protected_tables,
+            plan,
+        )
+        inject("after_trigger_reinstall")
         table_signature = _source_table_signature(conn, protected_tables)
         protected_json = json.dumps(
             protected_tables, ensure_ascii=False, separators=(",", ":")
@@ -907,11 +1181,32 @@ def refresh_source_schema(
                 table_signature,
                 trigger_signature,
                 refreshed_at,
-                str(operator).strip(),
-                str(reason).strip(),
+                normalized_operator,
+                normalized_reason,
             ),
         )
         _assert_refresh_transaction(conn)
+        expected_state = (
+            1,
+            schema_version_after,
+            protected_json,
+            table_signature,
+            trigger_signature,
+            refreshed_at,
+            normalized_operator,
+            normalized_reason,
+        )
+        after_state = _refresh_control_boundary(conn)
+        if (
+            after_state.clock
+            != (control_before.clock[0], control_before.clock[1] + 1)
+            or after_state.state != (expected_state,)
+            or after_state.audit != control_before.audit
+            or after_state.audit_sequence != control_before.audit_sequence
+        ):
+            raise SnapshotError(
+                "source schema refresh state update crossed its control boundary"
+            )
         inject("after_state_update")
         conn.execute(
             """
@@ -921,8 +1216,8 @@ def refresh_source_schema(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(operator).strip(),
-                str(reason).strip(),
+                normalized_operator,
+                normalized_reason,
                 schema_version_before,
                 schema_version_after,
                 protected_json,
@@ -932,12 +1227,46 @@ def refresh_source_schema(
             ),
         )
         _assert_refresh_transaction(conn)
+        expected_audit_id = (control_before.audit_sequence or 0) + 1
+        expected_audit = (
+            expected_audit_id,
+            normalized_operator,
+            normalized_reason,
+            schema_version_before,
+            schema_version_after,
+            protected_json,
+            table_signature,
+            trigger_signature,
+            refreshed_at,
+        )
+        after_audit = _refresh_control_boundary(conn)
+        if (
+            after_audit.clock
+            != (control_before.clock[0], control_before.clock[1] + 2)
+            or after_audit.state != (expected_state,)
+            or after_audit.audit != control_before.audit + (expected_audit,)
+            or after_audit.audit_sequence != expected_audit_id
+        ):
+            raise SnapshotError(
+                "source schema refresh audit insert crossed its control boundary"
+            )
         inject("after_audit_insert")
         conn.execute(
             "UPDATE locality_generation_clock "
             "SET data_generation=data_generation+1 WHERE singleton_id=1"
         )
         _assert_refresh_transaction(conn)
+        after_clock = _refresh_control_boundary(conn)
+        if (
+            after_clock.clock
+            != (control_before.clock[0] + 1, control_before.clock[1] + 2)
+            or after_clock.state != (expected_state,)
+            or after_clock.audit != control_before.audit + (expected_audit,)
+            or after_clock.audit_sequence != expected_audit_id
+        ):
+            raise SnapshotError(
+                "source schema refresh did not advance exactly one data generation"
+            )
         inject("before_return")
         conn.execute(f"RELEASE {_REFRESH_SAVEPOINT}")
 
@@ -1911,12 +2240,12 @@ class SnapshotResolver:
         share_pct: float,
         legacy_is_local: bool,
     ) -> bool:
+        if self.mode == "legacy":
+            return bool(legacy_is_local)
         if self.procurement_conn.in_transaction:
             raise MissingHistoricalSnapshot(
                 "snapshot resolution rejects a caller-owned procurement transaction"
             )
-        if self.mode == "legacy":
-            return bool(legacy_is_local)
         self._check_source_schema(require=False)
         contract = self._contract(row)
         normalized = normalize_bizno(bizno)
