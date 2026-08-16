@@ -17,12 +17,14 @@ from contract_population import (
     CanonicalContract,
     canonical_contract_from_row,
     content_fingerprint,
+    iter_canonical_contracts,
 )
 
 
 SEOUL = ZoneInfo("Asia/Seoul")
 CLASSIFIER_VERSION = "supplier_locality_snapshot_v1"
 VALID_MODES = {"legacy", "shadow", "snapshot"}
+REQUIRED_SECTORS = ("공사", "용역", "물품", "쇼핑몰")
 
 
 class SnapshotError(RuntimeError):
@@ -80,6 +82,10 @@ class BaselineCoverage:
     coverage_pct: float
     complete: bool
     manifest_fingerprint_matches: bool
+    source_population_matches: bool
+    required_sectors_complete: bool
+    invalid_basis_suppliers: int
+    fallback_amount_won: int
 
 
 @dataclass(frozen=True)
@@ -191,8 +197,9 @@ def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
 
 
 def _install_snapshot_triggers(conn: sqlite3.Connection) -> None:
-    data_tables = ("contract_supplier_locality",)
+    data_tables: tuple[str, ...] = ()
     control_tables = (
+        "contract_supplier_locality",
         "locality_baseline_manifest",
         "locality_baseline_contract",
         "locality_baseline_supplier",
@@ -203,7 +210,10 @@ def _install_snapshot_triggers(conn: sqlite3.Connection) -> None:
     ):
         for action in ("INSERT", "UPDATE", "DELETE"):
             conn.execute(
-                f"CREATE TRIGGER IF NOT EXISTS locality_{table}_{action.lower()}_clock "
+                f"DROP TRIGGER IF EXISTS locality_{table}_{action.lower()}_clock"
+            )
+            conn.execute(
+                f"CREATE TRIGGER locality_{table}_{action.lower()}_clock "
                 f"AFTER {action} ON {table} BEGIN "
                 f"UPDATE locality_generation_clock SET {clock} = {clock} + 1 WHERE singleton_id = 1; END"
             )
@@ -417,16 +427,46 @@ def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> Base
     actual_rows = conn.execute(
         """
         SELECT sector, contract_key, contract_revision, bizno, share_pct,
-               is_busan, content_fingerprint
+               is_busan, basis, content_fingerprint
         FROM contract_supplier_locality WHERE baseline_id=?
         """,
         (baseline_id,),
     ).fetchall()
     actual = {(row[0], row[1], row[2], row[3]): row[4:] for row in actual_rows}
+    source_contracts: dict[tuple[str, str, str], tuple[int, str]] = {}
+    source_suppliers: dict[tuple[str, str, str, str], int] = {}
+    populated_sectors: set[str] = set()
+    source_enumeration_valid = True
+    for sector in REQUIRED_SECTORS:
+        try:
+            rows = list(iter_canonical_contracts(conn, sector, (None, manifest.cutover_at)))
+        except (sqlite3.Error, RuntimeError, ValueError):
+            source_enumeration_valid = False
+            continue
+        if rows:
+            populated_sectors.add(sector)
+        for contract in rows:
+            source_contracts[contract.identity] = (
+                contract.amount_won,
+                content_fingerprint(contract),
+            )
+            for supplier in contract.suppliers:
+                source_suppliers[(*contract.identity, supplier.bizno)] = _share_micros(
+                    supplier.share_pct
+                )
+    required_sectors_complete = populated_sectors == set(REQUIRED_SECTORS)
+    source_population_matches = (
+        source_enumeration_valid
+        and required_sectors_complete
+        and source_contracts == expected_contracts
+        and source_suppliers == expected_suppliers
+    )
     matched_suppliers = 0
     matched_share_micros = 0
     unknown_suppliers = 0
     unknown_amount = Decimal(0)
+    invalid_basis_suppliers = 0
+    fallback_amount = Decimal(0)
     fingerprint_contracts: set[tuple[str, str, str]] = set()
     missing_suppliers = 0
     exact_contracts: set[tuple[str, str, str]] = set()
@@ -438,14 +478,17 @@ def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> Base
             continue
         actual_share = _share_micros(current[0])
         expected_fingerprint = expected_contracts[contract_key][1]
-        if current[2] != expected_fingerprint:
+        if current[3] != expected_fingerprint:
             fingerprint_contracts.add(contract_key)
-        if actual_share == expected_share and current[2] == expected_fingerprint:
+        if actual_share == expected_share and current[3] == expected_fingerprint:
             matched_suppliers += 1
             matched_share_micros += expected_share
         if current[1] is None:
             unknown_suppliers += 1
             unknown_amount += Decimal(expected_contracts[contract_key][0]) * Decimal(expected_share) / Decimal(100_000_000)
+        if current[2] != "legacy_baseline_v1":
+            invalid_basis_suppliers += 1
+            fallback_amount += Decimal(expected_contracts[contract_key][0]) * Decimal(expected_share) / Decimal(100_000_000)
     expected_keys = set(expected_suppliers)
     extra_suppliers = len(set(actual) - expected_keys)
     for contract_key, (amount, fingerprint) in expected_contracts.items():
@@ -453,7 +496,7 @@ def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> Base
         if supplier_keys and all(
             key in actual
             and _share_micros(actual[key][0]) == expected_suppliers[key]
-            and actual[key][2] == fingerprint
+            and actual[key][3] == fingerprint
             for key in supplier_keys
         ) and not any(key[:3] == contract_key for key in set(actual) - expected_keys):
             exact_contracts.add(contract_key)
@@ -462,6 +505,7 @@ def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> Base
         matched_suppliers / len(expected_suppliers) * 100.0 if expected_suppliers else 0.0
     )
     unknown_amount_won = int(unknown_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    fallback_amount_won = int(fallback_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     complete = (
         len(expected_contracts) == manifest.expected_contracts == len(exact_contracts)
         and len(expected_suppliers) == manifest.expected_suppliers == matched_suppliers
@@ -473,6 +517,10 @@ def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> Base
         and unknown_suppliers == 0
         and unknown_amount_won == 0
         and manifest_fingerprint_matches
+        and source_population_matches
+        and required_sectors_complete
+        and invalid_basis_suppliers == 0
+        and fallback_amount_won == 0
     )
     return BaselineCoverage(
         baseline_id,
@@ -492,6 +540,10 @@ def verify_baseline_manifest(conn: sqlite3.Connection, baseline_id: str) -> Base
         coverage_pct,
         complete,
         manifest_fingerprint_matches,
+        source_population_matches,
+        required_sectors_complete,
+        invalid_basis_suppliers,
+        fallback_amount_won,
     )
 
 
@@ -512,7 +564,13 @@ def _parse_at(value: str) -> tuple[datetime | None, bool]:
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        for format_string in ("%Y%m%d%H%M%S", "%Y%m%d%H%M", "%Y-%m-%d %H:%M:%S"):
+        formats = []
+        if text.isdigit() and len(text) == 14:
+            formats.append("%Y%m%d%H%M%S")
+        elif text.isdigit() and len(text) == 12:
+            formats.append("%Y%m%d%H%M")
+        formats.append("%Y-%m-%d %H:%M:%S")
+        for format_string in formats:
             try:
                 return datetime.strptime(text, format_string).replace(tzinfo=SEOUL), False
             except ValueError:
@@ -573,15 +631,68 @@ class SnapshotResolver:
                 None if pending.is_busan is None else int(pending.is_busan),
                 pending.basis,
                 content_fingerprint(pending.contract),
+                pending.baseline_id,
+                self.generation_id,
             )
         return self.procurement_conn.execute(
             """
-            SELECT share_pct, is_busan, basis, content_fingerprint
+            SELECT share_pct, is_busan, basis, content_fingerprint,
+                   baseline_id, introduced_generation_id
             FROM contract_supplier_locality
             WHERE sector=? AND contract_key=? AND contract_revision=? AND bizno=?
             """,
             key,
         ).fetchone()
+
+    def _validate_historical_snapshot(
+        self,
+        contract: CanonicalContract,
+        bizno: str,
+        share_pct: float,
+        existing: tuple[Any, ...],
+    ) -> None:
+        baseline_id = existing[4]
+        if not baseline_id:
+            raise MissingHistoricalSnapshot("pre-cutover snapshot has no baseline ownership")
+        manifest = _manifest_row(self.procurement_conn, baseline_id)
+        if manifest is None or manifest.status != "complete":
+            raise MissingHistoricalSnapshot("pre-cutover snapshot baseline is not complete")
+        if not verify_baseline_manifest(self.procurement_conn, baseline_id).complete:
+            raise MissingHistoricalSnapshot("pre-cutover snapshot baseline coverage is invalid")
+        manifest_cutover, manifest_date_only = _parse_at(manifest.cutover_at)
+        if (
+            manifest.classifier_version != CLASSIFIER_VERSION
+            or manifest.iterator_version != ITERATOR_VERSION
+            or manifest_cutover is None
+            or manifest_date_only
+            or manifest_cutover != self._cutover
+            or manifest.cache_generation_id != existing[5]
+        ):
+            raise MissingHistoricalSnapshot("pre-cutover snapshot baseline metadata is invalid")
+        expected_contract = self.procurement_conn.execute(
+            """
+            SELECT amount_won, content_fingerprint
+            FROM locality_baseline_contract
+            WHERE baseline_id=? AND sector=? AND contract_key=? AND contract_revision=?
+            """,
+            (baseline_id, *contract.identity),
+        ).fetchone()
+        expected_supplier = self.procurement_conn.execute(
+            """
+            SELECT share_micros
+            FROM locality_baseline_supplier
+            WHERE baseline_id=? AND sector=? AND contract_key=? AND contract_revision=? AND bizno=?
+            """,
+            (baseline_id, *contract.identity, bizno),
+        ).fetchone()
+        if (
+            expected_contract is None
+            or expected_supplier is None
+            or expected_contract != (contract.amount_won, content_fingerprint(contract))
+            or expected_supplier[0] != _share_micros(share_pct)
+            or existing[2] != "legacy_baseline_v1"
+        ):
+            raise MissingHistoricalSnapshot("pre-cutover snapshot is not an owned baseline member")
 
     def _stage(
         self,
@@ -625,20 +736,43 @@ class SnapshotResolver:
         current_rank = _revision_rank(contract.contract_revision)
         rows = self.procurement_conn.execute(
             """
-            SELECT contract_revision, is_busan
+            SELECT contract_revision, bizno, is_busan
             FROM contract_supplier_locality
-            WHERE sector=? AND contract_key=? AND bizno=? AND contract_revision<>?
+            WHERE sector=? AND contract_key=? AND contract_revision<>?
             """,
-            (contract.sector, contract.contract_key, bizno, contract.contract_revision),
+            (contract.sector, contract.contract_key, contract.contract_revision),
         ).fetchall()
-        candidates = [row for row in rows if _revision_rank(row[0]) < current_rank]
+        prior_revisions = {
+            row[0] for row in rows if _revision_rank(row[0]) < current_rank
+        }
         for key, pending in self._pending.items():
-            if key[0] == contract.sector and key[1] == contract.contract_key and key[3] == bizno and key[2] != contract.contract_revision:
-                if _revision_rank(key[2]) < current_rank:
-                    candidates.append((key[2], None if pending.is_busan is None else int(pending.is_busan)))
-        if not candidates:
+            if (
+                key[0] == contract.sector
+                and key[1] == contract.contract_key
+                and key[2] != contract.contract_revision
+                and _revision_rank(key[2]) < current_rank
+            ):
+                prior_revisions.add(key[2])
+        if not prior_revisions:
             return _MISSING
-        value = max(candidates, key=lambda row: _revision_rank(row[0]))[1]
+        immediate_revision = max(prior_revisions, key=_revision_rank)
+        values = [
+            row[2]
+            for row in rows
+            if row[0] == immediate_revision and row[1] == bizno
+        ]
+        pending = self._pending.get(
+            (contract.sector, contract.contract_key, immediate_revision, bizno)
+        )
+        if pending is not None:
+            values.append(None if pending.is_busan is None else int(pending.is_busan))
+        if not values:
+            return _MISSING
+        if len(set(values)) != 1:
+            raise SnapshotContentMismatch(
+                "immediate prior revision has divergent supplier locality"
+            )
+        value = values[0]
         if value is None:
             raise UnknownLocality("inherited supplier locality is unknown")
         return bool(value)
@@ -691,6 +825,7 @@ class SnapshotResolver:
             return bool(legacy_is_local)
         contract = self._contract(row)
         normalized = normalize_bizno(bizno)
+        pre_cutover = self._is_pre_cutover(contract)
         existing = self._existing(contract, normalized)
         fingerprint = content_fingerprint(contract)
         if existing is not None:
@@ -698,10 +833,13 @@ class SnapshotResolver:
                 raise SnapshotContentMismatch("snapshot content fingerprint does not match canonical contract")
             if _share_micros(existing[0]) != _share_micros(share_pct):
                 raise SnapshotContentMismatch("snapshot supplier share does not match canonical contract")
+            if self.mode == "snapshot" and pre_cutover:
+                self._validate_historical_snapshot(
+                    contract, normalized, share_pct, existing
+                )
             if existing[1] is None:
                 raise UnknownLocality("frozen supplier locality is unknown")
             return bool(legacy_is_local) if self.mode == "shadow" else bool(existing[1])
-        pre_cutover = self._is_pre_cutover(contract)
         if self.mode == "snapshot" and pre_cutover:
             raise MissingHistoricalSnapshot(
                 f"pre-cutover contract has no frozen historical snapshot: {contract.identity}/{normalized}"

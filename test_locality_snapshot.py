@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 
 from company_locality import apply_company_changes, ensure_locality_schema
-from contract_population import CanonicalContract, CanonicalSupplier, content_fingerprint
+from contract_population import (
+    CanonicalContract,
+    CanonicalSupplier,
+    content_fingerprint,
+    iter_canonical_contracts,
+)
 from core_calc import process_contract_row
 from locality_snapshot import (
     MissingHistoricalSnapshot,
@@ -27,6 +32,89 @@ from maintenance_lock import (
 NOW = "2026-08-16 12:00:00+09:00"
 CUTOVER = "2026-08-16 10:00:00+09:00"
 BASELINE_ID = "baseline-v1"
+REQUIRED_SECTORS = ("공사", "용역", "물품", "쇼핑몰")
+
+
+def corp_entry(bizno, share):
+    return f"[a^b^c^Supplier^e^f^{share}^h^i^{bizno}]"
+
+
+def create_contract_source_tables(conn):
+    for table in ("cnstwk_cntrct", "servc_cntrct", "thng_cntrct"):
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                untyCntrctNo TEXT,
+                dcsnCntrctNo TEXT,
+                dminsttCd TEXT,
+                dminsttList TEXT,
+                cntrctInsttCd TEXT,
+                thtmCntrctAmt,
+                totCntrctAmt,
+                corpList TEXT,
+                cntrctCnclsDate TEXT,
+                cntrctDate TEXT,
+                rgstDt TEXT,
+                updDt TEXT
+            )
+            """
+        )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shopping_cntrct (
+            dlvrReqNo TEXT,
+            prdctSno TEXT,
+            dlvrReqChgOrd,
+            dminsttCd TEXT,
+            prdctAmt,
+            cntrctCorpBizno TEXT,
+            dlvrReqRcptDate TEXT,
+            rgstDt TEXT,
+            updDt TEXT
+        )
+        """
+    )
+
+
+def insert_required_sector_source(conn, sectors=REQUIRED_SECTORS):
+    rows = {
+        "공사": ("cnstwk_cntrct", "CONST-000100", 101),
+        "용역": ("servc_cntrct", "SERVC-000100", 202),
+        "물품": ("thng_cntrct", "GOODS-000100", 303),
+    }
+    for sector, (table, decision, amount) in rows.items():
+        if sector not in sectors:
+            continue
+        conn.execute(
+            f"INSERT INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"UNTY-{sector}",
+                decision,
+                "A1",
+                "",
+                "C1",
+                amount,
+                0,
+                corp_entry("1234567890", "100"),
+                "2026-08-15",
+                "2026-08-14",
+                "2026-08-15 09:00:00",
+                "2026-08-15 10:00:00",
+            ),
+        )
+    if "쇼핑몰" in sectors:
+        conn.execute(
+            "INSERT INTO shopping_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("SHOP-1", "1", 0, "A1", 404, "1234567890", "2026-08-15", "", ""),
+        )
+
+
+def current_canonical_source(conn):
+    return [
+        row
+        for sector in REQUIRED_SECTORS
+        for row in iter_canonical_contracts(conn, sector)
+    ]
 
 
 def source_item(bizno, region, division, changed_at):
@@ -93,6 +181,31 @@ class SnapshotTestCase(unittest.TestCase):
             **kwargs,
         )
 
+    def complete_source_baseline(self, historical_bizno="1234567890", is_busan=True):
+        create_contract_source_tables(self.proc_conn)
+        insert_required_sector_source(self.proc_conn)
+        self.proc_conn.execute(
+            "UPDATE cnstwk_cntrct SET corpList=?",
+            (corp_entry(historical_bizno, "100"),),
+        )
+        rows = current_canonical_source(self.proc_conn)
+        builder = self.resolver(mode="shadow")
+        for row in rows:
+            for supplier in row.suppliers:
+                decision = is_busan if row.sector == "공사" else True
+                builder.seed(
+                    row,
+                    supplier.bizno,
+                    supplier.share_pct,
+                    decision,
+                    "legacy_baseline_v1",
+                    BASELINE_ID,
+                )
+        builder.flush()
+        manifest = create_baseline_manifest(self.proc_conn, rows, BASELINE_ID)
+        self.assertEqual(manifest.status, "complete")
+        return next(row for row in rows if row.sector == "공사")
+
 
 class SnapshotResolverTests(SnapshotTestCase):
 
@@ -108,7 +221,7 @@ class SnapshotResolverTests(SnapshotTestCase):
 
     def test_outbound_move_does_not_change_frozen_historical_contract(self):
         resolver = self.resolver()
-        resolver.seed(self.old_contract, "1234567890", 100.0, True, "legacy_baseline_v1", BASELINE_ID)
+        historical = self.complete_source_baseline()
         apply_company_changes(
             self.company_conn,
             [source_item("1234567890", "경남", "본사", "202608160900")],
@@ -117,12 +230,12 @@ class SnapshotResolverTests(SnapshotTestCase):
             NOW,
         )
 
-        self.assertTrue(resolver.resolve(self.old_contract, "1234567890", 100.0, False))
-        self.assertEqual(resolver.flush(), 1)
+        self.assertTrue(resolver.resolve(historical, "1234567890", 100.0, False))
+        self.assertEqual(resolver.flush(), 0)
 
     def test_pre_inbound_contract_remains_non_local_but_post_inbound_contract_is_local(self):
         resolver = self.resolver()
-        resolver.seed(self.old_contract, "2222222222", 100.0, False, "legacy_baseline_v1", BASELINE_ID)
+        historical = self.complete_source_baseline("2222222222", False)
         apply_company_changes(
             self.company_conn,
             [source_item("2222222222", "부산", "본사", "20260816101500")],
@@ -131,13 +244,117 @@ class SnapshotResolverTests(SnapshotTestCase):
             NOW,
         )
 
-        self.assertFalse(resolver.resolve(self.old_contract, "2222222222", 100.0, True))
+        self.assertFalse(resolver.resolve(historical, "2222222222", 100.0, True))
         self.assertTrue(resolver.resolve(self.new_contract, "2222222222", 100.0, True))
-        self.assertEqual(resolver.flush(), 2)
+        self.assertEqual(resolver.flush(), 1)
+
+    def test_snapshot_rejects_historical_row_after_canonical_source_drift(self):
+        historical = self.complete_source_baseline()
+        self.proc_conn.execute("UPDATE cnstwk_cntrct SET thtmCntrctAmt=999")
+
+        with self.assertRaisesRegex(MissingHistoricalSnapshot, "coverage|baseline"):
+            self.resolver().resolve(historical, "1234567890", 100.0, True)
+
+    def test_snapshot_rejects_invalid_complete_manifest_metadata(self):
+        historical = self.complete_source_baseline()
+        mutations = (
+            ("locality_baseline_manifest", "classifier_version", "wrong-classifier"),
+            ("locality_baseline_manifest", "iterator_version", "wrong-iterator"),
+            ("locality_baseline_manifest", "cutover_at", "not-a-time"),
+            ("contract_supplier_locality", "introduced_generation_id", "wrong-generation"),
+        )
+        for table, column, value in mutations:
+            with self.subTest(column=column):
+                with maintenance_write_permission(self.proc_conn):
+                    original = self.proc_conn.execute(
+                        f"SELECT {column} FROM {table} LIMIT 1"
+                    ).fetchone()[0]
+                    self.proc_conn.execute(f"UPDATE {table} SET {column}=?", (value,))
+                with self.assertRaisesRegex(MissingHistoricalSnapshot, "metadata"):
+                    self.resolver().resolve(historical, "1234567890", 100.0, True)
+                with maintenance_write_permission(self.proc_conn):
+                    self.proc_conn.execute(f"UPDATE {table} SET {column}=?", (original,))
+
+    def test_compact_kst_cutover_is_equivalent_to_offset_timestamp(self):
+        at_cutover = contract("CUTOVER1", "00", "2026-08-16T10:15:00+09:00")
+        resolver = SnapshotResolver(
+            self.proc_conn,
+            self.company_conn,
+            mode="snapshot",
+            now=NOW,
+            cutover_at="202608161015",
+            generation_id="generation-1",
+        )
+
+        with self.assertRaisesRegex(MissingHistoricalSnapshot, "pre-cutover"):
+            resolver.resolve(at_cutover, "1234567890", 100.0, True)
 
     def test_pre_cutover_manifest_miss_is_a_hard_failure(self):
         with self.assertRaisesRegex(MissingHistoricalSnapshot, "pre-cutover"):
             self.resolver().resolve(self.old_contract, "3333333333", 100.0, True)
+
+    def test_snapshot_rejects_pre_cutover_shadow_row_without_baseline_owner(self):
+        shadow = self.resolver(mode="shadow")
+        self.assertTrue(shadow.resolve(self.old_contract, "1234567890", 100.0, True))
+        shadow.flush()
+
+        with self.assertRaisesRegex(MissingHistoricalSnapshot, "baseline|pre-cutover"):
+            self.resolver().resolve(self.old_contract, "1234567890", 100.0, True)
+
+    def test_snapshot_rejects_pre_cutover_row_owned_by_building_manifest(self):
+        builder = self.resolver(mode="shadow")
+        builder.seed(
+            self.old_contract,
+            "1234567890",
+            100.0,
+            True,
+            "legacy_baseline_v1",
+            BASELINE_ID,
+        )
+        builder.flush()
+
+        with self.assertRaisesRegex(MissingHistoricalSnapshot, "complete"):
+            self.resolver().resolve(self.old_contract, "1234567890", 100.0, True)
+
+    def test_snapshot_rejects_pre_cutover_row_owned_by_failed_manifest(self):
+        builder = self.resolver(mode="shadow")
+        builder.seed(
+            self.old_contract,
+            "1234567890",
+            100.0,
+            True,
+            "legacy_baseline_v1",
+            BASELINE_ID,
+        )
+        builder.flush()
+        with maintenance_write_permission(self.proc_conn):
+            self.proc_conn.execute(
+                "UPDATE locality_baseline_manifest SET status='failed' WHERE baseline_id=?",
+                (BASELINE_ID,),
+            )
+
+        with self.assertRaisesRegex(MissingHistoricalSnapshot, "complete"):
+            self.resolver().resolve(self.old_contract, "1234567890", 100.0, True)
+
+    def test_snapshot_rejects_complete_manifest_that_does_not_own_row_membership(self):
+        builder = self.resolver(mode="shadow")
+        builder.seed(
+            self.old_contract,
+            "1234567890",
+            100.0,
+            True,
+            "legacy_baseline_v1",
+            BASELINE_ID,
+        )
+        builder.flush()
+        with maintenance_write_permission(self.proc_conn):
+            self.proc_conn.execute(
+                "UPDATE locality_baseline_manifest SET status='complete' WHERE baseline_id=?",
+                (BASELINE_ID,),
+            )
+
+        with self.assertRaisesRegex(MissingHistoricalSnapshot, "member|ownership|coverage"):
+            self.resolver().resolve(self.old_contract, "1234567890", 100.0, True)
 
     def test_new_revision_inherits_unchanged_supplier_decision(self):
         resolver = self.resolver()
@@ -179,6 +396,52 @@ class SnapshotResolverTests(SnapshotTestCase):
         )
 
         self.assertTrue(resolver.resolve(next_revision, "2222222222", 50.0, False))
+
+    def test_reintroduced_supplier_does_not_inherit_across_immediate_revision_gap(self):
+        resolver = self.resolver()
+        revision_00 = contract("FAMILYGAP", "00", "2026-08-15")
+        revision_01 = contract(
+            "FAMILYGAP",
+            "01",
+            "2026-08-16 10:30:00+09:00",
+            suppliers=(CanonicalSupplier("4444444444", 100.0),),
+        )
+        revision_02 = contract(
+            "FAMILYGAP",
+            "02",
+            "2026-08-16 11:00:00+09:00",
+        )
+        resolver.seed(revision_00, "1234567890", 100.0, True, "legacy_baseline_v1", None)
+        resolver.seed(revision_01, "4444444444", 100.0, True, "status_history", None)
+        resolver.flush()
+        apply_company_changes(
+            self.company_conn,
+            [source_item("1234567890", "경남", "본사", "20260816090000")],
+            "20260816",
+            "job-gap-outbound",
+            NOW,
+        )
+
+        self.assertFalse(resolver.resolve(revision_02, "1234567890", 100.0, True))
+        resolver.flush()
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT basis FROM contract_supplier_locality WHERE contract_key='FAMILYGAP' AND contract_revision='02'"
+            ).fetchone()[0],
+            "status_history",
+        )
+
+    def test_revision_inheritance_rejects_divergent_immediate_revision_correction(self):
+        prior = contract("FAMILYCORR", "01", "2026-08-16 10:30:00+09:00")
+        current = contract("FAMILYCORR", "02", "2026-08-16 11:00:00+09:00")
+        persisted = self.resolver(mode="shadow")
+        persisted.seed(prior, "1234567890", 100.0, True, "status_history", None)
+        persisted.flush()
+        resolver = self.resolver()
+        resolver.seed(prior, "1234567890", 100.0, False, "status_history", None)
+
+        with self.assertRaisesRegex(SnapshotContentMismatch, "divergent"):
+            resolver.resolve(current, "1234567890", 100.0, True)
 
     def test_post_cutover_supplier_without_lifecycle_history_keeps_legacy_policy_decision(self):
         resolver = self.resolver()
@@ -284,42 +547,135 @@ class SnapshotResolverTests(SnapshotTestCase):
         with self.assertRaisesRegex(SnapshotContentMismatch, "share"):
             resolver.resolve(self.old_contract, "1234567890", 99.0, True)
 
-    def test_flush_uses_guarded_data_clock_and_direct_snapshot_write_fails(self):
+    def test_snapshot_flush_is_derived_output_and_does_not_advance_data_clock(self):
         resolver = self.resolver()
         before = (read_data_generation(self.proc_conn), read_control_revision(self.proc_conn))
         self.assertTrue(resolver.resolve(self.new_contract, "1234567890", 100.0, True))
         resolver.flush()
         after = (read_data_generation(self.proc_conn), read_control_revision(self.proc_conn))
 
-        self.assertGreater(after[0], before[0])
-        self.assertEqual(after[1], before[1])
+        self.assertEqual(after[0], before[0])
+        self.assertGreater(after[1], before[1])
         with self.assertRaisesRegex(sqlite3.IntegrityError, "guarded session"):
             self.proc_conn.execute("DELETE FROM contract_supplier_locality")
 
 
 class BaselineManifestTests(SnapshotTestCase):
-    def test_manifest_verifies_every_contract_supplier_share_amount_and_fingerprint(self):
-        first = contract("BASE1", "00", "2026-08-14", amount=101)
-        second = contract(
-            "BASE2",
-            "00",
-            "2026-08-15",
-            suppliers=(CanonicalSupplier("1234567890", 60.0), CanonicalSupplier("4444444444", 40.0)),
-            amount=202,
-        )
-        resolver = self.resolver()
-        resolver.seed(first, "1234567890", 100.0, True, "legacy_baseline_v1", BASELINE_ID)
-        resolver.seed(second, "1234567890", 60.0, True, "legacy_baseline_v1", BASELINE_ID)
-        resolver.seed(second, "4444444444", 40.0, True, "legacy_baseline_v1", BASELINE_ID)
+    def build_source_baseline(self, *, basis="legacy_baseline_v1", sectors=REQUIRED_SECTORS):
+        create_contract_source_tables(self.proc_conn)
+        insert_required_sector_source(self.proc_conn, sectors)
+        rows = current_canonical_source(self.proc_conn)
+        resolver = self.resolver(mode="shadow")
+        for row in rows:
+            for supplier in row.suppliers:
+                resolver.seed(
+                    row,
+                    supplier.bizno,
+                    supplier.share_pct,
+                    True,
+                    basis,
+                    BASELINE_ID,
+                )
         resolver.flush()
+        return rows, create_baseline_manifest(self.proc_conn, rows, BASELINE_ID)
 
-        manifest = create_baseline_manifest(self.proc_conn, [second, first], BASELINE_ID)
+    def test_manifest_verification_rejects_source_amount_correction(self):
+        self.build_source_baseline()
+        self.proc_conn.execute("UPDATE cnstwk_cntrct SET thtmCntrctAmt=999")
+
+        coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
+
+        self.assertFalse(coverage.complete)
+
+    def test_manifest_verification_rejects_exact_source_dimension_drift(self):
+        self.build_source_baseline()
+        mutations = (
+            ("dcsnCntrctNo", "CONST-000102", "CONST-000100"),
+            ("dminsttCd", "A2", "A1"),
+            ("corpList", corp_entry("1234567890", "80"), corp_entry("1234567890", "100")),
+            ("corpList", corp_entry("9999999999", "100"), corp_entry("1234567890", "100")),
+        )
+        for column, changed, original in mutations:
+            with self.subTest(column=column, changed=changed):
+                self.proc_conn.execute(
+                    f"UPDATE cnstwk_cntrct SET {column}=?", (changed,)
+                )
+                self.assertFalse(
+                    verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete
+                )
+                self.proc_conn.execute(
+                    f"UPDATE cnstwk_cntrct SET {column}=?", (original,)
+                )
+                self.assertTrue(
+                    verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete
+                )
+
+    def test_manifest_verification_rejects_new_source_identity(self):
+        self.build_source_baseline()
+        self.proc_conn.execute(
+            "INSERT INTO thng_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "UNTY-NEW",
+                "GOODS-900100",
+                "A1",
+                "",
+                "C1",
+                505,
+                0,
+                corp_entry("1234567890", "100"),
+                "2026-08-15",
+                "2026-08-14",
+                "",
+                "",
+            ),
+        )
+
+        coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
+
+        self.assertFalse(coverage.complete)
+
+    def test_manifest_verification_rejects_deleted_source_identity(self):
+        self.build_source_baseline()
+        self.proc_conn.execute("DELETE FROM servc_cntrct")
+
+        coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
+
+        self.assertFalse(coverage.complete)
+
+    def test_manifest_rejects_empty_canonical_population(self):
+        create_contract_source_tables(self.proc_conn)
+
+        manifest = create_baseline_manifest(self.proc_conn, [], BASELINE_ID)
+        coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
+
+        self.assertEqual(manifest.status, "failed")
+        self.assertFalse(coverage.complete)
+
+    def test_manifest_rejects_partial_required_sector_population(self):
+        rows, manifest = self.build_source_baseline(sectors=("공사",))
+        coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
+
+        self.assertEqual({row.sector for row in rows}, {"공사"})
+        self.assertEqual(manifest.status, "failed")
+        self.assertFalse(coverage.complete)
+
+    def test_manifest_verification_rejects_nonbaseline_basis_and_counts_fallback_amount(self):
+        self.build_source_baseline(basis="legacy_shadow_candidate")
+
+        coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
+
+        self.assertFalse(coverage.complete)
+        self.assertGreater(coverage.fallback_amount_won, 0)
+
+    def test_manifest_verifies_every_contract_supplier_share_amount_and_fingerprint(self):
+        rows, manifest = self.build_source_baseline()
         coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
 
         self.assertEqual(manifest.status, "complete")
-        self.assertEqual((manifest.expected_contracts, manifest.expected_suppliers), (2, 3))
-        self.assertEqual(manifest.expected_share_micros, 200_000_000)
-        self.assertEqual(manifest.expected_amount_won, 303)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual((manifest.expected_contracts, manifest.expected_suppliers), (4, 4))
+        self.assertEqual(manifest.expected_share_micros, 400_000_000)
+        self.assertEqual(manifest.expected_amount_won, 1010)
         self.assertEqual(manifest.cutover_at, CUTOVER)
         self.assertEqual(manifest.cache_generation_id, "generation-1")
         self.assertTrue(coverage.complete)
@@ -428,6 +784,34 @@ class CoreCalculationResolverTests(unittest.TestCase):
         )
 
         self.assertEqual(calls, [("1234567890", 50.0, True)])
+
+    def test_legacy_resolver_preserves_duplicate_tiny_share_float_order(self):
+        row = {
+            "dminsttCd": "A1",
+            "thtmCntrctAmt": 1,
+            "corpList": "".join(corp_entry("1234567890", "0.01") for _ in range(3)),
+        }
+        calls = []
+
+        class LegacyResolver:
+            def resolve(self, resolved_row, bizno, share_pct, legacy_is_local):
+                calls.append((bizno, share_pct, legacy_is_local))
+                return legacy_is_local
+
+        without_resolver = process_contract_row(
+            row, {"A1": {"cate_lrg": "group"}}, {"1234567890"}
+        )
+        with_resolver = process_contract_row(
+            row,
+            {"A1": {"cate_lrg": "group"}},
+            {"1234567890"},
+            locality_resolver=LegacyResolver(),
+            sector="공사",
+        )
+
+        self.assertEqual(without_resolver[2], 0.00030000000000000003)
+        self.assertEqual(with_resolver, without_resolver)
+        self.assertEqual(calls, [("1234567890", 0.03, True)])
 
 
 if __name__ == "__main__":

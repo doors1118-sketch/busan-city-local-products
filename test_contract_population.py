@@ -2,8 +2,11 @@ import sqlite3
 import unittest
 
 from contract_population import (
+    CanonicalContractError,
     CanonicalContractCollision,
     MissingContractIdentity,
+    MissingGoverningDate,
+    MissingSupplierIdentity,
     canonical_contract_from_row,
     content_fingerprint,
     iter_canonical_contracts,
@@ -160,7 +163,7 @@ class CanonicalContractPopulationTests(unittest.TestCase):
         with self.assertRaisesRegex(MissingContractIdentity, "decision"):
             list(iter_canonical_contracts(self.conn, "공사"))
 
-    def test_null_primary_agency_and_date_fields_use_documented_fallbacks(self):
+    def test_null_primary_agency_uses_contract_agency_fallback(self):
         row = canonical_contract_from_row(
             {
                 "untyCntrctNo": "U-1",
@@ -169,14 +172,165 @@ class CanonicalContractPopulationTests(unittest.TestCase):
                 "cntrctInsttCd": "A-2",
                 "thtmCntrctAmt": 100,
                 "corpList": corp_entry("1234567890", "100"),
-                "cntrctCnclsDate": float("nan"),
-                "cntrctDate": "2026-08-01",
+                "cntrctCnclsDate": "2026-08-01",
             },
             "공사",
         )
 
         self.assertEqual(row.agency, "A2")
         self.assertEqual(row.contract_date, "2026-08-01")
+
+    def test_nonshopping_missing_conclusion_date_does_not_substitute_contract_event_date(self):
+        with self.assertRaisesRegex(MissingGoverningDate, "cntrctCnclsDate|governing"):
+            canonical_contract_from_row(
+                {
+                    "untyCntrctNo": "U-1",
+                    "dcsnCntrctNo": "DEC-000100",
+                    "dminsttCd": "A1",
+                    "thtmCntrctAmt": 100,
+                    "corpList": corp_entry("1234567890", "100"),
+                    "cntrctCnclsDate": float("nan"),
+                    "cntrctDate": "2026-08-01",
+                },
+                "공사",
+            )
+
+    def test_shopping_missing_receipt_date_is_a_hard_failure(self):
+        with self.assertRaisesRegex(MissingGoverningDate, "dlvrReqRcptDate|governing"):
+            canonical_contract_from_row(
+                {
+                    "dlvrReqNo": "SHOP-1",
+                    "prdctSno": "1",
+                    "dlvrReqChgOrd": 0,
+                    "dminsttCd": "A1",
+                    "prdctAmt": 100,
+                    "cntrctCorpBizno": "1234567890",
+                    "dlvrReqRcptDate": "",
+                },
+                "쇼핑몰",
+            )
+
+    def test_demand_agency_list_precedes_contracting_agency_when_primary_is_missing(self):
+        row = canonical_contract_from_row(
+            {
+                "untyCntrctNo": "U-1",
+                "dcsnCntrctNo": "DEC-000100",
+                "dminsttCd": "",
+                "dminsttList": "[Demand Agency^D-200]",
+                "cntrctInsttCd": "C-999",
+                "thtmCntrctAmt": 100,
+                "corpList": corp_entry("1234567890", "100"),
+                "cntrctCnclsDate": "2026-08-01",
+            },
+            "용역",
+        )
+
+        self.assertEqual(row.agency, "D200")
+
+    def test_representative_central_and_self_procured_rows_cover_all_four_sectors(self):
+        fixtures = (
+            (
+                "공사",
+                {
+                    "untyCntrctNo": "C-UNTY",
+                    "dcsnCntrctNo": "C-DEC-000100",
+                    "dminsttCd": "CENTRAL-1",
+                    "dminsttList": "[Central Demand^CENTRAL-1]",
+                    "cntrctInsttCd": "PPS",
+                    "thtmCntrctAmt": "1000",
+                    "totCntrctAmt": "1000",
+                    "corpList": corp_entry("123-45-67890", "100"),
+                    "cntrctCnclsDate": "20260815",
+                    "rgstDt": "20260815090000",
+                },
+                ("공사", "CDEC0001", "00", "CENTRAL1", "2026-08-15"),
+            ),
+            (
+                "용역",
+                {
+                    "untyCntrctNo": "S-UNTY",
+                    "dcsnCntrctNo": "S-DEC-000100",
+                    "dminsttCd": "",
+                    "dminsttList": "[Self Demand^SELF-2]",
+                    "cntrctInsttCd": "SELF-CONTRACT",
+                    "thtmCntrctAmt": 2000,
+                    "corpList": corp_entry("234-56-78901", "100"),
+                    "cntrctCnclsDate": "2026-08-15",
+                    "updDt": "2026-08-15 09:00:00",
+                },
+                ("용역", "SDEC0001", "00", "SELF2", "2026-08-15"),
+            ),
+            (
+                "물품",
+                {
+                    "untyCntrctNo": "G-UNTY",
+                    "dcsnCntrctNo": "G-DEC-000100",
+                    "dminsttCd": "GOODS-3",
+                    "cntrctInsttCd": "PPS",
+                    "thtmCntrctAmt": 3000,
+                    "corpList": corp_entry("345-67-89012", "100"),
+                    "cntrctCnclsDate": "2026-08-15T00:00:00+09:00",
+                },
+                ("물품", "GDEC0001", "00", "GOODS3", "2026-08-15T00:00:00+09:00"),
+            ),
+            (
+                "쇼핑몰",
+                {
+                    "dlvrReqNo": "SHOP-400",
+                    "prdctSno": "0001",
+                    "dlvrReqChgOrd": "2.0",
+                    "dminsttCd": "SHOP-4",
+                    "prdctAmt": "4000.0",
+                    "cntrctCorpBizno": "456-78-90123",
+                    "dlvrReqRcptDate": "2026-08-15T00:00:00+09:00",
+                },
+                ("쇼핑몰", "SHOP400:0001", "2", "SHOP4", "2026-08-15T00:00:00+09:00"),
+            ),
+        )
+
+        for sector, source, expected in fixtures:
+            with self.subTest(sector=sector):
+                row = canonical_contract_from_row(source, sector)
+                self.assertEqual(
+                    (row.sector, row.contract_key, row.contract_revision, row.agency, row.contract_date),
+                    expected,
+                )
+
+    def test_mixed_valid_and_malformed_supplier_chunks_fail_the_whole_row(self):
+        malformed = corp_entry("1234567890", "50") + "[too^short]"
+
+        with self.assertRaisesRegex(MissingSupplierIdentity, "malformed"):
+            self.insert_non_shopping(corps=malformed)
+            list(iter_canonical_contracts(self.conn, "공사"))
+
+    def test_supplier_business_number_must_normalize_to_exactly_ten_digits(self):
+        with self.assertRaisesRegex(MissingSupplierIdentity, "business number"):
+            self.insert_non_shopping(corps=corp_entry("12-34", "100"))
+            list(iter_canonical_contracts(self.conn, "공사"))
+
+    def test_missing_supplier_share_fails_the_whole_row(self):
+        with self.assertRaisesRegex(CanonicalContractError, "share"):
+            self.insert_non_shopping(corps=corp_entry("1234567890", ""))
+            list(iter_canonical_contracts(self.conn, "공사"))
+
+    def test_equivalent_kst_timestamp_encodings_and_rounding_boundaries_match(self):
+        base = {
+            "untyCntrctNo": "U-1",
+            "dcsnCntrctNo": "DEC-000100",
+            "dminsttCd": "A1",
+            "thtmCntrctAmt": "100.5",
+            "corpList": corp_entry("1234567890", "33.3333335"),
+        }
+        compact = canonical_contract_from_row(
+            {**base, "cntrctCnclsDate": "202608161015"}, "공사"
+        )
+        utc = canonical_contract_from_row(
+            {**base, "cntrctCnclsDate": "2026-08-16T01:15:00Z"}, "공사"
+        )
+
+        self.assertEqual(compact.contract_date, "2026-08-16T10:15:00+09:00")
+        self.assertEqual(compact.amount_won, 101)
+        self.assertEqual(content_fingerprint(compact), content_fingerprint(utc))
 
     def test_shopping_change_order_numeric_and_string_forms_share_one_revision(self):
         rows = [

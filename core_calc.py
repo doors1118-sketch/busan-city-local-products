@@ -12,6 +12,8 @@ import os
 import re
 from collections import defaultdict
 
+from contract_population import agency_code_candidates
+
 # ============================================================
 # 1. 상수
 # ============================================================
@@ -603,26 +605,11 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         if np.isnan(amt): amt = 0
         biz_nos = parse_corp_shares(row.get('corpList', ''))
 
-    # 기관 매칭 (dminsttCd -> dminsttList -> cntrctInsttCd 최후 수단)
     matched_cd = None
-    
-    # 1. dminsttCd 확인
-    cd_cand = str(row.get('dminsttCd', '') or '').strip()
-    if cd_cand in inst_dict:
-        matched_cd = cd_cand
-        
-    # 2. dminsttList 확인 (일반 공고의 수요기관은 주로 여기에 있음)
-    if matched_cd is None and not is_shopping:
-        for dcd in extract_dminstt_codes(row.get('dminsttList', '')):
-            if dcd in inst_dict:
-                matched_cd = dcd
-                break
-                
-    # 3. cntrctInsttCd 확인 (기본값 없고 수기 계약처럼 dminstt 정보 누락 시 최후의 수단)
-    if matched_cd is None:
-        cd_cand2 = str(row.get('cntrctInsttCd', '') or '').strip()
-        if cd_cand2 in inst_dict:
-            matched_cd = cd_cand2
+    for candidate in agency_code_candidates(row, is_shopping):
+        if candidate in inst_dict:
+            matched_cd = candidate
+            break
             
     if matched_cd is None:
         return None
@@ -666,9 +653,15 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
         for bno, share in biz_nos:
             normalized = str(bno).replace('-', '').strip()
             aggregated[normalized] += share
+        decisions = {}
         for bno, share in sorted(aggregated.items()):
             legacy_is_local = bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES)
-            if locality_resolver.resolve(resolver_row, bno, share, legacy_is_local):
+            decisions[bno] = locality_resolver.resolve(
+                resolver_row, bno, share, legacy_is_local
+            )
+        for bno, share in biz_nos:
+            normalized = str(bno).replace('-', '').strip()
+            if decisions[normalized]:
                 loc_amt += amt * (share / 100.0)
 
     return (matched_cd, amt, loc_amt)

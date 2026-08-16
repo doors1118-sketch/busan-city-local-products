@@ -47,6 +47,10 @@ class MissingSupplierIdentity(CanonicalContractError):
     pass
 
 
+class MissingGoverningDate(CanonicalContractError):
+    pass
+
+
 class CanonicalContractCollision(CanonicalContractError):
     def __init__(self, sector: str, contract_key: str, revision: str, fingerprints: list[str]):
         self.sector = sector
@@ -103,7 +107,11 @@ def _first_text(*values: Any) -> str:
 
 
 def _normalize_bizno(value: Any) -> str:
-    return "".join(character for character in _text(value) if character.isdigit())
+    text = _text(value)
+    if not text or re.fullmatch(r"[0-9\s-]+", text) is None:
+        return ""
+    normalized = re.sub(r"[-\s]", "", text)
+    return normalized if len(normalized) == 10 else ""
 
 
 def _decimal(value: Any) -> Decimal:
@@ -137,13 +145,18 @@ def _normalize_date(value: Any) -> str:
         try:
             return datetime.strptime(text, "%Y%m%d").strftime("%Y-%m-%d")
         except ValueError:
-            return text
+            return ""
     if len(text) == 10 and text[4] == "-" and text[7] == "-":
         try:
             return datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError:
-            return text
-    formats = ("%Y%m%d%H%M%S", "%Y%m%d%H%M", "%Y-%m-%d %H:%M:%S")
+            return ""
+    formats = []
+    if text.isdigit() and len(text) == 14:
+        formats.append("%Y%m%d%H%M%S")
+    elif text.isdigit() and len(text) == 12:
+        formats.append("%Y%m%d%H%M")
+    formats.append("%Y-%m-%d %H:%M:%S")
     parsed = None
     for format_string in formats:
         try:
@@ -155,7 +168,7 @@ def _normalize_date(value: Any) -> str:
         try:
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
-            return text
+            return ""
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=SEOUL)
         else:
@@ -164,28 +177,72 @@ def _normalize_date(value: Any) -> str:
 
 
 def _governing_date(row: Mapping[str, Any], shopping: bool) -> str:
-    if shopping:
-        return _normalize_date(row.get("dlvrReqRcptDate"))
-    return _normalize_date(_first_text(row.get("cntrctCnclsDate"), row.get("cntrctDate")))
+    field = "dlvrReqRcptDate" if shopping else "cntrctCnclsDate"
+    contract_date = _normalize_date(row.get(field))
+    if not contract_date:
+        raise MissingGoverningDate(f"contract has no valid governing {field}")
+    return contract_date
+
+
+def agency_code_candidates(row: Mapping[str, Any], shopping: bool = False) -> tuple[str, ...]:
+    """Return source agency codes in the production matching precedence."""
+    candidates = [_text(row.get("dminsttCd"))]
+    if not shopping:
+        raw = _text(row.get("dminsttList"))
+        for chunk in raw.split("[")[1:]:
+            parts = chunk.split("]", 1)[0].split("^")
+            if len(parts) >= 2:
+                candidates.append(_text(parts[1]))
+    candidates.append(_text(row.get("cntrctInsttCd")))
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _supplier_chunks(raw: str, sector: str) -> Iterator[list[str]]:
+    offset = 0
+    while offset < len(raw):
+        while offset < len(raw) and raw[offset].isspace():
+            offset += 1
+        if offset == len(raw):
+            return
+        if raw[offset] != "[":
+            raise MissingSupplierIdentity(f"{sector} contract has malformed supplier chunks")
+        end = raw.find("]", offset + 1)
+        if end < 0:
+            raise MissingSupplierIdentity(f"{sector} contract has malformed supplier chunks")
+        parts = raw[offset + 1:end].split("^")
+        if len(parts) < 10:
+            raise MissingSupplierIdentity(f"{sector} contract has malformed supplier chunks")
+        yield parts
+        offset = end + 1
+
+
+def _supplier_share(value: Any, sector: str) -> Decimal:
+    text = _text(value)
+    if not text:
+        raise CanonicalContractError(f"{sector} contract has a missing supplier share")
+    try:
+        share = Decimal(text.replace(",", ""))
+    except InvalidOperation as error:
+        raise CanonicalContractError(f"{sector} contract has an invalid supplier share") from error
+    if not share.is_finite() or share < 0 or share > 100:
+        raise CanonicalContractError(f"{sector} contract has an invalid supplier share")
+    return share
 
 
 def _parse_suppliers(row: Mapping[str, Any], shopping: bool, sector: str) -> tuple[CanonicalSupplier, ...]:
     if shopping:
         bizno = _normalize_bizno(row.get("cntrctCorpBizno"))
         if not bizno:
-            raise MissingSupplierIdentity(f"{sector} contract has no normalized supplier business number")
+            raise MissingSupplierIdentity(f"{sector} contract has an invalid supplier business number")
         return (CanonicalSupplier(bizno, 100.0),)
 
     aggregated: dict[str, Decimal] = {}
     raw = _text(row.get("corpList"))
-    for chunk in raw.split("[")[1:]:
-        parts = chunk.split("]", 1)[0].split("^")
-        if len(parts) < 10:
-            continue
+    for parts in _supplier_chunks(raw, sector):
         bizno = _normalize_bizno(parts[9])
         if not bizno:
-            raise MissingSupplierIdentity(f"{sector} contract has no normalized supplier business number")
-        share = _decimal(parts[6]) if _text(parts[6]) else Decimal(0)
+            raise MissingSupplierIdentity(f"{sector} contract has an invalid supplier business number")
+        share = _supplier_share(parts[6], sector)
         aggregated[bizno] = aggregated.get(bizno, Decimal(0)) + share
     if not aggregated:
         raise MissingSupplierIdentity(f"{sector} contract has no supplier entries")
@@ -238,7 +295,7 @@ def canonical_contract_from_row(row: Mapping[str, Any], sector: str) -> Canonica
             revision = ""
         if not contract_key:
             raise MissingContractIdentity(f"{canonical_sector} contract has no canonical contract key")
-    agency = normalize_contract_key(_first_text(values.get("dminsttCd"), values.get("cntrctInsttCd")))
+    agency = normalize_contract_key(_first_text(*agency_code_candidates(values, shopping)))
     contract_date = _governing_date(values, shopping)
     suppliers = _parse_suppliers(values, shopping, canonical_sector)
     source_order = tuple(
