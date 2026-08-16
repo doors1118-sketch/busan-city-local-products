@@ -176,6 +176,16 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             response_count INTEGER NOT NULL,
             PRIMARY KEY(job_name, source_date, response_class)
         );
+        CREATE TABLE IF NOT EXISTS company_revalidation_queue (
+            bizno TEXT PRIMARY KEY,
+            status TEXT NOT NULL CHECK(status IN ('pending','deferred_budget','failed','complete')),
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_response_class TEXT,
+            next_attempt_at TEXT,
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            error_detail TEXT
+        );
         CREATE TABLE IF NOT EXISTS company_locality_resolution (
             id INTEGER PRIMARY KEY,
             bizno TEXT NOT NULL,
@@ -264,10 +274,17 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
 
 def _install_generation_triggers(conn: sqlite3.Connection) -> None:
-    cache_input = ("company_locality_status", "company_locality_event", "company_locality_resolution", "company_locality_resolution_event")
+    cache_input = (
+        "company_locality_status",
+        "company_locality_event",
+        "company_locality_resolution",
+        "company_locality_resolution_event",
+        "company_revalidation_queue",
+    )
     control = (
         "company_sync_job_log",
         "company_sync_response_metric",
+        "company_revalidation_queue",
         "locality_activation_state",
         "locality_fence_audit",
     )
