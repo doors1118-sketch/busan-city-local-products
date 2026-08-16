@@ -34,10 +34,15 @@ class LocalityPaths:
     journal_path: Path
     marker_path: Path
     pointer_path: Path
+    in_memory_test_mode: bool = False
 
     def __post_init__(self) -> None:
         if (self.company_db_path is None) != (self.procurement_db_path is None):
             raise ValueError("company and procurement database paths must be configured together")
+        if self.company_db_path is None and not self.in_memory_test_mode:
+            raise ValueError("no-peer paths are reserved for explicit in-memory tests")
+        if self.company_db_path is not None and self.in_memory_test_mode:
+            raise ValueError("in-memory test paths cannot configure database files")
         for field in (
             "company_db_path",
             "procurement_db_path",
@@ -49,6 +54,17 @@ class LocalityPaths:
             value = getattr(self, field)
             if value is not None:
                 object.__setattr__(self, field, Path(value).expanduser().resolve())
+
+    @classmethod
+    def for_in_memory_tests(
+        cls,
+        maintenance_path: str | Path,
+        journal_path: str | Path,
+        marker_path: str | Path,
+        pointer_path: str | Path,
+    ) -> "LocalityPaths":
+        """Build the explicit no-peer configuration permitted only for in-memory tests."""
+        return cls(None, None, Path(maintenance_path), Path(journal_path), Path(marker_path), Path(pointer_path), True)
 
 
 _deployed_paths: LocalityPaths | None = None
@@ -78,10 +94,13 @@ def configure_locality_paths(paths: LocalityPaths) -> None:
 
 
 def require_locality_paths(paths: LocalityPaths | None = None) -> LocalityPaths:
-    configured = paths or _deployed_paths
-    if configured is None:
+    if _deployed_paths is not None:
+        if paths is not None and paths != _deployed_paths:
+            raise WriteFenceError("supplied locality paths differ from the deployed configuration")
+        return _deployed_paths
+    if paths is None:
         raise WriteFenceError("a deployment-level LocalityPaths configuration is required")
-    return configured
+    return paths
 
 
 def install_write_guard(conn: sqlite3.Connection) -> dict[str, int]:
@@ -158,6 +177,8 @@ def _assert_writes_open(
     if row is None or not row[0]:
         raise WriteFenceError("persisted locality write fence is closed")
     current_path = _database_path(conn)
+    if current_path is not None and paths.company_db_path is None:
+        raise WriteFenceError("file-backed writers require configured peer database paths")
     peer_path = None
     if current_path is not None and paths.company_db_path == current_path:
         peer_path = paths.procurement_db_path

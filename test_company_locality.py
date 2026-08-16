@@ -32,7 +32,9 @@ class CompanyLocalityTransitionTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name)
-        self.paths = LocalityPaths(None, None, root / "maintenance.lock", root / "transition.json", root / "marker", root / "pointer.json")
+        self.paths = LocalityPaths.for_in_memory_tests(
+            root / "maintenance.lock", root / "transition.json", root / "marker", root / "pointer.json"
+        )
         configure_locality_paths(self.paths)
         self.paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
         self.conn = sqlite3.connect(":memory:")
@@ -276,10 +278,26 @@ class CompanyLocalityTransitionTests(unittest.TestCase):
     def test_status_lookup_is_safe_on_a_read_only_connection(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "company.db"
+            procurement_path = Path(directory) / "procurement.db"
+            paths = LocalityPaths(
+                path,
+                procurement_path,
+                Path(directory) / "coordination" / "maintenance.lock",
+                Path(directory) / "coordination" / "transition.json",
+                Path(directory) / "coordination" / "marker",
+                Path(directory) / "coordination" / "pointer.json",
+            )
+            configure_locality_paths(paths)
+            paths.pointer_path.parent.mkdir(parents=True)
+            paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
             writable = sqlite3.connect(path)
             writable.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
             writable.execute("INSERT INTO company_master VALUES ('1234567890', '')")
-            ensure_locality_schema(writable)
+            ensure_locality_schema(writable, paths=paths)
+            procurement = sqlite3.connect(procurement_path)
+            procurement.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+            ensure_locality_schema(procurement, paths=paths)
+            procurement.close()
             apply_company_changes(
                 writable,
                 [source_item("1234567890", "경남", "본사", "202608160900")],

@@ -15,6 +15,7 @@ from maintenance_lock import (
     maintenance_lock,
     read_control_revision,
     read_data_generation,
+    require_locality_paths,
     set_write_fence,
 )
 from maintenance_lock import configure_locality_paths
@@ -24,14 +25,21 @@ class MaintenanceLockTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tempdir.name) / "company.db"
+        self.procurement_path = Path(self.tempdir.name) / "procurement.db"
         self.lock_path = Path(self.tempdir.name) / "locks" / "maintenance.lock"
         root = Path(self.tempdir.name)
-        self.paths = LocalityPaths(None, None, self.lock_path, root / "transition.json", root / "marker", root / "pointer.json")
+        self.paths = LocalityPaths(
+            self.db_path, self.procurement_path, self.lock_path, root / "transition.json", root / "marker", root / "pointer.json"
+        )
         configure_locality_paths(self.paths)
         self.paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
         self.conn = sqlite3.connect(self.db_path)
         self.conn.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
         ensure_locality_schema(self.conn, paths=self.paths)
+        procurement = sqlite3.connect(self.procurement_path)
+        procurement.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+        ensure_locality_schema(procurement, paths=self.paths)
+        procurement.close()
 
     def tearDown(self):
         self.conn.close()
@@ -124,10 +132,80 @@ class MaintenanceLockTests(unittest.TestCase):
                     self.conn.execute("SELECT 1")
 
     def test_no_peer_configuration_requires_a_durable_coordinator(self):
-        self.paths.pointer_path.unlink()
+        test_paths = LocalityPaths.for_in_memory_tests(
+            Path(self.tempdir.name) / "memory.lock",
+            Path(self.tempdir.name) / "memory.transition.json",
+            Path(self.tempdir.name) / "memory.marker",
+            Path(self.tempdir.name) / "memory.pointer.json",
+        )
+        configure_locality_paths(test_paths)
+        memory = sqlite3.connect(":memory:")
+        try:
+            memory.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+            ensure_locality_schema(memory, paths=test_paths)
+            with self.assertRaises(WriteFenceError):
+                with guarded_write_session(memory, paths=test_paths):
+                    memory.execute("SELECT 1")
+        finally:
+            memory.close()
+
+    def test_no_peer_paths_must_explicitly_declare_in_memory_test_mode(self):
+        with self.assertRaises(ValueError):
+            LocalityPaths(
+                None,
+                None,
+                Path(self.tempdir.name) / "memory.lock",
+                Path(self.tempdir.name) / "memory.transition.json",
+                Path(self.tempdir.name) / "memory.marker",
+                Path(self.tempdir.name) / "memory.pointer.json",
+            )
+
+    def test_file_backed_writer_rejects_explicit_no_peer_test_paths(self):
+        test_paths = LocalityPaths.for_in_memory_tests(
+            Path(self.tempdir.name) / "memory.lock",
+            Path(self.tempdir.name) / "memory.transition.json",
+            Path(self.tempdir.name) / "memory.marker",
+            Path(self.tempdir.name) / "memory.pointer.json",
+        )
+        configure_locality_paths(test_paths)
+        test_paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
+        file_conn = sqlite3.connect(Path(self.tempdir.name) / "file-backed.db")
+        try:
+            file_conn.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+            ensure_locality_schema(file_conn, paths=test_paths)
+            with self.assertRaisesRegex(WriteFenceError, "file-backed writers"):
+                apply_company_changes(
+                    file_conn,
+                    [{"bizno": "1234567890", "rgnNm": "부산", "hdoffceDivNm": "본사", "chgDt": "202608160900"}],
+                    "20260816",
+                    "no-peer-file",
+                    "2026-08-16 12:00:00+09:00",
+                )
+        finally:
+            file_conn.close()
+
+    def test_canonical_equivalent_paths_are_accepted_after_configuration(self):
+        equivalent = LocalityPaths(
+            self.db_path.parent / "." / self.db_path.name,
+            self.procurement_path.parent / "." / self.procurement_path.name,
+            self.lock_path.parent / "." / self.lock_path.name,
+            self.paths.journal_path.parent / "." / self.paths.journal_path.name,
+            self.paths.marker_path.parent / "." / self.paths.marker_path.name,
+            self.paths.pointer_path.parent / "." / self.paths.pointer_path.name,
+        )
+        self.assertEqual(require_locality_paths(equivalent), self.paths)
+
+    def test_nonidentical_paths_are_rejected_after_configuration(self):
+        alternate = LocalityPaths(
+            self.db_path,
+            self.procurement_path,
+            Path(self.tempdir.name) / "alt" / "maintenance.lock",
+            Path(self.tempdir.name) / "alt" / "transition.json",
+            Path(self.tempdir.name) / "alt" / "marker",
+            Path(self.tempdir.name) / "alt" / "pointer.json",
+        )
         with self.assertRaises(WriteFenceError):
-            with guarded_write_session(self.conn, paths=self.paths):
-                self.conn.execute("SELECT 1")
+            require_locality_paths(alternate)
 
     def test_protected_table_rejects_direct_writes_even_before_fencing(self):
         with self.assertRaises(sqlite3.DatabaseError):

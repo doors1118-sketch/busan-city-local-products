@@ -32,7 +32,9 @@ class CompanyLocalityAdminTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name)
-        self.paths = LocalityPaths(None, None, root / "maintenance.lock", root / "transition.json", root / "marker", root / "pointer.json")
+        self.paths = LocalityPaths.for_in_memory_tests(
+            root / "maintenance.lock", root / "transition.json", root / "marker", root / "pointer.json"
+        )
         configure_locality_paths(self.paths)
         self.paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
         self.conn = sqlite3.connect(":memory:")
@@ -111,10 +113,26 @@ class CompanyLocalityAdminTests(unittest.TestCase):
     def test_two_connections_replay_one_resolution_idempotently(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "company.db"
+            procurement_path = Path(directory) / "procurement.db"
+            paths = LocalityPaths(
+                path,
+                procurement_path,
+                Path(directory) / "coordination" / "maintenance.lock",
+                Path(directory) / "coordination" / "transition.json",
+                Path(directory) / "coordination" / "marker",
+                Path(directory) / "coordination" / "pointer.json",
+            )
+            configure_locality_paths(paths)
+            paths.pointer_path.parent.mkdir(parents=True)
+            paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
             setup = sqlite3.connect(path)
             setup.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
             setup.execute("INSERT INTO company_master VALUES ('1234567890', '')")
-            ensure_locality_schema(setup)
+            ensure_locality_schema(setup, paths=paths)
+            procurement = sqlite3.connect(procurement_path)
+            procurement.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+            ensure_locality_schema(procurement, paths=paths)
+            procurement.close()
             apply_company_changes(setup, [item("경남")], "20260816", "first", NOW)
             apply_company_changes(setup, [item("부산")], "20260816", "conflict", NOW)
             conflict_id = setup.execute(
@@ -150,10 +168,26 @@ class CompanyLocalityAdminTests(unittest.TestCase):
     def test_concurrent_different_resolutions_for_one_event_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "company.db"
+            procurement_path = Path(directory) / "procurement.db"
+            paths = LocalityPaths(
+                path,
+                procurement_path,
+                Path(directory) / "coordination" / "maintenance.lock",
+                Path(directory) / "coordination" / "transition.json",
+                Path(directory) / "coordination" / "marker",
+                Path(directory) / "coordination" / "pointer.json",
+            )
+            configure_locality_paths(paths)
+            paths.pointer_path.parent.mkdir(parents=True)
+            paths.pointer_path.write_text('{"active_generation_id":null}', encoding="ascii")
             setup = sqlite3.connect(path)
             setup.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
             setup.execute("INSERT INTO company_master VALUES ('1234567890', '')")
-            ensure_locality_schema(setup)
+            ensure_locality_schema(setup, paths=paths)
+            procurement = sqlite3.connect(procurement_path)
+            procurement.execute("CREATE TABLE company_master (bizno TEXT PRIMARY KEY, chgDt TEXT)")
+            ensure_locality_schema(procurement, paths=paths)
+            procurement.close()
             apply_company_changes(setup, [item("경남")], "20260816", "first", NOW)
             apply_company_changes(setup, [item("부산")], "20260816", "conflict", NOW)
             conflict_id = setup.execute(
@@ -280,11 +314,17 @@ class LocalityWriteTransitionTests(unittest.TestCase):
                 fail_at="after_procurement_commit", **self._call_arguments()
             )
         self.assertTrue(self.marker_path.exists())
+        alternate = LocalityPaths.for_in_memory_tests(
+            Path(self.tempdir.name) / "alt" / "maintenance.lock",
+            Path(self.tempdir.name) / "alt" / "transition.json",
+            Path(self.tempdir.name) / "alt" / "marker",
+            Path(self.tempdir.name) / "alt" / "pointer.json",
+        )
         company_conn = sqlite3.connect(self.company_path)
         try:
             with self.assertRaises(WriteFenceError):
                 apply_company_changes(
-                    company_conn, [item("경남")], "20260816", "partial-transition", NOW, paths=self.paths
+                    company_conn, [item("경남")], "20260816", "partial-transition-alternate-paths", NOW, paths=alternate
                 )
         finally:
             company_conn.close()
