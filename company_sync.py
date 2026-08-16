@@ -357,10 +357,10 @@ def finish_supplier_run(run: SupplierRun) -> None:
 
 def sync_company_change_date(source_date: str, fetch_page: FetchPage, company_db_path: str | Path, *, rows_per_page: int = 999, policy: CompanySyncPolicy | None = None, run: SupplierRun | None = None, clock: Clock = time.monotonic, sleep: Sleep = time.sleep, random_uniform: RandomUniform = random.uniform) -> ChangeSummary:
     """Collect a verified batch and apply it only after Task 1 guarded writes are ready."""
-    _validate_source_date(source_date)
     active_policy = policy or CompanySyncPolicy()
     conn: sqlite3.Connection | None = None
     try:
+        _validate_source_date(source_date)
         path = Path(company_db_path).resolve()
         if run is not None and run.company_db_path != path:
             raise ValueError("supplier run belongs to a different company database")

@@ -250,6 +250,28 @@ class CompanySyncTests(unittest.TestCase):
             ).fetchone()
         )
 
+    def test_invalid_source_date_marks_supplied_run_failed_without_creating_date_job(self):
+        run = start_supplier_run("20260816", self.company_db_path, policy=self.fast_policy)
+        with self.assertRaisesRegex(ValueError, "source_date"):
+            sync_company_change_date(
+                "not-a-date", lambda _page: object(), self.company_db_path,
+                policy=self.fast_policy, run=run,
+            )
+        finish_supplier_run(run)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status, circuit_state FROM company_sync_job_log "
+                "WHERE job_name='company_changes_run' AND source_date='20260816'"
+            ).fetchone(),
+            ("failed", "closed"),
+        )
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT status FROM company_sync_job_log "
+                "WHERE job_name='company_changes' AND source_date='not-a-date'"
+            ).fetchone()
+        )
+
     def test_missing_source_page_metadata_is_rejected_before_apply(self):
         missing = CompanyPage(tuple([item("1")]), 1, None, 999)
         with self.assertRaisesRegex(IncompleteCompanyBatch, "pageNo metadata"):
@@ -571,6 +593,38 @@ class CompanySyncTests(unittest.TestCase):
                 "WHERE job_name='company_changes_run'"
             ).fetchone(),
             ("failed",),
+        )
+
+    def test_invalid_supplier_date_from_caller_fails_run_and_contract_pipeline_continues(self):
+        calls = []
+        original_argv = pipeline.sys.argv
+        original_company_path = pipeline.COMPANY_DB_PATH
+        try:
+            pipeline.sys.argv = ["daily_pipeline_sync.py", "20260816"]
+            pipeline.COMPANY_DB_PATH = str(self.company_db_path)
+            with patch.object(pipeline, "configure_company_locality_runtime_paths", return_value=self.paths), patch.object(
+                pipeline, "supplier_dates_for_run", return_value=["not-a-date"]
+            ), patch.object(
+                pipeline, "sync_one_day", side_effect=lambda source_date, **kwargs: calls.append((source_date, kwargs)) or True
+            ), patch.object(pipeline, "record_sync_success", side_effect=StopPipeline):
+                with self.assertRaises(StopPipeline):
+                    pipeline.main()
+        finally:
+            pipeline.COMPANY_DB_PATH = original_company_path
+            pipeline.sys.argv = original_argv
+        self.assertEqual(calls, [("20260816", {"sync_supplier": False})])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status, circuit_state FROM company_sync_job_log "
+                "WHERE job_name='company_changes_run' AND source_date='20260815'"
+            ).fetchone(),
+            ("failed", "closed"),
+        )
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT status FROM company_sync_job_log "
+                "WHERE job_name='company_changes' AND source_date='not-a-date'"
+            ).fetchone()
         )
 
     def test_public_api_recovery_queue_remains_retryable_after_a_failed_attempt(self):
