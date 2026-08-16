@@ -103,6 +103,23 @@ class BaselineCoverage:
 
 
 @dataclass(frozen=True)
+class BaselineVerification:
+    baseline_id: str
+    source_data_generation: int
+    source_schema_version: int
+    source_table_signature: str
+    source_trigger_signature: str
+    eligible_agencies_fingerprint: str
+    source_population_fingerprint: str
+    manifest_fingerprint: str
+    contract_fingerprint: str
+    supplier_fingerprint: str
+    snapshot_fingerprint: str
+    proof_fingerprint: str
+    verified_at: str
+
+
+@dataclass(frozen=True)
 class _SnapshotCandidate:
     contract: CanonicalContract
     bizno: str
@@ -110,6 +127,86 @@ class _SnapshotCandidate:
     is_busan: bool | None
     basis: str
     baseline_id: str | None
+
+
+@dataclass(frozen=True)
+class _SchemaResult:
+    rows: tuple[tuple[Any, ...], ...]
+    rowcount: int
+    lastrowid: int | None
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return list(self.rows)
+
+
+_SOURCE_EDITOR_CONNECTIONS: dict[object, sqlite3.Connection] = {}
+
+
+def _source_editor_connection(editor: Any) -> sqlite3.Connection:
+    token = object.__getattribute__(editor, "_SourceSchemaEditor__token")
+    conn = _SOURCE_EDITOR_CONNECTIONS.get(token)
+    if conn is None:
+        raise SnapshotError("source schema editor is no longer active")
+    return conn
+
+
+def _close_source_editor(editor: Any) -> None:
+    token = object.__getattribute__(editor, "_SourceSchemaEditor__token")
+    _SOURCE_EDITOR_CONNECTIONS.pop(token, None)
+
+
+class SourceSchemaEditor:
+    """Constrained DDL/DML surface for an atomic source-schema refresh."""
+
+    __slots__ = ("__token",)
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.__token = object()
+        _SOURCE_EDITOR_CONNECTIONS[self.__token] = conn
+
+    def execute(
+        self,
+        sql: str,
+        parameters: Mapping[str, Any] | Iterable[Any] = (),
+    ) -> _SchemaResult:
+        _validate_source_editor_sql(sql)
+        bindings = parameters if isinstance(parameters, Mapping) else tuple(parameters)
+        try:
+            cursor = _source_editor_connection(self).execute(sql, bindings)
+            rows = tuple(cursor.fetchall()) if cursor.description else ()
+        except sqlite3.DatabaseError as error:
+            if "not authorized" in str(error).lower():
+                raise SnapshotError(
+                    "source schema editor rejected transaction control or unsafe SQL"
+                ) from error
+            raise
+        return _SchemaResult(rows, cursor.rowcount, cursor.lastrowid)
+
+    def executemany(
+        self,
+        sql: str,
+        parameter_rows: Iterable[Mapping[str, Any] | Iterable[Any]],
+    ) -> _SchemaResult:
+        _validate_source_editor_sql(sql)
+        rows = (
+            parameters
+            if isinstance(parameters, Mapping)
+            else tuple(parameters)
+            for parameters in parameter_rows
+        )
+        try:
+            cursor = _source_editor_connection(self).executemany(sql, rows)
+            result_rows = tuple(cursor.fetchall()) if cursor.description else ()
+        except sqlite3.DatabaseError as error:
+            if "not authorized" in str(error).lower():
+                raise SnapshotError(
+                    "source schema editor rejected transaction control or unsafe SQL"
+                ) from error
+            raise
+        return _SchemaResult(result_rows, cursor.rowcount, cursor.lastrowid)
 
 
 def _create_control_tables(conn: sqlite3.Connection) -> None:
@@ -280,6 +377,26 @@ def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS locality_baseline_verification (
+            baseline_id TEXT PRIMARY KEY,
+            source_data_generation INTEGER NOT NULL,
+            source_schema_version INTEGER NOT NULL,
+            source_table_signature TEXT NOT NULL,
+            source_trigger_signature TEXT NOT NULL,
+            eligible_agencies_fingerprint TEXT NOT NULL,
+            source_population_fingerprint TEXT NOT NULL,
+            manifest_fingerprint TEXT NOT NULL,
+            contract_fingerprint TEXT NOT NULL,
+            supplier_fingerprint TEXT NOT NULL,
+            snapshot_fingerprint TEXT NOT NULL,
+            proof_fingerprint TEXT NOT NULL,
+            verified_at TEXT NOT NULL,
+            FOREIGN KEY(baseline_id) REFERENCES locality_baseline_manifest(baseline_id)
+        ) WITHOUT ROWID
+        """
+    )
 
 
 def _clock_trigger_sql(table: str, action: str, clock: str) -> str:
@@ -347,6 +464,7 @@ def _install_snapshot_triggers(conn: sqlite3.Connection) -> None:
         "locality_baseline_manifest",
         "locality_baseline_contract",
         "locality_baseline_supplier",
+        "locality_baseline_verification",
         "locality_source_schema_state",
         "locality_source_schema_audit",
     )
@@ -375,6 +493,7 @@ def _install_complete_baseline_immutability(conn: sqlite3.Connection) -> None:
     child_tables = (
         "locality_baseline_contract",
         "locality_baseline_supplier",
+        "locality_baseline_verification",
         "contract_supplier_locality",
     )
     for table in child_tables:
@@ -544,22 +663,137 @@ def _assert_source_schema_protected(
     )
 
 
+_SOURCE_EDITOR_SQL = frozenset(
+    {
+        "ALTER",
+        "CREATE",
+        "DELETE",
+        "DROP",
+        "INSERT",
+        "REPLACE",
+        "SELECT",
+        "UPDATE",
+        "WITH",
+    }
+)
+_REFRESH_SAVEPOINT = "locality_source_schema_refresh_boundary"
+
+
+def _leading_sql_keyword(sql: str) -> str:
+    text = str(sql)
+    offset = 0
+    while True:
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+        if text.startswith("--", offset):
+            newline = text.find("\n", offset + 2)
+            if newline < 0:
+                return ""
+            offset = newline + 1
+            continue
+        if text.startswith("/*", offset):
+            end = text.find("*/", offset + 2)
+            if end < 0:
+                return ""
+            offset = end + 2
+            continue
+        break
+    end = offset
+    while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        end += 1
+    return text[offset:end].upper()
+
+
+def _validate_source_editor_sql(sql: str) -> None:
+    if _leading_sql_keyword(sql) not in _SOURCE_EDITOR_SQL:
+        raise SnapshotError(
+            "source schema editor rejects transaction control, PRAGMA, and unsafe SQL"
+        )
+
+
+_SOURCE_EDITOR_DENIED_ACTIONS = frozenset(
+    getattr(sqlite3, name)
+    for name in (
+        "SQLITE_ATTACH",
+        "SQLITE_DETACH",
+        "SQLITE_PRAGMA",
+        "SQLITE_SAVEPOINT",
+        "SQLITE_TRANSACTION",
+    )
+    if hasattr(sqlite3, name)
+)
+
+
+def _is_locality_control_name(value: str | None) -> bool:
+    name = str(value or "").lower()
+    return (
+        name.startswith("locality_")
+        or name == "contract_supplier_locality"
+        or name == "sqlite_sequence"
+    )
+
+
+def _source_editor_authorizer(
+    action: int,
+    argument_one: str | None,
+    argument_two: str | None,
+    _database_name: str | None,
+    _trigger_name: str | None,
+) -> int:
+    if action in _SOURCE_EDITOR_DENIED_ACTIONS:
+        return sqlite3.SQLITE_DENY
+    if _is_locality_control_name(argument_one) or _is_locality_control_name(
+        argument_two
+    ):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+def _drop_source_triggers(conn: sqlite3.Connection, tables: Collection[str]) -> None:
+    for name in sorted(_expected_source_trigger_sql(tables)):
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+
+def _assert_refresh_transaction(conn: sqlite3.Connection) -> None:
+    if not conn.in_transaction:
+        raise SnapshotError("source schema refresh lost its guarded transaction")
+
+
 def refresh_source_schema(
     conn: sqlite3.Connection,
     *,
     operator: str,
     reason: str,
-    replace: Callable[[sqlite3.Connection], None] | None = None,
+    replace: Callable[[SourceSchemaEditor], None] | None = None,
+    failure_injector: Callable[[str], None] | None = None,
 ) -> None:
     """Coordinate approved source DDL, reinstall guards, audit, and advance data."""
     from maintenance_lock import guarded_write_session
 
     if not str(operator).strip() or not str(reason).strip():
         raise ValueError("source schema refresh requires operator and reason")
+    if conn.in_transaction:
+        raise SnapshotError("source schema refresh must own the guarded transaction")
+
+    def inject(stage: str) -> None:
+        if failure_injector is not None:
+            failure_injector(stage)
+
     with guarded_write_session(conn):
+        _assert_refresh_transaction(conn)
+        conn.execute(f"SAVEPOINT {_REFRESH_SAVEPOINT}")
         schema_version_before = conn.execute("PRAGMA schema_version").fetchone()[0]
+        _drop_source_triggers(conn, _existing_protected_source_tables(conn))
         if replace is not None:
-            replace(conn)
+            editor = SourceSchemaEditor(conn)
+            conn.set_authorizer(_source_editor_authorizer)
+            try:
+                replace(editor)
+            finally:
+                conn.set_authorizer(None)
+                _close_source_editor(editor)
+        _assert_refresh_transaction(conn)
+        inject("after_replacement")
         protected_tables = _existing_protected_source_tables(conn)
         missing = sorted(set(CANONICAL_SOURCE_TABLES) - set(protected_tables))
         if missing:
@@ -571,6 +805,8 @@ def refresh_source_schema(
             _install_table_triggers(
                 conn, table, "data_generation", replace=True
             )
+        _assert_refresh_transaction(conn)
+        inject("after_trigger_reinstall")
         trigger_signature = _source_trigger_signature(conn, protected_tables)
         expected_signature = _expected_source_trigger_signature(protected_tables)
         if trigger_signature != expected_signature:
@@ -606,6 +842,8 @@ def refresh_source_schema(
                 str(reason).strip(),
             ),
         )
+        _assert_refresh_transaction(conn)
+        inject("after_state_update")
         conn.execute(
             """
             INSERT INTO locality_source_schema_audit
@@ -624,10 +862,15 @@ def refresh_source_schema(
                 refreshed_at,
             ),
         )
+        _assert_refresh_transaction(conn)
+        inject("after_audit_insert")
         conn.execute(
             "UPDATE locality_generation_clock "
             "SET data_generation=data_generation+1 WHERE singleton_id=1"
         )
+        _assert_refresh_transaction(conn)
+        inject("before_return")
+        conn.execute(f"RELEASE {_REFRESH_SAVEPOINT}")
 
 
 def _now() -> str:
@@ -701,6 +944,134 @@ def _stored_manifest_fingerprint(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _eligible_agencies_fingerprint(codes: Collection[str]) -> str:
+    return _signature(sorted(normalize_contract_key(code) for code in codes))
+
+
+def _verification_row(
+    conn: sqlite3.Connection, baseline_id: str
+) -> BaselineVerification | None:
+    row = conn.execute(
+        """
+        SELECT baseline_id, source_data_generation, source_schema_version,
+               source_table_signature, source_trigger_signature,
+               eligible_agencies_fingerprint, source_population_fingerprint,
+               manifest_fingerprint, contract_fingerprint,
+               supplier_fingerprint, snapshot_fingerprint,
+               proof_fingerprint, verified_at
+        FROM locality_baseline_verification WHERE baseline_id=?
+        """,
+        (baseline_id,),
+    ).fetchone()
+    return BaselineVerification(*row) if row else None
+
+
+def _baseline_owned_fingerprints(
+    conn: sqlite3.Connection,
+    baseline_id: str,
+    manifest: BaselineManifest,
+) -> tuple[str, str, str, str]:
+    complete_manifest = [
+        manifest.baseline_id,
+        manifest.cutover_at,
+        manifest.classifier_version,
+        manifest.iterator_version,
+        manifest.cache_generation_id,
+        manifest.manifest_fingerprint,
+        manifest.expected_contracts,
+        manifest.expected_suppliers,
+        manifest.expected_share_micros,
+        manifest.expected_amount_won,
+        "complete",
+        manifest.created_at,
+    ]
+    manifest_fingerprint = _signature(complete_manifest)
+    contract_rows = conn.execute(
+        """
+        SELECT baseline_id, sector, contract_key, contract_revision,
+               amount_won, content_fingerprint
+        FROM locality_baseline_contract WHERE baseline_id=?
+        ORDER BY sector, contract_key, contract_revision
+        """,
+        (baseline_id,),
+    ).fetchall()
+    supplier_rows = conn.execute(
+        """
+        SELECT baseline_id, sector, contract_key, contract_revision,
+               bizno, share_micros
+        FROM locality_baseline_supplier WHERE baseline_id=?
+        ORDER BY sector, contract_key, contract_revision, bizno
+        """,
+        (baseline_id,),
+    ).fetchall()
+    snapshot_rows = conn.execute(
+        """
+        SELECT baseline_id, sector, contract_key, contract_revision, bizno,
+               share_pct, is_busan, basis, contract_date, classified_at,
+               classifier_version, content_fingerprint,
+               introduced_generation_id
+        FROM contract_supplier_locality WHERE baseline_id=?
+        ORDER BY sector, contract_key, contract_revision, bizno
+        """,
+        (baseline_id,),
+    ).fetchall()
+    normalized_snapshots = [
+        (*row[:5], _share_micros(row[5]), *row[6:]) for row in snapshot_rows
+    ]
+    return (
+        manifest_fingerprint,
+        _signature(contract_rows),
+        _signature(supplier_rows),
+        _signature(normalized_snapshots),
+    )
+
+
+def _proof_fingerprint(values: tuple[Any, ...]) -> str:
+    return _signature(values)
+
+
+def _validate_baseline_verification(
+    conn: sqlite3.Connection,
+    baseline_id: str,
+    manifest: BaselineManifest,
+    eligible_agency_codes: Collection[str],
+) -> BaselineVerification:
+    proof = _verification_row(conn, baseline_id)
+    if proof is None:
+        raise MissingHistoricalSnapshot(
+            "completed historical baseline has no source-verification evidence"
+        )
+    owned = _baseline_owned_fingerprints(conn, baseline_id, manifest)
+    expected_eligible = _eligible_agencies_fingerprint(eligible_agency_codes)
+    proof_values = (
+        proof.baseline_id,
+        proof.source_data_generation,
+        proof.source_schema_version,
+        proof.source_table_signature,
+        proof.source_trigger_signature,
+        proof.eligible_agencies_fingerprint,
+        proof.source_population_fingerprint,
+        *owned,
+    )
+    if (
+        manifest.status != "complete"
+        or proof.eligible_agencies_fingerprint != expected_eligible
+        or proof.source_population_fingerprint != manifest.manifest_fingerprint
+        or (
+            proof.manifest_fingerprint,
+            proof.contract_fingerprint,
+            proof.supplier_fingerprint,
+            proof.snapshot_fingerprint,
+        )
+        != owned
+        or proof.proof_fingerprint != _proof_fingerprint(proof_values)
+    ):
+        raise MissingHistoricalSnapshot(
+            "historical baseline source-verification evidence is invalid"
+        )
+    return proof
+
+
 def create_baseline_manifest(
     conn: sqlite3.Connection,
     canonical_rows: Iterable[CanonicalContract],
@@ -742,6 +1113,10 @@ def create_baseline_manifest(
                 "INSERT INTO locality_baseline_manifest VALUES (?, ?, ?, ?, ?, '', 0, 0, 0, 0, 'building', ?)",
                 (baseline_id, created_at, classifier_version, ITERATOR_VERSION, generation_id, created_at),
             )
+        conn.execute(
+            "DELETE FROM locality_baseline_verification WHERE baseline_id = ?",
+            (baseline_id,),
+        )
         conn.execute("DELETE FROM locality_baseline_supplier WHERE baseline_id = ?", (baseline_id,))
         conn.execute("DELETE FROM locality_baseline_contract WHERE baseline_id = ?", (baseline_id,))
         for contract in contracts:
@@ -770,16 +1145,74 @@ def create_baseline_manifest(
                 baseline_id,
             ),
         )
-    coverage = verify_baseline_manifest(
-        conn,
-        baseline_id,
-        eligible_agency_codes=eligible_agency_codes,
-    )
     with guarded_write_session(conn):
-        conn.execute(
-            "UPDATE locality_baseline_manifest SET status=? WHERE baseline_id=?",
-            ("complete" if coverage.complete else "failed", baseline_id),
+        from maintenance_lock import read_data_generation
+
+        source_generation = read_data_generation(conn)
+        source_schema: tuple[int, tuple[str, ...], str, str] | None = None
+        try:
+            source_schema = _assert_source_schema_protected(conn)
+        except (MissingHistoricalSnapshot, sqlite3.Error):
+            pass
+        coverage = verify_baseline_manifest(
+            conn,
+            baseline_id,
+            eligible_agency_codes=eligible_agency_codes,
         )
+        current_manifest = _manifest_row(conn, baseline_id)
+        source_stable = (
+            source_schema is not None
+            and read_data_generation(conn) == source_generation
+            and _assert_source_schema_protected(conn) == source_schema
+        )
+        conn.execute(
+            "DELETE FROM locality_baseline_verification WHERE baseline_id = ?",
+            (baseline_id,),
+        )
+        if (
+            coverage.complete
+            and source_stable
+            and current_manifest is not None
+            and eligible_agency_codes is not None
+        ):
+            owned = _baseline_owned_fingerprints(
+                conn, baseline_id, current_manifest
+            )
+            eligible_fingerprint = _eligible_agencies_fingerprint(
+                eligible_agency_codes
+            )
+            proof_values = (
+                baseline_id,
+                source_generation,
+                source_schema[0],
+                source_schema[2],
+                source_schema[3],
+                eligible_fingerprint,
+                current_manifest.manifest_fingerprint,
+                *owned,
+            )
+            conn.execute(
+                """
+                INSERT INTO locality_baseline_verification
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (*proof_values, _proof_fingerprint(proof_values), _now()),
+            )
+            conn.execute(
+                "UPDATE locality_baseline_manifest SET status='complete' WHERE baseline_id=?",
+                (baseline_id,),
+            )
+            completed = _manifest_row(conn, baseline_id)
+            if completed is None:
+                raise RuntimeError("completed baseline manifest disappeared")
+            _validate_baseline_verification(
+                conn, baseline_id, completed, eligible_agency_codes
+            )
+        else:
+            conn.execute(
+                "UPDATE locality_baseline_manifest SET status='failed' WHERE baseline_id=?",
+                (baseline_id,),
+            )
     manifest = _manifest_row(conn, baseline_id)
     if manifest is None:
         raise RuntimeError("baseline manifest did not persist")
@@ -1031,7 +1464,9 @@ class SnapshotResolver:
             for code in (self.eligible_agency_codes or ())
         )
         self._pending: dict[tuple[str, str, str, str, str], _SnapshotCandidate] = {}
-        self._validated_baselines: dict[str, tuple[int, BaselineManifest]] = {}
+        self._validated_baselines: dict[
+            str, tuple[int, BaselineManifest, str]
+        ] = {}
         self._source_schema_pin: tuple[
             int, tuple[str, ...], str, str
         ] | None = None
@@ -1228,15 +1663,21 @@ class SnapshotResolver:
                 raise MissingHistoricalSnapshot(
                     "baseline manifest drifted during snapshot resolution"
                 )
+            proof = _verification_row(self.procurement_conn, baseline_id)
+            if proof is None or cached[2] != proof.proof_fingerprint:
+                raise MissingHistoricalSnapshot(
+                    "baseline verification evidence drifted during snapshot resolution"
+                )
             return
         if self.eligible_agency_codes is None:
             raise MissingHistoricalSnapshot(
                 "historical baseline validation requires eligible agency codes"
             )
-        coverage = verify_baseline_manifest(
+        proof = _validate_baseline_verification(
             self.procurement_conn,
             baseline_id,
-            eligible_agency_codes=self.eligible_agency_codes,
+            manifest,
+            self.eligible_agency_codes,
         )
         if read_data_generation(self.procurement_conn) != source_generation:
             raise MissingHistoricalSnapshot(
@@ -1247,11 +1688,15 @@ class SnapshotResolver:
             raise MissingHistoricalSnapshot(
                 "baseline manifest drifted during baseline validation"
             )
-        if not coverage.complete:
+        if proof.source_data_generation > source_generation:
             raise MissingHistoricalSnapshot(
-                "pre-cutover snapshot baseline coverage is invalid"
+                "historical baseline proof is newer than the source data generation"
             )
-        self._validated_baselines[baseline_id] = (source_generation, manifest)
+        self._validated_baselines[baseline_id] = (
+            source_generation,
+            manifest,
+            proof.proof_fingerprint,
+        )
 
     def _stage(
         self,

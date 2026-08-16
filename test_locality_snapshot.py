@@ -271,7 +271,40 @@ class SnapshotResolverTests(SnapshotTestCase):
             self.assertTrue(
                 resolver.resolve(historical, "1234567890", 100.0, True)
             )
-        self.assertEqual(canonical_scan.call_count, 4)
+        self.assertEqual(canonical_scan.call_count, 0)
+
+    def source_refresh_state(self):
+        source_tables = (
+            "cnstwk_cntrct",
+            "servc_cntrct",
+            "thng_cntrct",
+            "shopping_cntrct",
+        )
+        placeholders = ",".join("?" for _ in source_tables)
+        return {
+            "schema": self.proc_conn.execute(
+                f"SELECT type, name, tbl_name, sql FROM sqlite_master "
+                f"WHERE name IN ({placeholders}) OR "
+                f"(type='trigger' AND tbl_name IN ({placeholders})) "
+                "ORDER BY type, name",
+                (*source_tables, *source_tables),
+            ).fetchall(),
+            "construction": self.proc_conn.execute(
+                "SELECT * FROM cnstwk_cntrct ORDER BY rowid"
+            ).fetchall(),
+            "schema_state": self.proc_conn.execute(
+                "SELECT * FROM locality_source_schema_state ORDER BY singleton_id"
+            ).fetchall(),
+            "audit": self.proc_conn.execute(
+                "SELECT * FROM locality_source_schema_audit ORDER BY id"
+            ).fetchall(),
+            "sequence": self.proc_conn.execute(
+                "SELECT * FROM sqlite_sequence ORDER BY name"
+            ).fetchall(),
+            "clock": self.proc_conn.execute(
+                "SELECT * FROM locality_generation_clock ORDER BY singleton_id"
+            ).fetchall(),
+        }
 
     def test_snapshot_schema_uses_required_primary_key_and_without_rowid(self):
         sql = self.proc_conn.execute(
@@ -306,6 +339,7 @@ class SnapshotResolverTests(SnapshotTestCase):
                 "locality_baseline_manifest",
                 "locality_baseline_contract",
                 "locality_baseline_supplier",
+                "locality_baseline_verification",
                 "contract_supplier_locality",
             )
         }
@@ -349,9 +383,16 @@ class SnapshotResolverTests(SnapshotTestCase):
                 ).fetchall(),
                 rows,
             )
+        resolver_v1 = self.resolver(
+            generation_id="generation-1",
+            selected_baseline_id=BASELINE_ID,
+        )
         resolver_v2 = self.resolver(
             generation_id="generation-2",
             selected_baseline_id="baseline-v2",
+        )
+        self.assertTrue(
+            resolver_v1.resolve(historical_v1, "1234567890", 100.0, True)
         )
         self.assertFalse(
             resolver_v2.resolve(historical_v2, "1234567890", 100.0, True)
@@ -459,17 +500,16 @@ class SnapshotResolverTests(SnapshotTestCase):
         self.assertTrue(resolver.resolve(self.new_contract, "2222222222", 100.0, True))
         self.assertEqual(resolver.flush(), 1)
 
-    def test_snapshot_rejects_historical_row_after_canonical_source_drift(self):
+    def test_explicit_historical_baseline_uses_its_owned_proof_after_source_correction(self):
         historical = self.complete_source_baseline()
         with guarded_write_session(self.proc_conn):
             self.proc_conn.execute(
                 "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
             )
 
-        with self.assertRaisesRegex(
-            MissingHistoricalSnapshot, "coverage|baseline|generation|drift"
-        ):
+        self.assertTrue(
             self.resolver().resolve(historical, "1234567890", 100.0, True)
+        )
 
     def test_repeated_historical_resolves_validate_all_sectors_once(self):
         historical = self.complete_source_baseline()
@@ -486,7 +526,7 @@ class SnapshotResolverTests(SnapshotTestCase):
                 resolver.resolve(historical, "1234567890", 100.0, True)
             )
 
-        self.assertEqual(canonical_scan.call_count, 4)
+        self.assertEqual(canonical_scan.call_count, 0)
 
     def test_warm_resolver_checks_only_pinned_schema_version_not_sqlite_master(self):
         historical = self.complete_source_baseline()
@@ -602,6 +642,15 @@ class SnapshotResolverTests(SnapshotTestCase):
             )
         )
 
+    def test_complete_baseline_verification_evidence_is_immutable(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "UPDATE locality_baseline_verification "
+                "SET proof_fingerprint='tampered' WHERE baseline_id=?",
+                (BASELINE_ID,),
+            )
+        )
+
     def test_source_generation_drift_invalidates_cached_validation_without_rescan(self):
         historical = self.complete_source_baseline()
         ensure_snapshot_schema(self.proc_conn)
@@ -621,7 +670,7 @@ class SnapshotResolverTests(SnapshotTestCase):
             with self.assertRaisesRegex(MissingHistoricalSnapshot, "generation|drift"):
                 resolver.resolve(historical, "1234567890", 100.0, True)
 
-        self.assertEqual(canonical_scan.call_count, 4)
+        self.assertEqual(canonical_scan.call_count, 0)
 
     def test_warm_resolver_rejects_drop_recreated_source_table_before_rescan(self):
         historical = self.complete_source_baseline()
@@ -655,7 +704,7 @@ class SnapshotResolverTests(SnapshotTestCase):
             ):
                 resolver.resolve(historical, "1234567890", 100.0, True)
 
-        self.assertEqual(canonical_scan.call_count, 4)
+        self.assertEqual(canonical_scan.call_count, 0)
 
     def test_missing_source_guard_blocks_resolver_activation(self):
         self.complete_source_baseline()
@@ -688,7 +737,7 @@ class SnapshotResolverTests(SnapshotTestCase):
             ):
                 resolver.resolve(historical, "1234567890", 100.0, True)
 
-        self.assertEqual(canonical_scan.call_count, 4)
+        self.assertEqual(canonical_scan.call_count, 0)
 
     def test_late_created_source_table_requires_audited_refresh(self):
         create_contract_source_tables(self.proc_conn)
@@ -701,6 +750,12 @@ class SnapshotResolverTests(SnapshotTestCase):
             eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
         )
         self.assertEqual(manifest.status, "failed")
+        self.assertIsNone(
+            self.proc_conn.execute(
+                "SELECT 1 FROM locality_baseline_verification WHERE baseline_id=?",
+                (BASELINE_ID,),
+            ).fetchone()
+        )
 
         before = read_data_generation(self.proc_conn)
         refresh_source_schema(
@@ -762,6 +817,104 @@ class SnapshotResolverTests(SnapshotTestCase):
         self.assertTrue(
             self.resolver().resolve(historical, "1234567890", 100.0, True)
         )
+
+    def test_source_schema_editor_rejects_commit_rollback_and_transaction_sql(self):
+        self.complete_source_baseline()
+        forbidden = (
+            "COMMIT",
+            "ROLLBACK",
+            "BEGIN IMMEDIATE",
+            "SAVEPOINT callback_scope",
+            "RELEASE callback_scope",
+            "PRAGMA journal_mode=WAL",
+            "ATTACH DATABASE ':memory:' AS escaped",
+            "DETACH DATABASE escaped",
+            "VACUUM",
+            "UPDATE locality_generation_clock SET data_generation=999",
+            "DELETE FROM locality_source_schema_audit",
+        )
+        for statement in forbidden:
+            with self.subTest(statement=statement):
+                before = self.source_refresh_state()
+
+                def transaction_attempt(editor):
+                    editor.execute(
+                        "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
+                    )
+                    editor.execute(statement)
+
+                with self.assertRaisesRegex(
+                    RuntimeError, "rejects transaction control|unsafe SQL"
+                ):
+                    refresh_source_schema(
+                        self.proc_conn,
+                        operator="operator-adversarial",
+                        reason="reject transaction-changing SQL",
+                        replace=transaction_attempt,
+                    )
+                self.assertEqual(self.source_refresh_state(), before)
+
+        for method_name in ("commit", "rollback"):
+            with self.subTest(method=method_name):
+                before = self.source_refresh_state()
+
+                def method_attempt(editor):
+                    self.assertNotIsInstance(editor, sqlite3.Connection)
+                    for forbidden_attribute in (
+                        "connection",
+                        "cursor",
+                        "commit",
+                        "rollback",
+                        "executescript",
+                        "__enter__",
+                        "__exit__",
+                    ):
+                        self.assertFalse(hasattr(editor, forbidden_attribute))
+                    editor.execute(
+                        "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
+                    )
+                    getattr(editor, method_name)()
+
+                with self.assertRaises(AttributeError):
+                    refresh_source_schema(
+                        self.proc_conn,
+                        operator="operator-adversarial",
+                        reason="reject connection transaction method",
+                        replace=method_attempt,
+                    )
+                self.assertEqual(self.source_refresh_state(), before)
+
+    def test_source_schema_refresh_failure_boundaries_restore_exact_prior_state(self):
+        self.complete_source_baseline()
+        stages = (
+            "after_replacement",
+            "after_trigger_reinstall",
+            "after_state_update",
+            "after_audit_insert",
+            "before_return",
+        )
+        for stage in stages:
+            with self.subTest(stage=stage):
+                before = self.source_refresh_state()
+
+                def replacement(editor):
+                    editor.execute(
+                        "UPDATE cnstwk_cntrct SET thtmCntrctAmt=707"
+                    )
+
+                def fail_at(current_stage):
+                    if current_stage == stage:
+                        raise RuntimeError(f"injected failure: {stage}")
+
+                with self.assertRaisesRegex(RuntimeError, "injected failure"):
+                    refresh_source_schema(
+                        self.proc_conn,
+                        operator="operator-failure-injection",
+                        reason=f"exercise {stage}",
+                        replace=replacement,
+                        failure_injector=fail_at,
+                    )
+                self.assertEqual(self.source_refresh_state(), before)
 
     def test_source_schema_refresh_replaces_and_reprotects_atomically(self):
         historical = self.complete_source_baseline()
@@ -923,6 +1076,7 @@ class SnapshotResolverTests(SnapshotTestCase):
     def test_snapshot_rejects_complete_manifest_that_does_not_own_row_membership(self):
         create_contract_source_tables(self.proc_conn)
         insert_required_sector_source(self.proc_conn)
+        self.proc_conn.commit()
         refresh_source_schema(
             self.proc_conn,
             operator="test-suite",
@@ -944,7 +1098,9 @@ class SnapshotResolverTests(SnapshotTestCase):
                 (BASELINE_ID,),
             )
 
-        with self.assertRaisesRegex(MissingHistoricalSnapshot, "member|ownership|coverage"):
+        with self.assertRaisesRegex(
+            MissingHistoricalSnapshot, "member|ownership|coverage|verification|evidence"
+        ):
             self.resolver().resolve(self.old_contract, "1234567890", 100.0, True)
 
     def test_new_revision_inherits_unchanged_supplier_decision(self):
