@@ -1,19 +1,21 @@
-"""Shared maintenance lock, write fence, and SQLite generation helpers."""
+"""Shared maintenance lock, mandatory write sessions, and generation helpers."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
+import tempfile
 import threading
 import time
 from typing import Any, Iterator
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - exercised through injected fallbacks on Windows
+except ImportError:  # pragma: no cover - Windows uses the injectable fallback.
     fcntl = None
 
 
@@ -25,13 +27,60 @@ class CheckpointError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class LocalityPaths:
+    maintenance_path: Path
+    journal_path: Path
+    marker_path: Path
+    pointer_path: Path
+
+
 _thread_locks: dict[Path, threading.Lock] = {}
 _thread_locks_guard = threading.Lock()
+_UNSET = object()
 
 
 def _thread_lock(path: Path) -> threading.Lock:
     with _thread_locks_guard:
         return _thread_locks.setdefault(path, threading.Lock())
+
+
+def _database_path(conn: sqlite3.Connection) -> Path | None:
+    for _, name, path in conn.execute("PRAGMA database_list"):
+        if name == "main" and path:
+            return Path(path).resolve()
+    return None
+
+
+def locality_paths(conn: sqlite3.Connection) -> LocalityPaths:
+    """Derive the one shared transition path set for a database directory."""
+    database_path = _database_path(conn)
+    root = database_path.parent if database_path else Path(tempfile.gettempdir())
+    return LocalityPaths(
+        maintenance_path=root / "locality_maintenance.lock",
+        journal_path=root / "locality_transition.json",
+        marker_path=root / "locality_writes_paused",
+        pointer_path=root / "active_locality_generation.json",
+    )
+
+
+def install_write_guard(conn: sqlite3.Connection) -> dict[str, int]:
+    """Register a connection-local authorizer used by protected-table triggers."""
+    state = {"mode": 0}
+    conn.create_function("locality_guarded_write", 0, lambda: state["mode"])
+    return state
+
+
+@contextmanager
+def maintenance_write_permission(conn: sqlite3.Connection, *, fence_admin: bool = False) -> Iterator[None]:
+    """Temporarily authorize a configured connection while it owns a write transaction."""
+    state = install_write_guard(conn)
+    previous = state["mode"]
+    state["mode"] = 2 if fence_admin else 1
+    try:
+        yield
+    finally:
+        state["mode"] = previous
 
 
 @contextmanager
@@ -78,14 +127,13 @@ def _activation_row(conn: sqlite3.Connection) -> tuple[int, str | None, int] | N
 def _assert_writes_open(
     conn: sqlite3.Connection,
     *,
-    journal_path: str | Path | None,
-    marker_path: str | Path | None,
-    pointer_path: str | Path | None,
+    journal_path: Path,
+    marker_path: Path,
+    pointer_path: Path,
     peer_conn: sqlite3.Connection | None,
 ) -> None:
-    for path in (journal_path, marker_path):
-        if path is not None and Path(path).exists():
-            raise WriteFenceError("locality writes are paused")
+    if journal_path.exists() or marker_path.exists():
+        raise WriteFenceError("locality writes are paused")
     row = _activation_row(conn)
     if row is None or not row[0]:
         raise WriteFenceError("persisted locality write fence is closed")
@@ -93,9 +141,9 @@ def _assert_writes_open(
         peer = _activation_row(peer_conn)
         if peer is None or not peer[0] or peer[1] != row[1]:
             raise WriteFenceError("locality activation rows disagree")
-    if pointer_path is not None and Path(pointer_path).exists():
+    if pointer_path.exists():
         try:
-            pointer = json.loads(Path(pointer_path).read_text(encoding="utf-8"))
+            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise WriteFenceError("activation pointer is unreadable") from error
         generation = pointer.get("active_generation_id", pointer.get("generation_id"))
@@ -111,23 +159,63 @@ def guarded_write_session(
     marker_path: str | Path | None = None,
     pointer_path: str | Path | None = None,
     peer_conn: sqlite3.Connection | None = None,
+    maintenance_path: str | Path | None = None,
+    timeout_seconds: float = 5,
+    acquire_lock: bool = True,
 ) -> Iterator[sqlite3.Connection]:
-    """Fence-check before an explicit write transaction; rollback is automatic on failure."""
-    _assert_writes_open(
-        conn,
-        journal_path=journal_path,
-        marker_path=marker_path,
-        pointer_path=pointer_path,
-        peer_conn=peer_conn,
+    """Open the only supported write path after fence and peer checks pass."""
+    install_write_guard(conn)
+    defaults = locality_paths(conn)
+    resolved_journal = Path(journal_path) if journal_path is not None else defaults.journal_path
+    resolved_marker = Path(marker_path) if marker_path is not None else defaults.marker_path
+    resolved_pointer = Path(pointer_path) if pointer_path is not None else defaults.pointer_path
+    resolved_lock = Path(maintenance_path) if maintenance_path is not None else defaults.maintenance_path
+    lock_context = maintenance_lock(resolved_lock, timeout_seconds) if acquire_lock else nullcontext()
+    with lock_context:
+        _assert_writes_open(
+            conn,
+            journal_path=resolved_journal,
+            marker_path=resolved_marker,
+            pointer_path=resolved_pointer,
+            peer_conn=peer_conn,
+        )
+        started_transaction = not conn.in_transaction
+        if started_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        try:
+            with maintenance_write_permission(conn):
+                yield conn
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+
+
+def _set_write_fence_in_transaction(
+    conn: sqlite3.Connection,
+    writes_enabled: bool,
+    operator: str,
+    reason: str,
+    *,
+    active_generation_id: str | None | object = _UNSET,
+    ever_snapshot_activated: bool | None = None,
+) -> None:
+    current = _activation_row(conn)
+    if current is None:
+        raise WriteFenceError("activation state is missing")
+    generation = current[1] if active_generation_id is _UNSET else active_generation_id
+    activated = int(ever_snapshot_activated) if ever_snapshot_activated is not None else current[2]
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO locality_fence_audit (writes_enabled, operator, reason, changed_at) VALUES (?, ?, ?, ?)",
+        (int(writes_enabled), operator, reason, now),
     )
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except BaseException:
-        conn.rollback()
-        raise
-    else:
-        conn.commit()
+    conn.execute(
+        "UPDATE locality_activation_state SET writes_enabled=?, active_generation_id=?, "
+        "ever_snapshot_activated=?, updated_at=? WHERE singleton_id=1",
+        (int(writes_enabled), generation, activated, now),
+    )
 
 
 def set_write_fence(
@@ -136,29 +224,30 @@ def set_write_fence(
     operator: str,
     reason: str,
     *,
-    active_generation_id: str | None = None,
+    active_generation_id: str | None | object = _UNSET,
     ever_snapshot_activated: bool | None = None,
 ) -> None:
-    """Persist a fence transition and its audit in one SQLite transaction."""
+    """Single-database primitive; dual-database transitions use the admin command."""
     from company_locality import ensure_locality_schema
 
     ensure_locality_schema(conn)
-    now = datetime.now().astimezone().isoformat(timespec="seconds")
-    with conn:
-        current = _activation_row(conn)
-        if current is None:
-            raise WriteFenceError("activation state is missing")
-        generation = active_generation_id if active_generation_id is not None else current[1]
-        activated = int(ever_snapshot_activated) if ever_snapshot_activated is not None else current[2]
-        conn.execute(
-            "UPDATE locality_activation_state SET writes_enabled=?, active_generation_id=?, "
-            "ever_snapshot_activated=?, updated_at=? WHERE singleton_id=1",
-            (int(writes_enabled), generation, activated, now),
-        )
-        conn.execute(
-            "INSERT INTO locality_fence_audit (writes_enabled, operator, reason, changed_at) VALUES (?, ?, ?, ?)",
-            (int(writes_enabled), operator, reason, now),
-        )
+    with maintenance_lock(locality_paths(conn).maintenance_path, 5):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            with maintenance_write_permission(conn, fence_admin=True):
+                _set_write_fence_in_transaction(
+                    conn,
+                    writes_enabled,
+                    operator,
+                    reason,
+                    active_generation_id=active_generation_id,
+                    ever_snapshot_activated=ever_snapshot_activated,
+                )
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
 
 
 def read_data_generation(conn: sqlite3.Connection) -> int:

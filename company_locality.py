@@ -187,7 +187,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             operator TEXT NOT NULL,
             reason TEXT NOT NULL,
             generation_id TEXT NOT NULL,
-            resolved_at TEXT NOT NULL
+            resolved_at TEXT NOT NULL,
+            resolution_key TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS locality_activation_state (
             singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
@@ -213,11 +214,25 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO locality_generation_clock VALUES (1, 0, 0)"
     )
+    if conn.execute("SELECT 1 FROM locality_activation_state WHERE singleton_id = 1").fetchone() is None:
+        conn.execute(
+            "INSERT INTO locality_activation_state VALUES (1, 1, NULL, 0, ?)",
+            (_now(),),
+        )
+    resolution_columns = {row[1] for row in conn.execute("PRAGMA table_info(company_locality_resolution)")}
+    if "resolution_key" not in resolution_columns:
+        conn.execute(
+            "ALTER TABLE company_locality_resolution ADD COLUMN resolution_key TEXT NOT NULL DEFAULT ''"
+        )
     conn.execute(
-        "INSERT OR IGNORE INTO locality_activation_state VALUES (1, 1, NULL, 0, ?)",
-        (_now(),),
+        "CREATE UNIQUE INDEX IF NOT EXISTS company_locality_resolution_identity "
+        "ON company_locality_resolution(resolution_key)"
     )
+    from maintenance_lock import install_write_guard
+
+    install_write_guard(conn)
     _install_generation_triggers(conn)
+    _install_write_guards(conn)
 
 
 def _install_generation_triggers(conn: sqlite3.Connection) -> None:
@@ -243,6 +258,31 @@ def _install_generation_triggers(conn: sqlite3.Connection) -> None:
                 f"AFTER {action} ON {table} BEGIN "
                 "UPDATE locality_generation_clock SET control_revision = control_revision + 1 "
                 "WHERE singleton_id = 1; END"
+            )
+
+
+def _install_write_guards(conn: sqlite3.Connection) -> None:
+    protected = [
+        "company_locality_status",
+        "company_locality_event",
+        "company_locality_resolution",
+        "company_sync_job_log",
+        "company_sync_response_metric",
+        "locality_activation_state",
+        "locality_fence_audit",
+    ]
+    if "bizno" in _master_columns(conn):
+        protected.append("company_master")
+    for table in protected:
+        for action in ("INSERT", "UPDATE", "DELETE"):
+            conn.execute(f"DROP TRIGGER IF EXISTS locality_{table}_{action.lower()}_guard")
+            conn.execute(
+                f"CREATE TRIGGER IF NOT EXISTS locality_{table}_{action.lower()}_guard "
+                f"BEFORE {action} ON {table} "
+                "WHEN locality_guarded_write() = 0 "
+                "OR (locality_guarded_write() != 2 AND COALESCE((SELECT writes_enabled "
+                "FROM locality_activation_state WHERE singleton_id = 1), 0) = 0) "
+                "BEGIN SELECT RAISE(ABORT, 'locality protected write requires guarded session'); END"
             )
 
 
@@ -294,11 +334,15 @@ def _bootstrap_master_rows(conn: sqlite3.Connection, observed_at: str) -> None:
 
 def ensure_locality_schema(conn: sqlite3.Connection) -> None:
     """Install locality tables and bootstrap any existing supplier master rows."""
+    from maintenance_lock import locality_paths, maintenance_lock, maintenance_write_permission
+
     owns_transaction = not conn.in_transaction
-    _create_schema(conn)
-    _bootstrap_master_rows(conn, _now())
-    if owns_transaction:
-        conn.commit()
+    with maintenance_lock(locality_paths(conn).maintenance_path, 5):
+        _create_schema(conn)
+        with maintenance_write_permission(conn):
+            _bootstrap_master_rows(conn, _now())
+        if owns_transaction:
+            conn.commit()
 
 
 def _update_master(conn: sqlite3.Connection, item: Any, bizno: str) -> None:
@@ -384,90 +428,79 @@ def apply_company_changes(
     verified_at: str,
 ) -> ChangeSummary:
     """Apply a complete staged supplier batch in source-effective-time order."""
+    from maintenance_lock import guarded_write_session
+
     ensure_locality_schema(conn)
-    summary = ChangeSummary()
-    with conn:
-        for item in items:
-            summary = ChangeSummary(**{**summary.__dict__, "received": summary.received + 1})
-            bizno = normalize_bizno(_item_value(item, "bizno", "brno", "businessNo"))
-            region = _item_value(item, "rgnNm", "rgn_nm")
-            head_office = _item_value(item, "hdoffceDivNm", "head_office")
-            source_chg_dt = _item_value(item, "chgDt", "source_chg_dt")
-            new_status, inactive_reason = current_status(region, head_office)
-            effective_at = _canonical_timestamp(source_chg_dt)
-            if not bizno or effective_at is None:
-                if bizno:
-                    _insert_event(
-                        conn,
-                        bizno=bizno,
-                        previous_status=None,
-                        new_status=new_status,
-                        effective_at="",
-                        observed_at=verified_at,
-                        source_chg_dt=source_chg_dt,
-                        locality_hash=_hash((bizno, region.strip(), head_office.strip(), source_chg_dt)),
-                        descriptive_hash=_hash((bizno, _item_value(item, "corpNm", "adrs", "dtlAdrs"))),
-                        job_id=job_id,
-                        disposition="quarantined_invalid_time",
-                    )
-                summary = ChangeSummary(**{**summary.__dict__, "invalid": summary.invalid + 1})
-                continue
-            locality_hash = _hash((bizno, region.strip(), head_office.strip(), effective_at))
-            descriptive_hash = _hash(
-                (bizno, _item_value(item, "corpNm"), _item_value(item, "adrs"), _item_value(item, "dtlAdrs"))
-            )
+    staged = []
+    invalid = []
+    for sequence, item in enumerate(items):
+        bizno = normalize_bizno(_item_value(item, "bizno", "brno", "businessNo"))
+        region = _item_value(item, "rgnNm", "rgn_nm")
+        head_office = _item_value(item, "hdoffceDivNm", "head_office")
+        source_chg_dt = _item_value(item, "chgDt", "source_chg_dt")
+        new_status, inactive_reason = current_status(region, head_office)
+        effective_at = _canonical_timestamp(source_chg_dt)
+        record = (sequence, item, bizno, region, head_office, source_chg_dt, new_status, inactive_reason, effective_at)
+        if not bizno or effective_at is None:
+            invalid.append(record)
+            continue
+        locality_hash = _hash((bizno, region.strip(), head_office.strip(), effective_at))
+        descriptive_hash = _hash(
+            (bizno, _item_value(item, "corpNm"), _item_value(item, "adrs"), _item_value(item, "dtlAdrs"))
+        )
+        staged.append(record + (locality_hash, descriptive_hash))
+    counts = {"received": len(staged) + len(invalid), "applied": 0, "duplicates": 0, "ignored": 0, "retrograde": 0, "conflicts": 0, "invalid": 0}
+    with guarded_write_session(conn):
+        for _, item, bizno, region, head_office, source_chg_dt, new_status, _, _ in invalid:
+            if bizno:
+                _insert_event(
+                    conn, bizno=bizno, previous_status=None, new_status=new_status, effective_at="",
+                    observed_at=verified_at, source_chg_dt=source_chg_dt,
+                    locality_hash=_hash((bizno, region.strip(), head_office.strip(), source_chg_dt)),
+                    descriptive_hash=_hash((bizno, _item_value(item, "corpNm", "adrs", "dtlAdrs"))),
+                    job_id=job_id, disposition="quarantined_invalid_time",
+                )
+            counts["invalid"] += 1
+        for _, item, bizno, region, head_office, source_chg_dt, new_status, inactive_reason, effective_at, locality_hash, descriptive_hash in sorted(
+            staged, key=lambda row: (row[2], row[8], row[9], row[10], row[0])
+        ):
             state = conn.execute(
                 "SELECT status, source_effective_at FROM company_locality_status WHERE bizno = ?", (bizno,)
             ).fetchone()
+            applied_at_time = conn.execute(
+                "SELECT locality_hash FROM company_locality_event WHERE bizno = ? AND source_effective_at = ? "
+                "AND disposition = 'applied'", (bizno, effective_at)
+            ).fetchall()
+            if any(row[0] == locality_hash for row in applied_at_time):
+                _update_master(conn, item, bizno)
+                counts["duplicates"] += 1
+                continue
+            if applied_at_time:
+                inserted = _insert_event(
+                    conn, bizno=bizno, previous_status=state[0] if state else None, new_status=new_status,
+                    effective_at=effective_at, observed_at=verified_at, source_chg_dt=source_chg_dt,
+                    locality_hash=locality_hash, descriptive_hash=descriptive_hash, job_id=job_id,
+                    disposition="quarantined_conflict",
+                )
+                counts["conflicts"] += int(inserted)
+                counts["duplicates"] += int(not inserted)
+                continue
             is_master = "bizno" in _master_columns(conn) and conn.execute(
                 "SELECT 1 FROM company_master WHERE bizno = ?", (bizno,)
             ).fetchone() is not None
             if state is None and new_status != "active_local" and not is_master:
-                summary = ChangeSummary(**{**summary.__dict__, "ignored": summary.ignored + 1})
+                counts["ignored"] += 1
                 continue
-            if state is not None:
-                current_effective = state[1]
-                if effective_at < current_effective:
-                    inserted = _insert_event(
-                        conn,
-                        bizno=bizno,
-                        previous_status=state[0],
-                        new_status=new_status,
-                        effective_at=effective_at,
-                        observed_at=verified_at,
-                        source_chg_dt=source_chg_dt,
-                        locality_hash=locality_hash,
-                        descriptive_hash=descriptive_hash,
-                        job_id=job_id,
-                        disposition="quarantined_retrograde",
-                    )
-                    summary = ChangeSummary(**{**summary.__dict__, "retrograde": summary.retrograde + int(inserted), "duplicates": summary.duplicates + int(not inserted)})
-                    continue
-                if effective_at == current_effective:
-                    matching = conn.execute(
-                        "SELECT 1 FROM company_locality_event WHERE bizno = ? AND source_effective_at = ? "
-                        "AND locality_hash = ? AND disposition = 'applied'",
-                        (bizno, effective_at, locality_hash),
-                    ).fetchone()
-                    if matching:
-                        _update_master(conn, item, bizno)
-                        summary = ChangeSummary(**{**summary.__dict__, "duplicates": summary.duplicates + 1})
-                        continue
-                    inserted = _insert_event(
-                        conn,
-                        bizno=bizno,
-                        previous_status=state[0],
-                        new_status=new_status,
-                        effective_at=effective_at,
-                        observed_at=verified_at,
-                        source_chg_dt=source_chg_dt,
-                        locality_hash=locality_hash,
-                        descriptive_hash=descriptive_hash,
-                        job_id=job_id,
-                        disposition="quarantined_conflict",
-                    )
-                    summary = ChangeSummary(**{**summary.__dict__, "conflicts": summary.conflicts + int(inserted), "duplicates": summary.duplicates + int(not inserted)})
-                    continue
+            if state is not None and effective_at < state[1]:
+                inserted = _insert_event(
+                    conn, bizno=bizno, previous_status=state[0], new_status=new_status,
+                    effective_at=effective_at, observed_at=verified_at, source_chg_dt=source_chg_dt,
+                    locality_hash=locality_hash, descriptive_hash=descriptive_hash, job_id=job_id,
+                    disposition="quarantined_retrograde",
+                )
+                counts["retrograde"] += int(inserted)
+                counts["duplicates"] += int(not inserted)
+                continue
             previous_status = state[0] if state else None
             _update_master(conn, item, bizno)
             conn.execute(
@@ -483,34 +516,17 @@ def apply_company_changes(
                     inactive_at=excluded.inactive_at, inactive_reason=excluded.inactive_reason,
                     last_verified_at=excluded.last_verified_at, source_chg_dt=excluded.source_chg_dt
                 """,
-                (
-                    bizno,
-                    new_status,
-                    region,
-                    head_office,
-                    effective_at,
-                    verified_at,
-                    effective_at if inactive_reason else None,
-                    inactive_reason,
-                    verified_at,
-                    source_chg_dt,
-                ),
+                (bizno, new_status, region, head_office, effective_at, verified_at,
+                 effective_at if inactive_reason else None, inactive_reason, verified_at, source_chg_dt),
             )
             _insert_event(
-                conn,
-                bizno=bizno,
-                previous_status=previous_status,
-                new_status=new_status,
-                effective_at=effective_at,
-                observed_at=verified_at,
-                source_chg_dt=source_chg_dt,
-                locality_hash=locality_hash,
-                descriptive_hash=descriptive_hash,
-                job_id=job_id,
+                conn, bizno=bizno, previous_status=previous_status, new_status=new_status,
+                effective_at=effective_at, observed_at=verified_at, source_chg_dt=source_chg_dt,
+                locality_hash=locality_hash, descriptive_hash=descriptive_hash, job_id=job_id,
                 disposition="applied",
             )
-            summary = ChangeSummary(**{**summary.__dict__, "applied": summary.applied + 1})
-    return summary
+            counts["applied"] += 1
+    return ChangeSummary(**counts)
 
 
 def active_local_biznos(conn: sqlite3.Connection) -> set[str]:
@@ -577,6 +593,8 @@ def resolve_company_conflict(
     evidence: Any,
     generation_id: str = "manual",
 ) -> Resolution:
+    from maintenance_lock import guarded_write_session
+
     ensure_locality_schema(conn)
     ordered_ids = sorted({int(event_id) for event_id in event_ids})
     if not ordered_ids or selected_status not in VALID_STATUSES:
@@ -584,86 +602,106 @@ def resolve_company_conflict(
     canonical_effective = _canonical_timestamp(effective_at)
     if canonical_effective is None:
         raise ValueError("effective_at must include a time")
-    placeholders = ", ".join("?" for _ in ordered_ids)
-    events = conn.execute(
-        f"SELECT id, bizno FROM company_locality_event WHERE id IN ({placeholders}) "
-        "AND disposition = 'quarantined_conflict'",
-        ordered_ids,
-    ).fetchall()
-    if len(events) != len(ordered_ids) or len({row[1] for row in events}) != 1:
-        raise ValueError("event_ids must name conflicts for one supplier")
-    bizno = events[0][1]
     event_ids_json = json.dumps(ordered_ids, separators=(",", ":"))
     evidence_json = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    existing = conn.execute(
-        """
-        SELECT id FROM company_locality_resolution
-        WHERE bizno = ? AND event_ids_json = ? AND selected_status = ?
-          AND selected_effective_at = ? AND evidence_json = ? AND operator = ?
-          AND reason = ? AND generation_id = ?
-        """,
-        (bizno, event_ids_json, selected_status, canonical_effective, evidence_json, operator, reason, generation_id),
-    ).fetchone()
-    if existing:
-        return Resolution(existing[0], bizno, selected_status, canonical_effective)
-    with conn:
+    resolution_key = _hash(
+        (event_ids_json, selected_status, canonical_effective, evidence_json, operator, reason, generation_id)
+    )
+    placeholders = ", ".join("?" for _ in ordered_ids)
+    with guarded_write_session(conn):
+        events = conn.execute(
+            f"SELECT id, bizno FROM company_locality_event WHERE id IN ({placeholders}) "
+            "AND disposition = 'quarantined_conflict'",
+            ordered_ids,
+        ).fetchall()
+        if len(events) != len(ordered_ids) or len({row[1] for row in events}) != 1:
+            raise ValueError("event_ids must name conflicts for one supplier")
+        bizno = events[0][1]
         before = conn.execute(
-            "SELECT status FROM company_locality_status WHERE bizno = ?", (bizno,)
+            "SELECT status, source_effective_at FROM company_locality_status WHERE bizno = ?", (bizno,)
         ).fetchone()
         cursor = conn.execute(
             """
             INSERT INTO company_locality_resolution
             (bizno, event_ids_json, before_status, selected_status, selected_effective_at,
-             evidence_json, operator, reason, generation_id, resolved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             evidence_json, operator, reason, generation_id, resolved_at, resolution_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(resolution_key) DO NOTHING
             """,
             (
-                bizno,
-                event_ids_json,
-                before[0] if before else None,
-                selected_status,
-                canonical_effective,
-                evidence_json,
-                operator,
-                reason,
-                generation_id,
-                _now(),
+                bizno, event_ids_json, before[0] if before else None, selected_status,
+                canonical_effective, evidence_json, operator, reason, generation_id, _now(), resolution_key,
             ),
         )
-        return Resolution(cursor.lastrowid, bizno, selected_status, canonical_effective)
+        existing = conn.execute(
+            "SELECT id FROM company_locality_resolution WHERE resolution_key = ?", (resolution_key,)
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("resolution insert did not persist")
+        if cursor.rowcount:
+            if before is None or before[1] <= canonical_effective:
+                reason_by_status = {
+                    "active_local": None,
+                    "moved_out": "region_changed",
+                    "branch_changed": "head_office_changed",
+                    "unverified": None,
+                }
+                conn.execute(
+                    """
+                    INSERT INTO company_locality_status
+                    (bizno, status, source_effective_at, observed_at, inactive_at, inactive_reason, last_verified_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bizno) DO UPDATE SET status=excluded.status,
+                        source_effective_at=excluded.source_effective_at, observed_at=excluded.observed_at,
+                        inactive_at=excluded.inactive_at, inactive_reason=excluded.inactive_reason,
+                        last_verified_at=excluded.last_verified_at
+                    """,
+                    (
+                        bizno, selected_status, canonical_effective, _now(),
+                        canonical_effective if reason_by_status[selected_status] else None,
+                        reason_by_status[selected_status], _now(),
+                    ),
+                )
+        return Resolution(existing[0], bizno, selected_status, canonical_effective)
 
 
 def start_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *, started_at: str | None = None, **metrics: Any) -> None:
+    from maintenance_lock import guarded_write_session
+
     ensure_locality_schema(conn)
-    conn.execute(
-        """
-        INSERT INTO company_sync_job_log (job_name, source_date, status, expected_rows, received_rows,
-            page_count, retry_count, call_count, call_budget, circuit_state, started_at)
-        VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(job_name, source_date) DO UPDATE SET status='running', started_at=excluded.started_at,
-            completed_at=NULL, error_detail=NULL
-        """,
-        (
-            job_name, source_date, metrics.get("expected_rows"), metrics.get("received_rows"),
-            metrics.get("page_count"), metrics.get("retry_count", 0), metrics.get("call_count", 0),
-            metrics.get("call_budget", 0), metrics.get("circuit_state", "closed"), started_at or _now(),
-        ),
-    )
-    conn.commit()
+    with guarded_write_session(conn):
+        conn.execute(
+            """
+            INSERT INTO company_sync_job_log (job_name, source_date, status, expected_rows, received_rows,
+                page_count, retry_count, call_count, call_budget, circuit_state, started_at)
+            VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_name, source_date) DO UPDATE SET status='running', started_at=excluded.started_at,
+                completed_at=NULL, error_detail=NULL
+            """,
+            (
+                job_name, source_date, metrics.get("expected_rows"), metrics.get("received_rows"),
+                metrics.get("page_count"), metrics.get("retry_count", 0), metrics.get("call_count", 0),
+                metrics.get("call_budget", 0), metrics.get("circuit_state", "closed"), started_at or _now(),
+            ),
+        )
 
 
 def finish_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, *, completed_at: str | None = None, **metrics: Any) -> None:
-    conn.execute(
-        "UPDATE company_sync_job_log SET status='success', completed_at=?, expected_rows=COALESCE(?, expected_rows), "
-        "received_rows=COALESCE(?, received_rows), page_count=COALESCE(?, page_count) WHERE job_name=? AND source_date=?",
-        (completed_at or _now(), metrics.get("expected_rows"), metrics.get("received_rows"), metrics.get("page_count"), job_name, source_date),
-    )
-    conn.commit()
+    from maintenance_lock import guarded_write_session
+
+    with guarded_write_session(conn):
+        conn.execute(
+            "UPDATE company_sync_job_log SET status='success', completed_at=?, expected_rows=COALESCE(?, expected_rows), "
+            "received_rows=COALESCE(?, received_rows), page_count=COALESCE(?, page_count) WHERE job_name=? AND source_date=?",
+            (completed_at or _now(), metrics.get("expected_rows"), metrics.get("received_rows"), metrics.get("page_count"), job_name, source_date),
+        )
 
 
 def fail_sync_job(conn: sqlite3.Connection, job_name: str, source_date: str, error_detail: str, *, completed_at: str | None = None) -> None:
-    conn.execute(
-        "UPDATE company_sync_job_log SET status='failed', completed_at=?, error_detail=? WHERE job_name=? AND source_date=?",
-        (completed_at or _now(), error_detail, job_name, source_date),
-    )
-    conn.commit()
+    from maintenance_lock import guarded_write_session
+
+    with guarded_write_session(conn):
+        conn.execute(
+            "UPDATE company_sync_job_log SET status='failed', completed_at=?, error_detail=? WHERE job_name=? AND source_date=?",
+            (completed_at or _now(), error_detail, job_name, source_date),
+        )

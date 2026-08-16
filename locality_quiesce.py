@@ -30,7 +30,10 @@ def assert_databases_quiesced(
 
 @contextmanager
 def dual_exclusive_transition(
-    company_conn: sqlite3.Connection, procurement_conn: sqlite3.Connection
+    company_conn: sqlite3.Connection,
+    procurement_conn: sqlite3.Connection,
+    *,
+    after_procurement_commit: Callable[[], None] | None = None,
 ) -> Iterator[None]:
     """Acquire exclusive SQLite transactions in the required company-before-procurement order."""
     company_started = False
@@ -48,5 +51,16 @@ def dual_exclusive_transition(
             company_conn.rollback()
         raise
     else:
-        procurement_conn.commit()
-        company_conn.commit()
+        try:
+            procurement_conn.commit()
+            procurement_started = False
+            if after_procurement_commit is not None:
+                after_procurement_commit()
+            company_conn.commit()
+            company_started = False
+        except BaseException:
+            if procurement_started:
+                procurement_conn.rollback()
+            if company_started:
+                company_conn.rollback()
+            raise

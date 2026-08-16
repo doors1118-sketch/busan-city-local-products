@@ -55,4 +55,3 @@ class LocalityQuiesceTests(unittest.TestCase):
                 raise RuntimeError("abort")
         self.assertEqual(self.company.execute("SELECT COUNT(*) FROM state").fetchone()[0], 0)
         self.assertEqual(self.procurement.execute("SELECT COUNT(*) FROM state").fetchone()[0], 0)
-

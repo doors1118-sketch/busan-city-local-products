@@ -219,3 +219,46 @@ class CompanyLocalityTransitionTests(unittest.TestCase):
         )
         self.assertIsNone(status_at(self.conn, "2222222222", "2026-08-16"))
 
+    def test_complete_batch_orders_each_supplier_by_effective_time(self):
+        apply_company_changes(
+            self.conn,
+            [
+                source_item("3333333333", "경남", "본사", "202608161100"),
+                source_item("3333333333", "부산", "본사", "202608160900"),
+            ],
+            "20260816",
+            "unordered-batch",
+            NOW,
+        )
+        self.assertEqual(status_at(self.conn, "3333333333", "2026-08-16 10:00:00"), "active_local")
+        self.assertEqual(status_at(self.conn, "3333333333", "2026-08-16 11:00:00"), "moved_out")
+
+    def test_late_historical_equal_time_divergence_is_a_conflict_not_retrograde(self):
+        apply_company_changes(
+            self.conn,
+            [source_item("1234567890", "부산", "본사", "202608160900")],
+            "20260816",
+            "history",
+            NOW,
+        )
+        apply_company_changes(
+            self.conn,
+            [source_item("1234567890", "경남", "본사", "202608161100")],
+            "20260816",
+            "newer",
+            NOW,
+        )
+        apply_company_changes(
+            self.conn,
+            [source_item("1234567890", "부산", "지사", "202608160900")],
+            "20260816",
+            "late-history",
+            NOW,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT disposition FROM company_locality_event WHERE job_id = ?", ("late-history",)
+            ).fetchone()[0],
+            "quarantined_conflict",
+        )
+        self.assertIsNone(status_at(self.conn, "1234567890", "2026-08-16 09:00:01"))

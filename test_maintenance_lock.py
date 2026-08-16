@@ -5,7 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
-from company_locality import ensure_locality_schema
+from company_locality import apply_company_changes, ensure_locality_schema
 from maintenance_lock import (
     CheckpointError,
     WriteFenceError,
@@ -77,13 +77,13 @@ class MaintenanceLockTests(unittest.TestCase):
 
     def test_cache_input_and_control_writes_advance_separate_generation_clocks(self):
         before = (read_data_generation(self.conn), read_control_revision(self.conn))
-        self.conn.execute(
-            "INSERT INTO company_locality_status "
-            "(bizno, status, source_effective_at, observed_at, last_verified_at) "
-            "VALUES (?, 'active_local', ?, ?, ?)",
-            ("1234567890", "2026-08-16 09:00:00+09:00", "now", "now"),
-        )
-        self.conn.commit()
+        with guarded_write_session(self.conn):
+            self.conn.execute(
+                "INSERT INTO company_locality_status "
+                "(bizno, status, source_effective_at, observed_at, last_verified_at) "
+                "VALUES (?, 'active_local', ?, ?, ?)",
+                ("1234567890", "2026-08-16 09:00:00+09:00", "now", "now"),
+            )
         after_input = (read_data_generation(self.conn), read_control_revision(self.conn))
         set_write_fence(self.conn, False, "operator", "maintenance")
         after_control = (read_data_generation(self.conn), read_control_revision(self.conn))
@@ -116,3 +116,22 @@ class MaintenanceLockTests(unittest.TestCase):
         with self.assertRaises(WriteFenceError):
             with guarded_write_session(self.conn, marker_path=marker):
                 self.conn.execute("SELECT 1")
+
+    def test_protected_table_rejects_direct_writes_even_before_fencing(self):
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.conn.execute(
+                "INSERT INTO company_locality_status "
+                "(bizno, status, source_effective_at, observed_at, last_verified_at) "
+                "VALUES ('1234567890', 'active_local', '2026-08-16 09:00:00+09:00', 'now', 'now')"
+            )
+
+    def test_fenced_supplier_apply_fails_closed_through_its_mandatory_guard(self):
+        set_write_fence(self.conn, False, "operator", "maintenance")
+        with self.assertRaises(WriteFenceError):
+            apply_company_changes(
+                self.conn,
+                [{"bizno": "1234567890", "rgnNm": "부산", "hdoffceDivNm": "본사", "chgDt": "202608160900"}],
+                "20260816",
+                "blocked",
+                "2026-08-16 12:00:00+09:00",
+            )
