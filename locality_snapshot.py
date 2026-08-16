@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 import sqlite3
-from typing import Any, Collection, Iterable, Mapping
+from typing import Any, Callable, Collection, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from company_locality import normalize_bizno, status_at
@@ -38,6 +38,7 @@ CANONICAL_EVIDENCE_TABLES = (
     "busan_award_servc",
     "busan_award_thng",
 )
+_GENERATION_OWNER_PREFIX = "@generation:"
 
 
 class SnapshotError(RuntimeError):
@@ -139,7 +140,7 @@ def _create_control_tables(conn: sqlite3.Connection) -> None:
     )
 
 
-def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
+def _create_contract_supplier_locality(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS contract_supplier_locality (
@@ -154,12 +155,55 @@ def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
             classified_at TEXT NOT NULL,
             classifier_version TEXT NOT NULL,
             content_fingerprint TEXT NOT NULL,
-            baseline_id TEXT,
+            baseline_id TEXT NOT NULL DEFAULT '',
             introduced_generation_id TEXT NOT NULL,
-            PRIMARY KEY(sector, contract_key, contract_revision, bizno)
+            PRIMARY KEY(baseline_id, sector, contract_key, contract_revision, bizno)
         ) WITHOUT ROWID
         """
     )
+
+
+def _migrate_contract_supplier_locality(conn: sqlite3.Connection) -> None:
+    columns = conn.execute("PRAGMA table_info(contract_supplier_locality)").fetchall()
+    if not columns:
+        _create_contract_supplier_locality(conn)
+        return
+    primary_key = [row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5]]
+    if primary_key == [
+        "baseline_id",
+        "sector",
+        "contract_key",
+        "contract_revision",
+        "bizno",
+    ]:
+        return
+    if primary_key != ["sector", "contract_key", "contract_revision", "bizno"]:
+        raise SnapshotError("unsupported contract locality snapshot schema")
+    conn.execute(
+        "ALTER TABLE contract_supplier_locality "
+        "RENAME TO contract_supplier_locality_unversioned"
+    )
+    _create_contract_supplier_locality(conn)
+    conn.execute(
+        """
+        INSERT INTO contract_supplier_locality
+        (sector, contract_key, contract_revision, bizno, share_pct, is_busan,
+         basis, contract_date, classified_at, classifier_version,
+         content_fingerprint, baseline_id, introduced_generation_id)
+        SELECT sector, contract_key, contract_revision, bizno, share_pct, is_busan,
+               basis, contract_date, classified_at, classifier_version,
+               content_fingerprint,
+               COALESCE(baseline_id, ? || introduced_generation_id),
+               introduced_generation_id
+        FROM contract_supplier_locality_unversioned
+        """,
+        (_GENERATION_OWNER_PREFIX,),
+    )
+    conn.execute("DROP TABLE contract_supplier_locality_unversioned")
+
+
+def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
+    _migrate_contract_supplier_locality(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS locality_baseline_manifest (
@@ -194,6 +238,35 @@ def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS locality_source_schema_state (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+            schema_version INTEGER NOT NULL,
+            protected_tables TEXT NOT NULL,
+            table_signature TEXT NOT NULL,
+            trigger_signature TEXT NOT NULL,
+            refreshed_at TEXT NOT NULL,
+            operator TEXT NOT NULL,
+            reason TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS locality_source_schema_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operator TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            schema_version_before INTEGER NOT NULL,
+            schema_version_after INTEGER NOT NULL,
+            protected_tables TEXT NOT NULL,
+            table_signature TEXT NOT NULL,
+            trigger_signature TEXT NOT NULL,
+            refreshed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS locality_baseline_supplier (
             baseline_id TEXT NOT NULL,
             sector TEXT NOT NULL,
@@ -209,44 +282,79 @@ def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
     )
 
 
-def _install_snapshot_triggers(conn: sqlite3.Connection) -> None:
+def _clock_trigger_sql(table: str, action: str, clock: str) -> str:
+    name = f"locality_{table}_{action.lower()}_clock"
+    return (
+        f"CREATE TRIGGER {name} AFTER {action} ON {table} BEGIN "
+        f"UPDATE locality_generation_clock SET {clock} = {clock} + 1 "
+        "WHERE singleton_id = 1; END"
+    )
+
+
+def _guard_trigger_sql(table: str, action: str) -> str:
+    name = f"locality_{table}_{action.lower()}_guard"
+    return (
+        f"CREATE TRIGGER {name} BEFORE {action} ON {table} "
+        "WHEN locality_guarded_write() = 0 OR "
+        "(locality_guarded_write() != 2 AND COALESCE((SELECT writes_enabled "
+        "FROM locality_activation_state WHERE singleton_id = 1), 0) = 0) "
+        "BEGIN SELECT RAISE(ABORT, "
+        "'locality protected write requires guarded session'); END"
+    )
+
+
+def _install_table_triggers(
+    conn: sqlite3.Connection,
+    table: str,
+    clock: str,
+    *,
+    replace: bool = False,
+) -> None:
+    for action in ("INSERT", "UPDATE", "DELETE"):
+        for name, sql in (
+            (f"locality_{table}_{action.lower()}_clock", _clock_trigger_sql(table, action, clock)),
+            (f"locality_{table}_{action.lower()}_guard", _guard_trigger_sql(table, action)),
+        ):
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?",
+                (name,),
+            ).fetchone()
+            if replace and exists:
+                conn.execute(f"DROP TRIGGER {name}")
+                exists = None
+            if exists is None:
+                conn.execute(sql)
+
+
+def _existing_protected_source_tables(conn: sqlite3.Connection) -> tuple[str, ...]:
     existing_tables = {
         row[0]
         for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    data_tables = tuple(
+    return tuple(
         table
         for table in (*CANONICAL_SOURCE_TABLES, *CANONICAL_EVIDENCE_TABLES)
         if table in existing_tables
     )
+
+
+def _install_snapshot_triggers(conn: sqlite3.Connection) -> None:
+    data_tables = _existing_protected_source_tables(conn)
     control_tables = (
         "contract_supplier_locality",
         "locality_baseline_manifest",
         "locality_baseline_contract",
         "locality_baseline_supplier",
+        "locality_source_schema_state",
+        "locality_source_schema_audit",
     )
     for table, clock in (
         *((table, "data_generation") for table in data_tables),
         *((table, "control_revision") for table in control_tables),
     ):
-        for action in ("INSERT", "UPDATE", "DELETE"):
-            conn.execute(
-                f"DROP TRIGGER IF EXISTS locality_{table}_{action.lower()}_clock"
-            )
-            conn.execute(
-                f"CREATE TRIGGER locality_{table}_{action.lower()}_clock "
-                f"AFTER {action} ON {table} BEGIN "
-                f"UPDATE locality_generation_clock SET {clock} = {clock} + 1 WHERE singleton_id = 1; END"
-            )
-            conn.execute(
-                f"CREATE TRIGGER IF NOT EXISTS locality_{table}_{action.lower()}_guard "
-                f"BEFORE {action} ON {table} WHEN locality_guarded_write() = 0 "
-                "OR (locality_guarded_write() != 2 AND COALESCE((SELECT writes_enabled "
-                "FROM locality_activation_state WHERE singleton_id = 1), 0) = 0) "
-                "BEGIN SELECT RAISE(ABORT, 'locality protected write requires guarded session'); END"
-            )
+        _install_table_triggers(conn, table, clock)
 
 
 def _install_complete_baseline_immutability(conn: sqlite3.Connection) -> None:
@@ -293,11 +401,15 @@ def _install_complete_baseline_immutability(conn: sqlite3.Connection) -> None:
             )
         """
     for name, clause in triggers.items():
-        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
-        conn.execute(
-            f"CREATE TRIGGER {name} {clause} BEGIN "
-            "SELECT RAISE(ABORT, 'complete baseline is immutable'); END"
-        )
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?",
+            (name,),
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                f"CREATE TRIGGER {name} {clause} BEGIN "
+                "SELECT RAISE(ABORT, 'complete baseline is immutable'); END"
+            )
 
 
 def ensure_snapshot_schema(conn: sqlite3.Connection) -> None:
@@ -323,6 +435,199 @@ def ensure_snapshot_schema(conn: sqlite3.Connection) -> None:
             _install_complete_baseline_immutability(conn)
         if owns_transaction:
             conn.commit()
+
+
+def _normalize_sql(sql: str) -> str:
+    return " ".join(str(sql or "").split())
+
+
+def _expected_source_trigger_sql(tables: Collection[str]) -> dict[str, str]:
+    expected: dict[str, str] = {}
+    for table in sorted(tables):
+        for action in ("INSERT", "UPDATE", "DELETE"):
+            expected[f"locality_{table}_{action.lower()}_clock"] = _clock_trigger_sql(
+                table, action, "data_generation"
+            )
+            expected[f"locality_{table}_{action.lower()}_guard"] = _guard_trigger_sql(
+                table, action
+            )
+    return expected
+
+
+def _signature(payload: object) -> str:
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _source_trigger_signature(conn: sqlite3.Connection, tables: Collection[str]) -> str:
+    expected = _expected_source_trigger_sql(tables)
+    if not expected:
+        return _signature([])
+    placeholders = ",".join("?" for _ in expected)
+    actual = {
+        name: _normalize_sql(sql)
+        for name, sql in conn.execute(
+            f"SELECT name, sql FROM sqlite_master WHERE type='trigger' "
+            f"AND name IN ({placeholders})",
+            tuple(sorted(expected)),
+        )
+    }
+    normalized_expected = {
+        name: _normalize_sql(sql) for name, sql in expected.items()
+    }
+    if actual != normalized_expected:
+        raise SnapshotError("source schema trigger surface is incomplete or divergent")
+    return _signature(sorted(actual.items()))
+
+
+def _expected_source_trigger_signature(tables: Collection[str]) -> str:
+    expected = {
+        name: _normalize_sql(sql)
+        for name, sql in _expected_source_trigger_sql(tables).items()
+    }
+    return _signature(sorted(expected.items()))
+
+
+def _source_table_signature(conn: sqlite3.Connection, tables: Collection[str]) -> str:
+    rows = conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
+    selected = [
+        (name, _normalize_sql(sql)) for name, sql in rows if name in set(tables)
+    ]
+    return _signature(selected)
+
+
+def _assert_source_schema_protected(
+    conn: sqlite3.Connection,
+) -> tuple[int, tuple[str, ...], str, str]:
+    row = conn.execute(
+        """
+        SELECT schema_version, protected_tables, table_signature, trigger_signature
+        FROM locality_source_schema_state WHERE singleton_id=1
+        """
+    ).fetchone()
+    if row is None:
+        raise MissingHistoricalSnapshot(
+            "source schema protection has not been refreshed and audited"
+        )
+    try:
+        protected_tables = tuple(json.loads(row[1]))
+    except (TypeError, json.JSONDecodeError) as error:
+        raise MissingHistoricalSnapshot(
+            "source schema protection metadata is invalid"
+        ) from error
+    if not set(CANONICAL_SOURCE_TABLES).issubset(protected_tables):
+        raise MissingHistoricalSnapshot(
+            "source schema protection is missing canonical source tables"
+        )
+    current_schema_version = conn.execute("PRAGMA schema_version").fetchone()[0]
+    if current_schema_version != row[0]:
+        raise MissingHistoricalSnapshot(
+            "source schema protection drifted from its pinned schema_version"
+        )
+    if row[3] != _expected_source_trigger_signature(protected_tables):
+        raise MissingHistoricalSnapshot(
+            "source schema protection trigger signature is invalid"
+        )
+    if not row[2]:
+        raise MissingHistoricalSnapshot(
+            "source schema protection table signature is missing"
+        )
+    return (
+        int(current_schema_version),
+        protected_tables,
+        str(row[2]),
+        str(row[3]),
+    )
+
+
+def refresh_source_schema(
+    conn: sqlite3.Connection,
+    *,
+    operator: str,
+    reason: str,
+    replace: Callable[[sqlite3.Connection], None] | None = None,
+) -> None:
+    """Coordinate approved source DDL, reinstall guards, audit, and advance data."""
+    from maintenance_lock import guarded_write_session
+
+    if not str(operator).strip() or not str(reason).strip():
+        raise ValueError("source schema refresh requires operator and reason")
+    with guarded_write_session(conn):
+        schema_version_before = conn.execute("PRAGMA schema_version").fetchone()[0]
+        if replace is not None:
+            replace(conn)
+        protected_tables = _existing_protected_source_tables(conn)
+        missing = sorted(set(CANONICAL_SOURCE_TABLES) - set(protected_tables))
+        if missing:
+            raise SnapshotError(
+                "source schema refresh requires canonical tables: "
+                + ", ".join(missing)
+            )
+        for table in protected_tables:
+            _install_table_triggers(
+                conn, table, "data_generation", replace=True
+            )
+        trigger_signature = _source_trigger_signature(conn, protected_tables)
+        expected_signature = _expected_source_trigger_signature(protected_tables)
+        if trigger_signature != expected_signature:
+            raise SnapshotError("source schema trigger signature validation failed")
+        table_signature = _source_table_signature(conn, protected_tables)
+        protected_json = json.dumps(
+            protected_tables, ensure_ascii=False, separators=(",", ":")
+        )
+        schema_version_after = conn.execute("PRAGMA schema_version").fetchone()[0]
+        refreshed_at = _now()
+        conn.execute(
+            """
+            INSERT INTO locality_source_schema_state
+            (singleton_id, schema_version, protected_tables, table_signature,
+             trigger_signature, refreshed_at, operator, reason)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                schema_version=excluded.schema_version,
+                protected_tables=excluded.protected_tables,
+                table_signature=excluded.table_signature,
+                trigger_signature=excluded.trigger_signature,
+                refreshed_at=excluded.refreshed_at,
+                operator=excluded.operator,
+                reason=excluded.reason
+            """,
+            (
+                schema_version_after,
+                protected_json,
+                table_signature,
+                trigger_signature,
+                refreshed_at,
+                str(operator).strip(),
+                str(reason).strip(),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO locality_source_schema_audit
+            (operator, reason, schema_version_before, schema_version_after,
+             protected_tables, table_signature, trigger_signature, refreshed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(operator).strip(),
+                str(reason).strip(),
+                schema_version_before,
+                schema_version_after,
+                protected_json,
+                table_signature,
+                trigger_signature,
+                refreshed_at,
+            ),
+        )
+        conn.execute(
+            "UPDATE locality_generation_clock "
+            "SET data_generation=data_generation+1 WHERE singleton_id=1"
+        )
 
 
 def _now() -> str:
@@ -523,6 +828,10 @@ def verify_baseline_manifest(
     source_suppliers: dict[tuple[str, str, str, str], int] = {}
     populated_sectors: set[str] = set()
     source_enumeration_valid = eligible_agency_codes is not None
+    try:
+        _assert_source_schema_protected(conn)
+    except (MissingHistoricalSnapshot, sqlite3.Error):
+        source_enumeration_valid = False
     for sector in REQUIRED_SECTORS:
         if eligible_agency_codes is None:
             continue
@@ -690,6 +999,7 @@ class SnapshotResolver:
         now: str | None = None,
         cutover_at: str,
         generation_id: str = "unassigned",
+        selected_baseline_id: str | None = None,
         eligible_agency_codes: Collection[str] | None = None,
     ) -> None:
         if mode not in VALID_MODES:
@@ -708,6 +1018,9 @@ class SnapshotResolver:
         self.cutover_at = cutover_at
         self._cutover = cutover
         self.generation_id = generation_id
+        self.selected_baseline_id = (
+            str(selected_baseline_id).strip() if selected_baseline_id else None
+        )
         self.eligible_agency_codes = (
             None
             if eligible_agency_codes is None
@@ -717,8 +1030,46 @@ class SnapshotResolver:
             normalize_contract_key(code)
             for code in (self.eligible_agency_codes or ())
         )
-        self._pending: dict[tuple[str, str, str, str], _SnapshotCandidate] = {}
+        self._pending: dict[tuple[str, str, str, str, str], _SnapshotCandidate] = {}
         self._validated_baselines: dict[str, tuple[int, BaselineManifest]] = {}
+        self._source_schema_pin: tuple[
+            int, tuple[str, ...], str, str
+        ] | None = None
+        require_source_schema = False
+        if self.mode == "snapshot" and self.selected_baseline_id:
+            selected_manifest = _manifest_row(
+                self.procurement_conn, self.selected_baseline_id
+            )
+            if selected_manifest is not None and selected_manifest.status == "complete":
+                require_source_schema = True
+        if self.mode != "legacy":
+            self._check_source_schema(require=require_source_schema)
+
+    def _source_schema_state_exists(self) -> bool:
+        try:
+            row = self.procurement_conn.execute(
+                "SELECT 1 FROM locality_source_schema_state WHERE singleton_id=1"
+            ).fetchone()
+        except sqlite3.Error:
+            return False
+        return row is not None
+
+    def _check_source_schema(self, *, require: bool) -> None:
+        if self.mode == "legacy":
+            return
+        if not self._source_schema_state_exists():
+            if require or self._source_schema_pin is not None:
+                raise MissingHistoricalSnapshot(
+                    "source schema protection has not been refreshed and audited"
+                )
+            return
+        current = _assert_source_schema_protected(self.procurement_conn)
+        if self._source_schema_pin is None:
+            self._source_schema_pin = current
+        elif current != self._source_schema_pin:
+            raise MissingHistoricalSnapshot(
+                "source schema changed after resolver activation"
+            )
 
     def _contract(self, row: CanonicalContract | Mapping[str, Any]) -> CanonicalContract:
         if isinstance(row, CanonicalContract):
@@ -748,6 +1099,9 @@ class SnapshotResolver:
             )
         return contract
 
+    def _generation_owner(self) -> str:
+        return f"{_GENERATION_OWNER_PREFIX}{self.generation_id}"
+
     def require_eligible_agency_codes(self, codes: Collection[str]) -> None:
         if self.mode == "legacy":
             return
@@ -757,11 +1111,30 @@ class SnapshotResolver:
             )
 
     @staticmethod
-    def _key(contract: CanonicalContract, bizno: str) -> tuple[str, str, str, str]:
-        return (*contract.identity, normalize_bizno(bizno))
+    def _key(
+        contract: CanonicalContract,
+        bizno: str,
+        baseline_id: str | None,
+    ) -> tuple[str, str, str, str, str]:
+        return (baseline_id or "", *contract.identity, normalize_bizno(bizno))
 
-    def _existing(self, contract: CanonicalContract, bizno: str) -> tuple[Any, ...] | None:
-        key = self._key(contract, bizno)
+    def _existing(
+        self,
+        contract: CanonicalContract,
+        bizno: str,
+        *,
+        pre_cutover: bool,
+    ) -> tuple[Any, ...] | None:
+        owner_id = (
+            self.selected_baseline_id
+            if pre_cutover
+            else self._generation_owner()
+        )
+        if pre_cutover and self.mode == "snapshot" and owner_id is None:
+            raise MissingHistoricalSnapshot(
+                "pre-cutover snapshot resolution requires a selected baseline version"
+            )
+        key = self._key(contract, bizno, owner_id)
         pending = self._pending.get(key)
         if pending is not None:
             return (
@@ -769,7 +1142,7 @@ class SnapshotResolver:
                 None if pending.is_busan is None else int(pending.is_busan),
                 pending.basis,
                 content_fingerprint(pending.contract),
-                pending.baseline_id,
+                key[0],
                 self.generation_id,
             )
         return self.procurement_conn.execute(
@@ -777,7 +1150,8 @@ class SnapshotResolver:
             SELECT share_pct, is_busan, basis, content_fingerprint,
                    baseline_id, introduced_generation_id
             FROM contract_supplier_locality
-            WHERE sector=? AND contract_key=? AND contract_revision=? AND bizno=?
+            WHERE baseline_id=? AND sector=? AND contract_key=?
+              AND contract_revision=? AND bizno=?
             """,
             key,
         ).fetchone()
@@ -792,6 +1166,10 @@ class SnapshotResolver:
         baseline_id = existing[4]
         if not baseline_id:
             raise MissingHistoricalSnapshot("pre-cutover snapshot has no baseline ownership")
+        if baseline_id != self.selected_baseline_id:
+            raise MissingHistoricalSnapshot(
+                "pre-cutover snapshot does not belong to the selected baseline version"
+            )
         manifest = _manifest_row(self.procurement_conn, baseline_id)
         if manifest is None or manifest.status != "complete":
             raise MissingHistoricalSnapshot("pre-cutover snapshot baseline is not complete")
@@ -838,6 +1216,7 @@ class SnapshotResolver:
     ) -> None:
         from maintenance_lock import read_data_generation
 
+        self._check_source_schema(require=True)
         source_generation = read_data_generation(self.procurement_conn)
         cached = self._validated_baselines.get(baseline_id)
         if cached is not None:
@@ -886,7 +1265,8 @@ class SnapshotResolver:
         normalized = normalize_bizno(bizno)
         if not normalized:
             raise ValueError("a normalized supplier business number is required")
-        key = (*contract.identity, normalized)
+        owner_id = baseline_id or self._generation_owner()
+        key = self._key(contract, normalized, owner_id)
         candidate = _SnapshotCandidate(contract, normalized, float(share_pct), is_busan, basis, baseline_id)
         prior = self._pending.get(key)
         if prior is not None and prior != candidate:
@@ -914,25 +1294,38 @@ class SnapshotResolver:
 
     def _inherited(self, contract: CanonicalContract, bizno: str) -> bool | None | object:
         current_rank = _revision_rank(contract.contract_revision)
+        baseline_scopes = (
+            (self._generation_owner(), self.selected_baseline_id)
+            if self.selected_baseline_id
+            else (self._generation_owner(),)
+        )
+        placeholders = ",".join("?" for _ in baseline_scopes)
         rows = self.procurement_conn.execute(
-            """
+            f"""
             SELECT contract_revision, bizno, is_busan
             FROM contract_supplier_locality
             WHERE sector=? AND contract_key=? AND contract_revision<>?
+              AND baseline_id IN ({placeholders})
             """,
-            (contract.sector, contract.contract_key, contract.contract_revision),
+            (
+                contract.sector,
+                contract.contract_key,
+                contract.contract_revision,
+                *baseline_scopes,
+            ),
         ).fetchall()
         prior_revisions = {
             row[0] for row in rows if _revision_rank(row[0]) < current_rank
         }
         for key, pending in self._pending.items():
             if (
-                key[0] == contract.sector
-                and key[1] == contract.contract_key
-                and key[2] != contract.contract_revision
-                and _revision_rank(key[2]) < current_rank
+                key[0] in baseline_scopes
+                and key[1] == contract.sector
+                and key[2] == contract.contract_key
+                and key[3] != contract.contract_revision
+                and _revision_rank(key[3]) < current_rank
             ):
-                prior_revisions.add(key[2])
+                prior_revisions.add(key[3])
         if not prior_revisions:
             return _MISSING
         immediate_revision = max(prior_revisions, key=_revision_rank)
@@ -941,11 +1334,14 @@ class SnapshotResolver:
             for row in rows
             if row[0] == immediate_revision and row[1] == bizno
         ]
-        pending = self._pending.get(
-            (contract.sector, contract.contract_key, immediate_revision, bizno)
-        )
-        if pending is not None:
-            values.append(None if pending.is_busan is None else int(pending.is_busan))
+        for scope in baseline_scopes:
+            pending = self._pending.get(
+                (scope, contract.sector, contract.contract_key, immediate_revision, bizno)
+            )
+            if pending is not None:
+                values.append(
+                    None if pending.is_busan is None else int(pending.is_busan)
+                )
         if not values:
             return _MISSING
         if len(set(values)) != 1:
@@ -1003,10 +1399,13 @@ class SnapshotResolver:
     ) -> bool:
         if self.mode == "legacy":
             return bool(legacy_is_local)
+        self._check_source_schema(require=False)
         contract = self._contract(row)
         normalized = normalize_bizno(bizno)
         pre_cutover = self._is_pre_cutover(contract)
-        existing = self._existing(contract, normalized)
+        existing = self._existing(
+            contract, normalized, pre_cutover=pre_cutover
+        )
         fingerprint = content_fingerprint(contract)
         if existing is not None:
             if existing[3] != fingerprint:
@@ -1067,12 +1466,15 @@ class SnapshotResolver:
                         "baseline seed metadata differs from the existing manifest"
                     )
             for key, candidate in sorted(self._pending.items()):
+                baseline_scope = key[0]
+                identity_key = key[1:]
                 existing = self.procurement_conn.execute(
                     """
                     SELECT share_pct, is_busan, basis, content_fingerprint, baseline_id,
                            introduced_generation_id
                     FROM contract_supplier_locality
-                    WHERE sector=? AND contract_key=? AND contract_revision=? AND bizno=?
+                    WHERE baseline_id=? AND sector=? AND contract_key=?
+                      AND contract_revision=? AND bizno=?
                     """,
                     key,
                 ).fetchone()
@@ -1081,7 +1483,7 @@ class SnapshotResolver:
                     None if candidate.is_busan is None else int(candidate.is_busan),
                     candidate.basis,
                     content_fingerprint(candidate.contract),
-                    candidate.baseline_id,
+                    baseline_scope,
                     self.generation_id,
                 )
                 if existing is not None:
@@ -1097,7 +1499,7 @@ class SnapshotResolver:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        *key,
+                        *identity_key,
                         candidate.share_pct,
                         None if candidate.is_busan is None else int(candidate.is_busan),
                         candidate.basis,
@@ -1105,7 +1507,7 @@ class SnapshotResolver:
                         self.now,
                         CLASSIFIER_VERSION,
                         content_fingerprint(candidate.contract),
-                        candidate.baseline_id,
+                        baseline_scope,
                         self.generation_id,
                     ),
                 )

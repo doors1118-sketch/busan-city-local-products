@@ -20,6 +20,7 @@ from locality_snapshot import (
     UnknownLocality,
     create_baseline_manifest as _create_baseline_manifest,
     ensure_snapshot_schema,
+    refresh_source_schema,
     verify_baseline_manifest as _verify_baseline_manifest,
 )
 from maintenance_lock import (
@@ -40,6 +41,23 @@ ELIGIBLE_AGENCY_CODES = frozenset({"A1"})
 
 
 def create_baseline_manifest(conn, rows, baseline_id):
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if {
+        "cnstwk_cntrct",
+        "servc_cntrct",
+        "thng_cntrct",
+        "shopping_cntrct",
+    }.issubset(tables):
+        refresh_source_schema(
+            conn,
+            operator="test-suite",
+            reason=f"protect sources for {baseline_id}",
+        )
     return _create_baseline_manifest(
         conn,
         rows,
@@ -206,6 +224,7 @@ class SnapshotTestCase(unittest.TestCase):
             now=NOW,
             cutover_at=CUTOVER,
             generation_id=kwargs.pop("generation_id", "generation-1"),
+            selected_baseline_id=kwargs.pop("selected_baseline_id", BASELINE_ID),
             eligible_agency_codes=eligible_agency_codes,
             **kwargs,
         )
@@ -261,8 +280,155 @@ class SnapshotResolverTests(SnapshotTestCase):
         columns = {row[1]: row for row in self.proc_conn.execute("PRAGMA table_info(contract_supplier_locality)")}
 
         self.assertIn("WITHOUT ROWID", sql.upper())
-        self.assertEqual([columns[name][5] for name in ("sector", "contract_key", "contract_revision", "bizno")], [1, 2, 3, 4])
+        self.assertEqual(
+            [
+                columns[name][5]
+                for name in (
+                    "baseline_id",
+                    "sector",
+                    "contract_key",
+                    "contract_revision",
+                    "bizno",
+                )
+            ],
+            [1, 2, 3, 4, 5],
+        )
         self.assertEqual(columns["is_busan"][3], 0)
+
+    def test_replacement_baseline_versions_same_population_and_selects_explicit_decision(self):
+        historical_v1 = self.complete_source_baseline()
+        frozen_v1 = {
+            table: self.proc_conn.execute(
+                f"SELECT * FROM {table} WHERE baseline_id=? ORDER BY 1,2,3,4",
+                (BASELINE_ID,),
+            ).fetchall()
+            for table in (
+                "locality_baseline_manifest",
+                "locality_baseline_contract",
+                "locality_baseline_supplier",
+                "contract_supplier_locality",
+            )
+        }
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute(
+                "UPDATE cnstwk_cntrct SET thtmCntrctAmt=111"
+            )
+        rows_v2 = current_canonical_source(self.proc_conn)
+        historical_v2 = next(row for row in rows_v2 if row.sector == "공사")
+        builder = self.resolver(
+            mode="shadow",
+            generation_id="generation-2",
+            selected_baseline_id="baseline-v2",
+        )
+        for row in rows_v2:
+            for supplier in row.suppliers:
+                builder.seed(
+                    row,
+                    supplier.bizno,
+                    supplier.share_pct,
+                    row.sector != "공사",
+                    "legacy_baseline_v1",
+                    "baseline-v2",
+                )
+        self.assertEqual(builder.flush(), 4)
+
+        manifest_v2 = create_baseline_manifest(
+            self.proc_conn, rows_v2, "baseline-v2"
+        )
+
+        self.assertEqual(manifest_v2.status, "complete")
+        self.assertEqual(historical_v1.identity, historical_v2.identity)
+        self.assertNotEqual(
+            content_fingerprint(historical_v1), content_fingerprint(historical_v2)
+        )
+        for table, rows in frozen_v1.items():
+            self.assertEqual(
+                self.proc_conn.execute(
+                    f"SELECT * FROM {table} WHERE baseline_id=? ORDER BY 1,2,3,4",
+                    (BASELINE_ID,),
+                ).fetchall(),
+                rows,
+            )
+        resolver_v2 = self.resolver(
+            generation_id="generation-2",
+            selected_baseline_id="baseline-v2",
+        )
+        self.assertFalse(
+            resolver_v2.resolve(historical_v2, "1234567890", 100.0, True)
+        )
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT COUNT(*) FROM contract_supplier_locality "
+                "WHERE sector='공사' AND contract_key=? AND contract_revision=? "
+                "AND bizno='1234567890'",
+                historical_v2.identity[1:],
+            ).fetchone()[0],
+            2,
+        )
+
+    def test_snapshot_requires_explicit_baseline_when_versions_are_ambiguous(self):
+        historical = self.complete_source_baseline()
+        rows = current_canonical_source(self.proc_conn)
+        builder = self.resolver(
+            mode="shadow",
+            generation_id="generation-2",
+            selected_baseline_id="baseline-v2",
+        )
+        for row in rows:
+            for supplier in row.suppliers:
+                builder.seed(
+                    row,
+                    supplier.bizno,
+                    supplier.share_pct,
+                    False,
+                    "legacy_baseline_v1",
+                    "baseline-v2",
+                )
+        builder.flush()
+        create_baseline_manifest(self.proc_conn, rows, "baseline-v2")
+
+        resolver = self.resolver(
+            generation_id="generation-2", selected_baseline_id=None
+        )
+        with self.assertRaisesRegex(MissingHistoricalSnapshot, "selected baseline"):
+            resolver.resolve(historical, "1234567890", 100.0, True)
+
+    def test_post_cutover_decisions_are_versioned_by_generation(self):
+        self.complete_source_baseline()
+        generation_1 = self.resolver(generation_id="generation-1")
+        self.assertTrue(
+            generation_1.resolve(
+                self.new_contract, "1234567890", 100.0, True
+            )
+        )
+        self.assertEqual(generation_1.flush(), 1)
+        apply_company_changes(
+            self.company_conn,
+            [source_item("1234567890", "경남", "본사", "202608161030")],
+            "20260816",
+            "job-post-cutover-outbound",
+            NOW,
+        )
+
+        generation_2 = self.resolver(generation_id="generation-2")
+        self.assertFalse(
+            generation_2.resolve(
+                self.new_contract, "1234567890", 100.0, True
+            )
+        )
+        self.assertEqual(generation_2.flush(), 1)
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT baseline_id FROM contract_supplier_locality "
+                "WHERE sector=? AND contract_key=? AND contract_revision=? "
+                "AND bizno='1234567890' ORDER BY baseline_id",
+                self.new_contract.identity,
+            ).fetchall(),
+            [
+                ("@generation:generation-1",),
+                ("@generation:generation-2",),
+            ],
+        )
 
     def test_outbound_move_does_not_change_frozen_historical_contract(self):
         resolver = self.resolver()
@@ -295,9 +461,14 @@ class SnapshotResolverTests(SnapshotTestCase):
 
     def test_snapshot_rejects_historical_row_after_canonical_source_drift(self):
         historical = self.complete_source_baseline()
-        self.proc_conn.execute("UPDATE cnstwk_cntrct SET thtmCntrctAmt=999")
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute(
+                "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
+            )
 
-        with self.assertRaisesRegex(MissingHistoricalSnapshot, "coverage|baseline"):
+        with self.assertRaisesRegex(
+            MissingHistoricalSnapshot, "coverage|baseline|generation|drift"
+        ):
             self.resolver().resolve(historical, "1234567890", 100.0, True)
 
     def test_repeated_historical_resolves_validate_all_sectors_once(self):
@@ -316,6 +487,26 @@ class SnapshotResolverTests(SnapshotTestCase):
             )
 
         self.assertEqual(canonical_scan.call_count, 4)
+
+    def test_warm_resolver_checks_only_pinned_schema_version_not_sqlite_master(self):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+        resolver.resolve(historical, "1234567890", 100.0, True)
+        statements = []
+        self.proc_conn.set_trace_callback(statements.append)
+        try:
+            self.assertTrue(
+                resolver.resolve(historical, "1234567890", 100.0, True)
+            )
+        finally:
+            self.proc_conn.set_trace_callback(None)
+
+        self.assertFalse(
+            any("sqlite_master" in statement.lower() for statement in statements)
+        )
+        self.assertTrue(
+            any("pragma schema_version" in statement.lower() for statement in statements)
+        )
 
     def test_warm_cache_rejects_complete_manifest_header_mutation(self):
         self.assert_warm_cache_mutation_is_rejected(
@@ -432,6 +623,194 @@ class SnapshotResolverTests(SnapshotTestCase):
 
         self.assertEqual(canonical_scan.call_count, 4)
 
+    def test_warm_resolver_rejects_drop_recreated_source_table_before_rescan(self):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+
+        with patch(
+            "locality_snapshot.iter_canonical_contracts",
+            wraps=iter_canonical_contracts,
+        ) as canonical_scan:
+            self.assertTrue(
+                resolver.resolve(historical, "1234567890", 100.0, True)
+            )
+            generation = read_data_generation(self.proc_conn)
+            original_sql = self.proc_conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='cnstwk_cntrct'"
+            ).fetchone()[0]
+            original_row = self.proc_conn.execute(
+                "SELECT * FROM cnstwk_cntrct"
+            ).fetchone()
+            self.proc_conn.execute("DROP TABLE cnstwk_cntrct")
+            self.proc_conn.execute(original_sql)
+            self.proc_conn.execute(
+                "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                original_row,
+            )
+
+            self.assertEqual(read_data_generation(self.proc_conn), generation)
+            with self.assertRaisesRegex(
+                MissingHistoricalSnapshot, "source schema|protection"
+            ):
+                resolver.resolve(historical, "1234567890", 100.0, True)
+
+        self.assertEqual(canonical_scan.call_count, 4)
+
+    def test_missing_source_guard_blocks_resolver_activation(self):
+        self.complete_source_baseline()
+        self.proc_conn.execute(
+            "DROP TRIGGER locality_cnstwk_cntrct_update_guard"
+        )
+
+        with self.assertRaisesRegex(
+            MissingHistoricalSnapshot, "source schema|protection|trigger"
+        ):
+            self.resolver()
+
+    def test_late_schema_creation_invalidates_warm_resolver_without_rescan(self):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+
+        with patch(
+            "locality_snapshot.iter_canonical_contracts",
+            wraps=iter_canonical_contracts,
+        ) as canonical_scan:
+            self.assertTrue(
+                resolver.resolve(historical, "1234567890", 100.0, True)
+            )
+            generation = read_data_generation(self.proc_conn)
+            self.proc_conn.execute("CREATE TABLE late_schema_probe (id INTEGER)")
+
+            self.assertEqual(read_data_generation(self.proc_conn), generation)
+            with self.assertRaisesRegex(
+                MissingHistoricalSnapshot, "source schema|protection"
+            ):
+                resolver.resolve(historical, "1234567890", 100.0, True)
+
+        self.assertEqual(canonical_scan.call_count, 4)
+
+    def test_late_created_source_table_requires_audited_refresh(self):
+        create_contract_source_tables(self.proc_conn)
+        insert_required_sector_source(self.proc_conn)
+
+        manifest = _create_baseline_manifest(
+            self.proc_conn,
+            current_canonical_source(self.proc_conn),
+            BASELINE_ID,
+            eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
+        )
+        self.assertEqual(manifest.status, "failed")
+
+        before = read_data_generation(self.proc_conn)
+        refresh_source_schema(
+            self.proc_conn,
+            operator="operator-1",
+            reason="approve late-created canonical source tables",
+        )
+
+        self.assertEqual(read_data_generation(self.proc_conn), before + 1)
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT operator, reason FROM locality_source_schema_audit "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone(),
+            ("operator-1", "approve late-created canonical source tables"),
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "guarded session"):
+            self.proc_conn.execute(
+                "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
+            )
+
+    def test_source_schema_refresh_replacement_rolls_back_atomically(self):
+        historical = self.complete_source_baseline()
+        generation = read_data_generation(self.proc_conn)
+        audit_count = self.proc_conn.execute(
+            "SELECT COUNT(*) FROM locality_source_schema_audit"
+        ).fetchone()[0]
+        original_sql = self.proc_conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='cnstwk_cntrct'"
+        ).fetchone()[0]
+
+        def broken_replacement(conn):
+            conn.execute("DROP TABLE cnstwk_cntrct")
+            conn.execute(original_sql)
+            raise RuntimeError("replacement failed")
+
+        with self.assertRaisesRegex(RuntimeError, "replacement failed"):
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-2",
+                reason="replace construction source",
+                replace=broken_replacement,
+            )
+
+        self.assertEqual(read_data_generation(self.proc_conn), generation)
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT COUNT(*) FROM locality_source_schema_audit"
+            ).fetchone()[0],
+            audit_count,
+        )
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT thtmCntrctAmt FROM cnstwk_cntrct"
+            ).fetchone()[0],
+            historical.amount_won,
+        )
+        self.assertTrue(
+            self.resolver().resolve(historical, "1234567890", 100.0, True)
+        )
+
+    def test_source_schema_refresh_replaces_and_reprotects_atomically(self):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+        self.assertTrue(
+            resolver.resolve(historical, "1234567890", 100.0, True)
+        )
+        generation = read_data_generation(self.proc_conn)
+        original_sql = self.proc_conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='cnstwk_cntrct'"
+        ).fetchone()[0]
+        replacement_row = list(
+            self.proc_conn.execute("SELECT * FROM cnstwk_cntrct").fetchone()
+        )
+        replacement_row[5] = 707
+
+        def approved_replacement(conn):
+            conn.execute("DROP TABLE cnstwk_cntrct")
+            conn.execute(original_sql)
+            conn.execute(
+                "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                replacement_row,
+            )
+
+        refresh_source_schema(
+            self.proc_conn,
+            operator="operator-3",
+            reason="approved construction source replacement",
+            replace=approved_replacement,
+        )
+
+        self.assertEqual(read_data_generation(self.proc_conn), generation + 1)
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT operator, reason FROM locality_source_schema_audit "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone(),
+            ("operator-3", "approved construction source replacement"),
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "guarded session"):
+            self.proc_conn.execute(
+                "UPDATE cnstwk_cntrct SET thtmCntrctAmt=808"
+            )
+        with self.assertRaisesRegex(
+            MissingHistoricalSnapshot, "source schema|generation|drift"
+        ):
+            resolver.resolve(historical, "1234567890", 100.0, True)
+
     def test_direct_canonical_source_write_is_fenced(self):
         self.complete_source_baseline()
         ensure_snapshot_schema(self.proc_conn)
@@ -542,6 +921,13 @@ class SnapshotResolverTests(SnapshotTestCase):
             self.resolver().resolve(self.old_contract, "1234567890", 100.0, True)
 
     def test_snapshot_rejects_complete_manifest_that_does_not_own_row_membership(self):
+        create_contract_source_tables(self.proc_conn)
+        insert_required_sector_source(self.proc_conn)
+        refresh_source_schema(
+            self.proc_conn,
+            operator="test-suite",
+            reason="prepare membership rejection source surface",
+        )
         builder = self.resolver(mode="shadow")
         builder.seed(
             self.old_contract,
@@ -787,7 +1173,10 @@ class BaselineManifestTests(SnapshotTestCase):
 
     def test_manifest_verification_rejects_source_amount_correction(self):
         self.build_source_baseline()
-        self.proc_conn.execute("UPDATE cnstwk_cntrct SET thtmCntrctAmt=999")
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute(
+                "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
+            )
 
         coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
 
@@ -855,45 +1244,47 @@ class BaselineManifestTests(SnapshotTestCase):
 
     def test_same_day_post_cutover_new_family_does_not_change_historical_baseline(self):
         self.build_source_baseline()
-        self.proc_conn.execute(
-            "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "UNTY-LATE",
-                "LATE-000100",
-                "A1",
-                "",
-                "C1",
-                999,
-                0,
-                corp_entry("1234567890", "100"),
-                "2026-08-16T11:00:00+09:00",
-                "2026-08-16",
-                "",
-                "",
-            ),
-        )
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute(
+                "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "UNTY-LATE",
+                    "LATE-000100",
+                    "A1",
+                    "",
+                    "C1",
+                    999,
+                    0,
+                    corp_entry("1234567890", "100"),
+                    "2026-08-16T11:00:00+09:00",
+                    "2026-08-16",
+                    "",
+                    "",
+                ),
+            )
 
         self.assertTrue(verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete)
 
     def test_same_day_post_cutover_revision_does_not_displace_historical_revision(self):
         self.build_source_baseline()
-        self.proc_conn.execute(
-            "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "UNTY-공사",
-                "CONST-000101",
-                "A1",
-                "",
-                "C1",
-                999,
-                0,
-                corp_entry("1234567890", "100"),
-                "2026-08-16T11:00:00+09:00",
-                "2026-08-16",
-                "",
-                "",
-            ),
-        )
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute(
+                "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "UNTY-공사",
+                    "CONST-000101",
+                    "A1",
+                    "",
+                    "C1",
+                    999,
+                    0,
+                    corp_entry("1234567890", "100"),
+                    "2026-08-16T11:00:00+09:00",
+                    "2026-08-16",
+                    "",
+                    "",
+                ),
+            )
 
         self.assertTrue(verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete)
 
@@ -907,38 +1298,41 @@ class BaselineManifestTests(SnapshotTestCase):
         )
         for column, changed, original in mutations:
             with self.subTest(column=column, changed=changed):
-                self.proc_conn.execute(
-                    f"UPDATE cnstwk_cntrct SET {column}=?", (changed,)
-                )
+                with guarded_write_session(self.proc_conn):
+                    self.proc_conn.execute(
+                        f"UPDATE cnstwk_cntrct SET {column}=?", (changed,)
+                    )
                 self.assertFalse(
                     verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete
                 )
-                self.proc_conn.execute(
-                    f"UPDATE cnstwk_cntrct SET {column}=?", (original,)
-                )
+                with guarded_write_session(self.proc_conn):
+                    self.proc_conn.execute(
+                        f"UPDATE cnstwk_cntrct SET {column}=?", (original,)
+                    )
                 self.assertTrue(
                     verify_baseline_manifest(self.proc_conn, BASELINE_ID).complete
                 )
 
     def test_manifest_verification_rejects_new_source_identity(self):
         self.build_source_baseline()
-        self.proc_conn.execute(
-            "INSERT INTO thng_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "UNTY-NEW",
-                "GOODS-900100",
-                "A1",
-                "",
-                "C1",
-                505,
-                0,
-                corp_entry("1234567890", "100"),
-                "2026-08-15",
-                "2026-08-14",
-                "",
-                "",
-            ),
-        )
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute(
+                "INSERT INTO thng_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "UNTY-NEW",
+                    "GOODS-900100",
+                    "A1",
+                    "",
+                    "C1",
+                    505,
+                    0,
+                    corp_entry("1234567890", "100"),
+                    "2026-08-15",
+                    "2026-08-14",
+                    "",
+                    "",
+                ),
+            )
 
         coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
 
@@ -946,7 +1340,8 @@ class BaselineManifestTests(SnapshotTestCase):
 
     def test_manifest_verification_rejects_deleted_source_identity(self):
         self.build_source_baseline()
-        self.proc_conn.execute("DELETE FROM servc_cntrct")
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute("DELETE FROM servc_cntrct")
 
         coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
 
