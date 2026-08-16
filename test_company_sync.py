@@ -433,6 +433,47 @@ class CompanySyncTests(unittest.TestCase):
         )
         self.assertEqual(pending_supplier_dates(self.conn, "20260815"), ["20260814"])
 
+    def test_ensure_schema_failure_marks_supplier_run_failed(self):
+        run = start_supplier_run("20260816", self.company_db_path, policy=self.fast_policy)
+        with patch("company_sync.ensure_locality_schema", side_effect=RuntimeError("schema unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "schema unavailable"):
+                sync_company_change_date(
+                    "20260814", FakePages({1: page(1, [item("1")], 1)}), self.company_db_path,
+                    policy=self.fast_policy, run=run,
+                )
+        finish_supplier_run(run)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status, circuit_state FROM company_sync_job_log "
+                "WHERE job_name='company_changes_run' AND source_date='20260816'"
+            ).fetchone(),
+            ("failed", "closed"),
+        )
+
+    def test_start_sync_job_failure_marks_supplier_run_failed(self):
+        run = start_supplier_run("20260816", self.company_db_path, policy=self.fast_policy)
+        original_start_sync_job = start_sync_job
+
+        def fail_per_date_job(conn, job_name, source_date, **kwargs):
+            if job_name == "company_changes":
+                raise RuntimeError("job state unavailable")
+            return original_start_sync_job(conn, job_name, source_date, **kwargs)
+
+        with patch("company_sync.start_sync_job", side_effect=fail_per_date_job):
+            with self.assertRaisesRegex(RuntimeError, "job state unavailable"):
+                sync_company_change_date(
+                    "20260814", FakePages({1: page(1, [item("1")], 1)}), self.company_db_path,
+                    policy=self.fast_policy, run=run,
+                )
+        finish_supplier_run(run)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status, circuit_state FROM company_sync_job_log "
+                "WHERE job_name='company_changes_run' AND source_date='20260816'"
+            ).fetchone(),
+            ("failed", "closed"),
+        )
+
     def test_sync_one_day_configures_peer_fence_and_keeps_generation_clocks_separate(self):
         before = (read_data_generation(self.conn), read_control_revision(self.conn))
         original_company_path, original_procurement_path = pipeline.COMPANY_DB_PATH, pipeline.DB_PATH
@@ -503,6 +544,34 @@ class CompanySyncTests(unittest.TestCase):
         finally:
             pipeline.sys.argv = original_argv
         self.assertEqual(calls, [("20260816", {"sync_supplier": False})])
+
+    def test_reader_setup_failure_marks_run_failed_and_does_not_stop_contract_pipeline(self):
+        calls = []
+        original_argv = pipeline.sys.argv
+        original_company_path = pipeline.COMPANY_DB_PATH
+        try:
+            pipeline.sys.argv = ["daily_pipeline_sync.py", "20260816"]
+            pipeline.COMPANY_DB_PATH = str(self.company_db_path)
+            with patch.object(pipeline, "configure_company_locality_runtime_paths", return_value=self.paths), patch.object(
+                pipeline, "supplier_dates_for_run", return_value=["20260816"]
+            ), patch.object(
+                pipeline, "make_verified_company_page_reader", side_effect=RuntimeError("reader setup unavailable")
+            ), patch.object(
+                pipeline, "sync_one_day", side_effect=lambda source_date, **kwargs: calls.append((source_date, kwargs)) or True
+            ), patch.object(pipeline, "record_sync_success", side_effect=StopPipeline):
+                with self.assertRaises(StopPipeline):
+                    pipeline.main()
+        finally:
+            pipeline.COMPANY_DB_PATH = original_company_path
+            pipeline.sys.argv = original_argv
+        self.assertEqual(calls, [("20260816", {"sync_supplier": False})])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM company_sync_job_log "
+                "WHERE job_name='company_changes_run'"
+            ).fetchone(),
+            ("failed",),
+        )
 
     def test_public_api_recovery_queue_remains_retryable_after_a_failed_attempt(self):
         recovery = sqlite3.connect(":memory:")

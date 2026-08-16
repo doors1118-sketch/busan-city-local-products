@@ -19,6 +19,7 @@ from company_sync import (
     finish_supplier_run,
     make_verified_company_page_reader,
     pending_supplier_dates,
+    record_supplier_run_failure,
     start_supplier_run,
     sync_company_change_date,
 )
@@ -347,15 +348,19 @@ def configure_company_locality_runtime_paths():
 def update_company_master_daily(target_date, *, supplier_run=None):
     """Fetch one complete supplier change date and apply it through locality guards."""
     print(f"[조달업체 동기화] {target_date} 전국 조달업체 변경/신설 내역 스캔 및 부산+본사 필터링 중...")
-    reader = make_verified_company_page_reader(
-        target_date,
-        api_url=COMPANY_API_URL,
-        service_key=SERVICE_KEY,
-    )
     try:
+        reader = make_verified_company_page_reader(
+            target_date,
+            api_url=COMPANY_API_URL,
+            service_key=SERVICE_KEY,
+        )
         summary = sync_company_change_date(target_date, reader, COMPANY_DB_PATH, run=supplier_run)
     except IncompleteCompanyBatch as error:
+        record_supplier_run_failure(supplier_run, target_date)
         record_api_issue(target_date, 'company_master', 0, 'incomplete_batch', str(error), 'WARNING')
+        raise
+    except Exception:
+        record_supplier_run_failure(supplier_run, target_date)
         raise
     print(
         f"   -> 완료: 전국 {summary.received:,}건 검증, "
@@ -1533,7 +1538,11 @@ def main():
                 except Exception as e:
                     print(f"   [오류] 조달업체 {supplier_date} 동기화 실패 (계약 수집 계속): {e}")
         finally:
-            finish_supplier_run(supplier_run)
+            try:
+                finish_supplier_run(supplier_run)
+            except Exception as e:
+                record_supplier_run_failure(supplier_run)
+                print(f"   [오류] 조달업체 요청 제어 종료 실패 (계약 수집 계속): {e}")
 
     # 날짜별 계약 데이터 수집
     success_dates = []

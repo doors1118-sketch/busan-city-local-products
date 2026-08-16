@@ -92,6 +92,7 @@ class SupplierRun:
     policy: CompanySyncPolicy
     controls: RequestControls
     has_terminal_failure: bool = False
+    failed_dates: set[str] = field(default_factory=set)
 
 
 FetchPage = Callable[[int], Any]
@@ -331,6 +332,22 @@ def _persist_run(run: SupplierRun, *, status: str | None = None) -> None:
         conn.close()
 
 
+def record_supplier_run_failure(run: SupplierRun | None, source_date: str | None = None) -> None:
+    """Mark a supplier run failed without hiding the original per-date error."""
+    if run is None:
+        return
+    if source_date is None or source_date not in run.failed_dates:
+        run.has_terminal_failure = True
+        run.controls.response_classes["terminal_date_failure"] += 1
+        if source_date is not None:
+            run.failed_dates.add(source_date)
+    try:
+        _persist_run(run, status="failed")
+    except Exception:
+        # A broken per-date/job table must not let the run later claim success.
+        pass
+
+
 def finish_supplier_run(run: SupplierRun) -> None:
     _persist_run(
         run,
@@ -342,12 +359,13 @@ def sync_company_change_date(source_date: str, fetch_page: FetchPage, company_db
     """Collect a verified batch and apply it only after Task 1 guarded writes are ready."""
     _validate_source_date(source_date)
     active_policy = policy or CompanySyncPolicy()
-    path = Path(company_db_path).resolve()
-    if run is not None and run.company_db_path != path:
-        raise ValueError("supplier run belongs to a different company database")
-    controls = run.controls if run is not None else RequestControls(active_policy.daily_call_budget)
-    conn = sqlite3.connect(path, timeout=30)
+    conn: sqlite3.Connection | None = None
     try:
+        path = Path(company_db_path).resolve()
+        if run is not None and run.company_db_path != path:
+            raise ValueError("supplier run belongs to a different company database")
+        controls = run.controls if run is not None else RequestControls(active_policy.daily_call_budget)
+        conn = sqlite3.connect(path, timeout=30)
         ensure_locality_schema(conn)
         start_sync_job(conn, "company_changes", source_date, call_budget=controls.call_budget)
         try:
@@ -356,25 +374,21 @@ def sync_company_change_date(source_date: str, fetch_page: FetchPage, company_db
             metrics = error.metrics or CollectionMetrics(controls.call_budget, circuit_state=controls.circuit_state)
             _write_metrics(conn, "company_changes", source_date, metrics)
             fail_sync_job(conn, "company_changes", source_date, str(error))
-            if run is not None:
-                run.has_terminal_failure = True
-                run.controls.response_classes["terminal_date_failure"] += 1
-                _persist_run(run)
             raise
         try:
             summary = apply_company_changes(conn, collected.batch.items, source_date, f"company_changes:{source_date}", datetime.now().astimezone().isoformat(timespec="seconds"))
         except Exception as error:
             _write_metrics(conn, "company_changes", source_date, collected.metrics)
             fail_sync_job(conn, "company_changes", source_date, repr(error))
-            if run is not None:
-                run.has_terminal_failure = True
-                run.controls.response_classes["terminal_date_failure"] += 1
-                _persist_run(run)
             raise
         _write_metrics(conn, "company_changes", source_date, collected.metrics)
         finish_sync_job(conn, "company_changes", source_date, expected_rows=collected.batch.total_count, received_rows=len(collected.batch.items), page_count=collected.batch.page_count)
         if run is not None:
             _persist_run(run)
         return summary
+    except Exception:
+        record_supplier_run_failure(run, source_date)
+        raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
