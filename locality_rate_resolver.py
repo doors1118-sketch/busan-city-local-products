@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import sqlite3
+from types import MappingProxyType
 from typing import Any
 
 from contract_population import CanonicalContract
@@ -41,6 +42,25 @@ class LocalityRateConfig:
             raise ValueError("LOCALITY_BASELINE_ID is required in snapshot mode")
 
 
+@dataclass(frozen=True)
+class ActiveLocalityBinding:
+    generation_id: str
+    baseline_id: str | None
+
+
+@dataclass(frozen=True)
+class LocalitySharedContext:
+    mode: str
+    cutover_at: str
+    generation_id: str
+    selected_baseline_id: str | None
+    procurement_conn: sqlite3.Connection
+    company_conn: sqlite3.Connection
+    eligible_agency_codes: frozenset[str]
+    read_only: bool
+    active_binding: ActiveLocalityBinding | None
+
+
 def read_locality_config(environment: Mapping[str, str] | None = None) -> LocalityRateConfig:
     """Read command locality settings, including LOCALITY_MODE, exactly once."""
     source = os.environ if environment is None else environment
@@ -59,12 +79,37 @@ def read_locality_config(environment: Mapping[str, str] | None = None) -> Locali
 class SectorSnapshotResolver(SnapshotResolver):
     """A SnapshotResolver that accepts contracts for exactly one sector."""
 
+    _PINNED_CONTEXT_FIELDS = frozenset(
+        {
+            "sector",
+            "read_only",
+            "mode",
+            "cutover_at",
+            "_cutover",
+            "generation_id",
+            "selected_baseline_id",
+            "procurement_conn",
+            "company_conn",
+            "eligible_agency_codes",
+        }
+    )
+
     def __init__(self, *args: Any, sector: str, read_only: bool = False, **kwargs: Any) -> None:
         if sector not in REQUIRED_SECTORS:
             raise ValueError(f"unknown locality sector: {sector!r}")
+        object.__setattr__(self, "_context_fields_pinned", False)
         self.sector = sector
         self.read_only = bool(read_only)
         super().__init__(*args, **kwargs)
+        object.__setattr__(self, "_context_fields_pinned", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if (
+            name in self._PINNED_CONTEXT_FIELDS
+            and getattr(self, "_context_fields_pinned", False)
+        ):
+            raise AttributeError(f"resolver context field is immutable: {name}")
+        super().__setattr__(name, value)
 
     def _contract(self, row: CanonicalContract | Mapping[str, Any]) -> CanonicalContract:
         contract = super()._contract(row)
@@ -95,12 +140,52 @@ class LocalityResolverSet(Mapping[str, SectorSnapshotResolver]):
         config: LocalityRateConfig,
         resolvers: Mapping[str, SectorSnapshotResolver],
         *,
+        active_binding: ActiveLocalityBinding | None = None,
         owned_connections: tuple[sqlite3.Connection, sqlite3.Connection] | None = None,
     ) -> None:
-        if tuple(resolvers) != tuple(REQUIRED_SECTORS):
+        if set(resolvers) != set(REQUIRED_SECTORS) or len(resolvers) != len(REQUIRED_SECTORS):
             raise ValueError("all four locality sectors are required")
-        self.config = config
-        self._resolvers = dict(resolvers)
+        ordered = {sector: resolvers[sector] for sector in REQUIRED_SECTORS}
+        first = ordered[REQUIRED_SECTORS[0]]
+        for sector, resolver in ordered.items():
+            if not isinstance(resolver, SectorSnapshotResolver):
+                raise ValueError(f"{sector} resolver has an unsupported type")
+            if resolver.sector != sector:
+                raise ValueError(f"{sector} resolver sector does not match its mapping key")
+            if resolver.mode != config.mode:
+                raise ValueError(f"{sector} resolver mode does not match configuration")
+            if resolver.cutover_at != config.cutover_at:
+                raise ValueError(f"{sector} resolver cutover does not match configuration")
+            if resolver.generation_id != config.generation_id:
+                raise ValueError(f"{sector} resolver generation does not match configuration")
+            if resolver.selected_baseline_id != config.baseline_id:
+                raise ValueError(f"{sector} resolver baseline does not match configuration")
+            if resolver.procurement_conn is not first.procurement_conn:
+                raise ValueError(f"{sector} resolver procurement connection is not shared")
+            if resolver.company_conn is not first.company_conn:
+                raise ValueError(f"{sector} resolver company connection is not shared")
+            if resolver.read_only != first.read_only:
+                raise ValueError(f"{sector} resolver read-only policy is not uniform")
+            if resolver.eligible_agency_codes != first.eligible_agency_codes:
+                raise ValueError(f"{sector} resolver eligible agency codes are not shared")
+        if active_binding is not None and active_binding != ActiveLocalityBinding(
+            config.generation_id,
+            config.baseline_id,
+        ):
+            raise ValueError("active generation/baseline binding does not match configuration")
+        self._config = config
+        self._resolvers = MappingProxyType(ordered)
+        self._shared_context = LocalitySharedContext(
+            mode=config.mode,
+            cutover_at=config.cutover_at,
+            generation_id=config.generation_id,
+            selected_baseline_id=config.baseline_id,
+            procurement_conn=first.procurement_conn,
+            company_conn=first.company_conn,
+            eligible_agency_codes=frozenset(first.eligible_agency_codes or ()),
+            read_only=first.read_only,
+            active_binding=active_binding,
+        )
         self._owned_connections = owned_connections
 
     def __getitem__(self, sector: str) -> SectorSnapshotResolver:
@@ -118,6 +203,28 @@ class LocalityResolverSet(Mapping[str, SectorSnapshotResolver]):
     @property
     def mode(self) -> str:
         return self.config.mode
+
+    @property
+    def config(self) -> LocalityRateConfig:
+        return self._config
+
+    @property
+    def shared_context(self) -> LocalitySharedContext:
+        return self._shared_context
+
+    def require_config(self, config: LocalityRateConfig) -> None:
+        if self.config != config:
+            raise ValueError("locality resolver context does not match configuration")
+
+    def require_active_read_only(self, config: LocalityRateConfig) -> None:
+        self.require_config(config)
+        if not self.shared_context.read_only:
+            raise ValueError("report/export locality resolvers must be uniformly read-only")
+        expected = ActiveLocalityBinding(config.generation_id, config.baseline_id)
+        if self.shared_context.active_binding != expected:
+            raise ValueError(
+                "report/export locality resolvers must be bound to the requested active generation/baseline"
+            )
 
     def close(self) -> None:
         if self._owned_connections is None:
@@ -160,6 +267,7 @@ def build_locality_resolvers(
     *,
     eligible_agency_codes: Collection[str],
     read_only: bool = False,
+    active_binding: ActiveLocalityBinding | None = None,
     owned_connections: tuple[sqlite3.Connection, sqlite3.Connection] | None = None,
 ) -> LocalityResolverSet:
     agencies = frozenset(str(code).strip() for code in eligible_agency_codes if str(code).strip())
@@ -182,6 +290,7 @@ def build_locality_resolvers(
     return LocalityResolverSet(
         config,
         resolvers,
+        active_binding=active_binding,
         owned_connections=owned_connections,
     )
 
@@ -201,6 +310,7 @@ def open_locality_resolvers(
     *,
     eligible_agency_codes: Collection[str],
     read_only: bool = False,
+    active_binding: ActiveLocalityBinding | None = None,
 ) -> Iterator[LocalityResolverSet]:
     procurement_conn = _connect(procurement_path, read_only=read_only)
     try:
@@ -215,6 +325,7 @@ def open_locality_resolvers(
             config,
             eligible_agency_codes=eligible_agency_codes,
             read_only=read_only,
+            active_binding=active_binding,
             owned_connections=(procurement_conn, company_conn),
         )
     except Exception:

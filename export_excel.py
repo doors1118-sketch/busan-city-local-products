@@ -12,9 +12,10 @@ from core_calc import (
     load_expanded_biznos, parse_corp_shares,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site,
     is_non_busan_contract, check_busan_restriction, process_contract_row,
-    load_bid_dict, load_award_sets
+    load_bid_dict, load_award_sets, select_canonical_contract_rows,
 )
 from locality_rate_resolver import (
+    ActiveLocalityBinding,
     LocalityRateConfig,
     LocalityResolverSet,
     open_locality_resolvers,
@@ -42,8 +43,7 @@ def generate_agency_excel(
 ) -> io.BytesIO:
     config = locality_config or read_locality_config()
     if locality_resolvers is not None:
-        if locality_resolvers.config != config:
-            raise ValueError("locality resolver context does not match request configuration")
+        locality_resolvers.require_active_read_only(config)
         return _generate_agency_excel(agency_name, locality_resolvers)
     with open_locality_resolvers(
         DB_PROCUREMENT,
@@ -51,6 +51,7 @@ def generate_agency_excel(
         config,
         eligible_agency_codes=_eligible_agency_codes(),
         read_only=True,
+        active_binding=ActiveLocalityBinding(config.generation_id, config.baseline_id),
     ) as resolvers:
         return _generate_agency_excel(agency_name, resolvers)
 
@@ -216,14 +217,15 @@ def _generate_agency_excel(agency_name: str, locality_resolvers) -> io.BytesIO:
         return df[mask].copy()
 
     # 공사
-    import core_calc
     import time
     t0 = time.time()
     with open('log.txt', 'a') as f:
         f.write(f"공사 시작\n")
     df_const = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM cnstwk_cntrct", conn_pr)
     df_const = pre_filter(df_const)
-    df_const = core_calc.dedup_by_dcsn(df_const)
+    df_const = select_canonical_contract_rows(
+        df_const, "공사", eligible_agency_codes=busan_inst_dict.keys()
+    )
     df_const, _, _ = filter_cnstwk_by_site(df_const, bid_df)
     process_and_append(df_const, "공사", award_set=award_sets['공사'])
     with open('log.txt', 'a') as f: f.write(f"공사 완료: {time.time() - t0:.2f}초\n")
@@ -232,7 +234,9 @@ def _generate_agency_excel(agency_name: str, locality_resolvers) -> io.BytesIO:
     t0 = time.time()
     df_servc = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cnstrtsiteRgnNm, dminsttCd, cntrctCnclsMthdNm, cntrctCnclsDate FROM servc_cntrct", conn_pr)
     df_servc = pre_filter(df_servc)
-    df_servc = core_calc.dedup_by_dcsn(df_servc)
+    df_servc = select_canonical_contract_rows(
+        df_servc, "용역", eligible_agency_codes=busan_inst_dict.keys()
+    )
     df_servc, _, _ = filter_servc_by_site(df_servc, busan_inst_dict)
     process_and_append(df_servc, "용역", award_set=award_sets['용역'])
     with open('log.txt', 'a') as f: f.write(f"용역 완료: {time.time() - t0:.2f}초\n")
@@ -241,7 +245,9 @@ def _generate_agency_excel(agency_name: str, locality_resolvers) -> io.BytesIO:
     t0 = time.time()
     df_thng = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM thng_cntrct", conn_pr)
     df_thng = pre_filter(df_thng)
-    df_thng = core_calc.dedup_by_dcsn(df_thng)
+    df_thng = select_canonical_contract_rows(
+        df_thng, "물품", eligible_agency_codes=busan_inst_dict.keys()
+    )
     process_and_append(df_thng, "물품", award_set=award_sets['물품'])
     with open('log.txt', 'a') as f: f.write(f"물품 완료: {time.time() - t0:.2f}초\n")
     
@@ -249,9 +255,9 @@ def _generate_agency_excel(agency_name: str, locality_resolvers) -> io.BytesIO:
     t0 = time.time()
     df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, prdctIdntNoNm, dlvrReqRcptDate FROM shopping_cntrct", conn_pr)
     df_shop = pre_filter(df_shop)
-    df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
-    df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
-    df_shop.drop_duplicates(subset=['dlvrReqNo', 'prdctSno'], keep='first', inplace=True)
+    df_shop = select_canonical_contract_rows(
+        df_shop, "쇼핑몰", eligible_agency_codes=busan_inst_dict.keys()
+    )
     df_shop, _, _ = filter_shopping_by_site(df_shop, conn_pr, set(busan_inst_dict.keys()), inst_dict=busan_inst_dict)
     process_and_append(df_shop, "쇼핑몰", is_shopping=True)
     with open('log.txt', 'a') as f: f.write(f"쇼핑몰 완료: {time.time() - t0:.2f}초\n")

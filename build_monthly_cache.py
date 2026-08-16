@@ -11,7 +11,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from core_calc import (
-    parse_corp_shares, dedup_by_dcsn,
+    parse_corp_shares, select_canonical_contract_rows,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site,
     process_contract_row,
     load_bid_dict, load_award_sets, load_expanded_biznos,
@@ -29,6 +29,9 @@ DB_PROCUREMENT = 'procurement_contracts.db'
 DB_AGENCIES = 'busan_agencies_master.db'
 DB_COMPANIES = 'busan_companies_master.db'
 MONTHLY_CACHE = 'monthly_cache.json'
+DIRECT_ENTRYPOINT_ERROR = (
+    "Task 5B migration/orchestrator required: direct build_monthly_cache.py execution is disabled"
+)
 
 CURRENT_YEAR = str(datetime.now().year)
 CURRENT_MONTH = datetime.now().strftime('%m')  # "04"
@@ -65,8 +68,7 @@ def build_monthly(
 ):
     config = locality_config or read_locality_config()
     if locality_resolvers is not None:
-        if locality_resolvers.config != config:
-            raise ValueError("locality resolver context does not match command configuration")
+        locality_resolvers.require_config(config)
         return _build_monthly(locality_resolvers)
     if config.mode != 'legacy':
         raise ValueError(
@@ -183,8 +185,9 @@ def _build_monthly(locality_resolvers):
     df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
         corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate, cnstrtsiteRgnNm
         FROM cnstwk_cntrct""", conn)
-    df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-    df = dedup_by_dcsn(df)
+    df = select_canonical_contract_rows(
+        df, '공사', eligible_agency_codes=inst_dict.keys()
+    )
     df_filtered, _, _ = filter_cnstwk_by_site(df, bid_df)
 
     for _, row in df_filtered.iterrows():
@@ -224,8 +227,9 @@ def _build_monthly(locality_resolvers):
         df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
             corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate{extra_col}
             FROM [{tbl}]""", conn)
-        df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-        df = dedup_by_dcsn(df)
+        df = select_canonical_contract_rows(
+            df, name, eligible_agency_codes=inst_dict.keys()
+        )
         if tbl == 'servc_cntrct':
             df, _, _ = filter_servc_by_site(df, inst_dict)
 
@@ -264,9 +268,9 @@ def _build_monthly(locality_resolvers):
     df = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
         prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
         cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct""", conn)
-    df['dlvrReqChgOrd'] = pd.to_numeric(df['dlvrReqChgOrd'], errors='coerce').fillna(0)
-    df.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
-    df.drop_duplicates(subset=['dlvrReqNo', 'prdctSno'], keep='first', inplace=True)
+    df = select_canonical_contract_rows(
+        df, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
+    )
     df, _, _ = filter_shopping_by_site(df, conn, set(inst_dict.keys()), inst_dict=inst_dict)
 
     for _, row in df.iterrows():
@@ -641,6 +645,10 @@ def _build_monthly(locality_resolvers):
     return output
 
 
+def _direct_entrypoint():
+    print(DIRECT_ENTRYPOINT_ERROR, file=sys.stderr)
+    return 2
+
+
 if __name__ == '__main__':
-    result = build_monthly()
-    print(f"[월별캐시] 미발행 미리보기: {len(result.get('기관별', {}))}개 기관")
+    raise SystemExit(_direct_entrypoint())

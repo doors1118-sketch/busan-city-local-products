@@ -9,7 +9,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from core_calc import (
-    parse_corp_shares, extract_dminstt_codes, dedup_by_dcsn,
+    parse_corp_shares, extract_dminstt_codes, select_canonical_contract_rows,
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
     load_bid_dict, load_award_sets,
@@ -36,6 +36,9 @@ DB_PROCUREMENT = 'procurement_contracts.db'
 DB_AGENCIES = 'busan_agencies_master.db'
 DB_COMPANIES = 'busan_companies_master.db'
 CACHE_FILE = 'api_cache.json'
+DIRECT_ENTRYPOINT_ERROR = (
+    "Task 5B migration/orchestrator required: direct build_api_cache.py execution is disabled"
+)
 
 MIN_AMT = {
     '공사': 10e8,
@@ -76,8 +79,7 @@ def build_cache(
 ):
     config = locality_config or read_locality_config()
     if locality_resolvers is not None:
-        if locality_resolvers.config != config:
-            raise ValueError("locality resolver context does not match command configuration")
+        locality_resolvers.require_config(config)
         return _build_cache(locality_resolvers)
     if config.mode != 'legacy':
         raise ValueError(
@@ -278,8 +280,10 @@ def _build_cache(locality_resolvers):
         totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm,
         cntrctInsttOfclTelNo, cntrctCnclsDate{cnstwk_site_col}
         FROM cnstwk_cntrct""", conn)
-    df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-    n_before = len(df); df = dedup_by_dcsn(df)
+    n_before = len(df)
+    df = select_canonical_contract_rows(
+        df, '공사', eligible_agency_codes=inst_dict.keys()
+    )
     print(f"    차수 중복제거: {n_before - len(df)}건")
     
     # 공사현장 필터링
@@ -318,8 +322,10 @@ def _build_cache(locality_resolvers):
         df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
             corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
             FROM [{tbl}]""", conn)
-        df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-        n_before = len(df); df = dedup_by_dcsn(df)
+        n_before = len(df)
+        df = select_canonical_contract_rows(
+            df, name, eligible_agency_codes=inst_dict.keys()
+        )
         if n_before > len(df): print(f"    차수 중복제거: {n_before - len(df)}건")
         
         # 용역: 현장 타지역 사전 배제
@@ -436,9 +442,9 @@ def _build_cache(locality_resolvers):
         prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
         cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct
         """, conn)
-    df['dlvrReqChgOrd'] = pd.to_numeric(df['dlvrReqChgOrd'], errors='coerce').fillna(0)
-    df.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
-    df.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
+    df = select_canonical_contract_rows(
+        df, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
+    )
     
     df, n_site_drop, amt_site_drop = filter_shopping_by_site(
         df, conn, set(inst_dict.keys()), inst_dict=inst_dict)
@@ -687,8 +693,9 @@ def _build_cache(locality_resolvers):
             {nm_col} as cntrctNm, cntrctInsttOfclTelNo, dminsttCd,
             cntrctCnclsDate{extra_col}
             FROM [{tbl}]""", conn2)
-        df_l.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-        df_l = dedup_by_dcsn(df_l)
+        df_l = select_canonical_contract_rows(
+            df_l, sector, eligible_agency_codes=inst_dict.keys()
+        )
         if tbl == 'servc_cntrct':
             df_l, _, _ = filter_servc_by_site(df_l, inst_dict)
         for _, row in df_l.iterrows():
@@ -715,9 +722,9 @@ def _build_cache(locality_resolvers):
 
     # 쇼핑몰 유출계약
     df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqRcptDate FROM shopping_cntrct ", conn2)
-    df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
-    df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
-    df_shop.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
+    df_shop = select_canonical_contract_rows(
+        df_shop, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
+    )
     df_shop, _, _ = filter_shopping_by_site(df_shop, conn2, set(inst_dict.keys()), inst_dict=inst_dict)
     
     # Canonical product rows are resolved before the legacy delivery-level display grouping.
@@ -850,7 +857,9 @@ def _build_cache(locality_resolvers):
     for tbl, (sector, query) in prot_contract_queries.items():
         rows = pd.read_sql(query, conn)
         # 장기계속 후속차수 제외 (최초계약만)
-        rows = dedup_by_dcsn(rows)
+        rows = select_canonical_contract_rows(
+            rows, sector, eligible_agency_codes=inst_dict.keys()
+        )
         dcsn = rows['dcsnCntrctNo'].fillna('').astype(str).str.strip()
         rows = rows[~((dcsn.str.len() >= 10) & (~dcsn.str.endswith('00')))]
 
@@ -1048,7 +1057,9 @@ def _build_cache(locality_resolvers):
     suui_leakages = []
     for tbl, (sector, sql) in suui_queries.items():
         suui_df = pd.read_sql(sql, conn)
-        suui_df.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
+        suui_df = select_canonical_contract_rows(
+            suui_df, sector, eligible_agency_codes=inst_dict.keys()
+        )
         for _, row in suui_df.iterrows():
             if is_site_excluded_contract(row):
                 continue
@@ -1593,8 +1604,9 @@ def _build_cache(locality_resolvers):
                     cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
                     FROM [{tbl}]
                     WHERE cntrctCnclsDate >= '{start_s}' AND cntrctCnclsDate <= '{end_s}'""", conn)
-                wdf.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-                wdf = dedup_by_dcsn(wdf)
+                wdf = select_canonical_contract_rows(
+                    wdf, nm, eligible_agency_codes=inst_dict.keys()
+                )
                 for _, row in wdf.iterrows():
                     result = process_contract_row(row, inst_dict, biznos,
                                                    use_location_filter=True,
@@ -1632,9 +1644,9 @@ def _build_cache(locality_resolvers):
                 cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
                 FROM shopping_cntrct
                 WHERE dlvrReqRcptDate >= '{start_s}' AND dlvrReqRcptDate <= '{end_s}'""", conn)
-            sdf['dlvrReqChgOrd'] = pd.to_numeric(sdf['dlvrReqChgOrd'], errors='coerce').fillna(0)
-            sdf.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
-            sdf.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
+            sdf = select_canonical_contract_rows(
+                sdf, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
+            )
             for _, row in sdf.iterrows():
                 result = process_contract_row(
                     row,
@@ -1809,8 +1821,9 @@ def _build_cache(locality_resolvers):
                     cntrctInsttOfclTelNo, cntrctCnclsDate
                     FROM [{tbl}]
                     WHERE cntrctCnclsDate = '{ds}'""", conn)
-                ddf.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-                ddf = dedup_by_dcsn(ddf)
+                ddf = select_canonical_contract_rows(
+                    ddf, sector_name, eligible_agency_codes=inst_dict.keys()
+                )
                 for _, row in ddf.iterrows():
                     result = process_contract_row(row, inst_dict, biznos,
                                                    use_location_filter=True,
@@ -1837,9 +1850,9 @@ def _build_cache(locality_resolvers):
                 prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
                 cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
                 FROM shopping_cntrct WHERE dlvrReqRcptDate = '{ds}'""", conn)
-            sdf2['dlvrReqChgOrd'] = pd.to_numeric(sdf2['dlvrReqChgOrd'], errors='coerce').fillna(0)
-            sdf2.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
-            sdf2.drop_duplicates(subset=['dlvrReqNo','prdctSno'], keep='first', inplace=True)
+            sdf2 = select_canonical_contract_rows(
+                sdf2, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
+            )
             for _, row in sdf2.iterrows():
                 result = process_contract_row(
                     row,
@@ -1924,6 +1937,10 @@ def _build_cache(locality_resolvers):
             print(f"    ▼ {a['비교단위']:25s} {a['발주액']/1e8:.1f}억 수주율 {a['수주율']}%")
     return cache
 
+def _direct_entrypoint():
+    print(DIRECT_ENTRYPOINT_ERROR, file=sys.stderr)
+    return 2
+
+
 if __name__ == '__main__':
-    result = build_cache()
-    print(f"[캐시] 미발행 미리보기: 전체 수주율 {result['1_전체']['수주율']}%")
+    raise SystemExit(_direct_entrypoint())

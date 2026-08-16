@@ -1,12 +1,22 @@
 import ast
+from dataclasses import FrozenInstanceError
 import importlib.util
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from contract_population import MissingAgencyIdentity, MissingSupplierIdentity
+import pandas as pd
+
+from contract_population import (
+    CanonicalContractCollision,
+    MissingAgencyIdentity,
+    MissingSupplierIdentity,
+)
 from company_locality import apply_company_changes, ensure_locality_schema
 from core_calc import process_contract_row
 from locality_snapshot import MissingHistoricalSnapshot, ensure_snapshot_schema
@@ -112,6 +122,153 @@ class LocalityRateIntegrationTests(unittest.TestCase):
             self.assertIs(resolver.company_conn, company)
             self.assertEqual(resolver.generation_id, "generation-5a")
             self.assertEqual(resolver.cutover_at, CUTOVER)
+
+    def test_shared_canonical_selector_keeps_distinct_decision_families(self):
+        from core_calc import select_canonical_contract_rows
+
+        rows = pd.DataFrame(
+            [
+                self.contract_row("REUSED", "FIRST000100", 100, "first"),
+                self.contract_row("REUSED", "SECOND00100", 200, "second"),
+                self.contract_row("", "THIRD000100", 300, "third"),
+                self.contract_row("", "FOURTH00100", 400, "fourth"),
+            ]
+        )
+
+        selected = select_canonical_contract_rows(
+            rows,
+            "공사",
+            eligible_agency_codes={"A1"},
+        )
+
+        self.assertEqual(selected["display_name"].tolist(), ["first", "second", "third", "fourth"])
+        self.assertEqual(selected["thtmCntrctAmt"].tolist(), [100, 200, 300, 400])
+
+    def test_shared_canonical_selector_uses_latest_revision_and_preserves_metadata(self):
+        from core_calc import select_canonical_contract_rows
+
+        rows = pd.DataFrame(
+            [
+                self.contract_row(
+                    "U-OLD", "REVISION0100", 100, "old display",
+                    updated="2026-08-14 09:00:00",
+                ),
+                self.contract_row(
+                    "U-NEW", "REVISION0101", 120, "latest display",
+                    updated="2026-08-15 09:00:00",
+                ),
+            ]
+        )
+
+        selected = select_canonical_contract_rows(
+            rows,
+            "공사",
+            eligible_agency_codes={"A1"},
+        )
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected.iloc[0]["display_name"], "latest display")
+        self.assertEqual(selected.iloc[0]["untyCntrctNo"], "U-NEW")
+
+    def test_shared_canonical_selector_rejects_divergent_exact_identity(self):
+        from core_calc import select_canonical_contract_rows
+
+        rows = pd.DataFrame(
+            [
+                self.contract_row("U-1", "COLLIDE00100", 100, "first"),
+                self.contract_row("U-2", "COLLIDE00100", 101, "second"),
+            ]
+        )
+
+        with self.assertRaises(CanonicalContractCollision):
+            select_canonical_contract_rows(
+                rows,
+                "공사",
+                eligible_agency_codes={"A1"},
+            )
+
+    def test_resolver_set_rejects_every_mixed_child_context_dimension(self):
+        from locality_rate_resolver import (
+            LocalityRateConfig,
+            LocalityResolverSet,
+            build_locality_resolver,
+            build_locality_resolvers,
+        )
+
+        procurement = sqlite3.connect(":memory:")
+        other_procurement = sqlite3.connect(":memory:")
+        company = sqlite3.connect(":memory:")
+        other_company = sqlite3.connect(":memory:")
+        for connection in (procurement, other_procurement, company, other_company):
+            self.addCleanup(connection.close)
+        config = LocalityRateConfig("legacy", CUTOVER, "generation-good", "baseline-good")
+        good = build_locality_resolvers(
+            procurement,
+            company,
+            config,
+            eligible_agency_codes={"A1"},
+        )
+
+        cases = {
+            "sector": {"sector": "용역"},
+            "mode": {"mode": "shadow"},
+            "cutover": {"cutover_at": "2026-08-17 10:00:00+09:00"},
+            "generation": {"generation_id": "generation-other"},
+            "baseline": {"selected_baseline_id": "baseline-other"},
+            "procurement connection": {"procurement_conn": other_procurement},
+            "company connection": {"company_conn": other_company},
+            "read-only": {"read_only": True},
+        }
+        defaults = {
+            "procurement_conn": procurement,
+            "company_conn": company,
+            "mode": config.mode,
+            "sector": "물품",
+            "cutover_at": config.cutover_at,
+            "generation_id": config.generation_id,
+            "selected_baseline_id": config.baseline_id,
+            "eligible_agency_codes": {"A1"},
+            "read_only": False,
+        }
+        for label, override in cases.items():
+            with self.subTest(label=label):
+                child = build_locality_resolver(**(defaults | override))
+                mixed = dict(good)
+                mixed["물품"] = child
+                with self.assertRaisesRegex(ValueError, label):
+                    LocalityResolverSet(config, mixed)
+
+    def test_resolver_set_exposes_immutable_pinned_shared_context(self):
+        from locality_rate_resolver import LocalityRateConfig, build_locality_resolvers
+
+        procurement = sqlite3.connect(":memory:")
+        company = sqlite3.connect(":memory:")
+        self.addCleanup(procurement.close)
+        self.addCleanup(company.close)
+        config = LocalityRateConfig("legacy", CUTOVER, "generation-5a", None)
+        resolvers = build_locality_resolvers(
+            procurement,
+            company,
+            config,
+            eligible_agency_codes={"A1"},
+            read_only=True,
+        )
+
+        context = resolvers.shared_context
+        self.assertIs(context.procurement_conn, procurement)
+        self.assertIs(context.company_conn, company)
+        self.assertTrue(context.read_only)
+        self.assertEqual(context.generation_id, config.generation_id)
+        with self.assertRaises(FrozenInstanceError):
+            context.generation_id = "changed"
+        with self.assertRaises(TypeError):
+            resolvers._resolvers["공사"] = resolvers["용역"]
+        with self.assertRaises(AttributeError):
+            resolvers["공사"].generation_id = "changed"
+        with self.assertRaises(AttributeError):
+            resolvers["공사"]._cutover = None
+        with self.assertRaises(AttributeError):
+            resolvers.config = LocalityRateConfig("legacy", CUTOVER, "changed", None)
 
     def test_resolver_factory_closes_both_connections_when_initialization_fails(self):
         from locality_rate_resolver import LocalityRateConfig, open_locality_resolvers
@@ -475,6 +632,41 @@ class LocalityRateIntegrationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "shared generation resolver"):
                     builder(locality_config=config)
 
+    def test_cache_builder_functions_remain_callable_with_shared_context(self):
+        import build_api_cache
+        import build_monthly_cache
+        from locality_rate_resolver import LocalityRateConfig, build_locality_resolvers
+
+        procurement = sqlite3.connect(":memory:")
+        company = sqlite3.connect(":memory:")
+        self.addCleanup(procurement.close)
+        self.addCleanup(company.close)
+        config = LocalityRateConfig("legacy", CUTOVER, "generation-5a", None)
+        resolvers = build_locality_resolvers(
+            procurement,
+            company,
+            config,
+            eligible_agency_codes={"A1"},
+        )
+        sentinel = object()
+
+        with patch.object(build_api_cache, "_build_cache", return_value=sentinel):
+            self.assertIs(
+                build_api_cache.build_cache(
+                    locality_config=config,
+                    locality_resolvers=resolvers,
+                ),
+                sentinel,
+            )
+        with patch.object(build_monthly_cache, "_build_monthly", return_value=sentinel):
+            self.assertIs(
+                build_monthly_cache.build_monthly(
+                    locality_config=config,
+                    locality_resolvers=resolvers,
+                ),
+                sentinel,
+            )
+
     def test_required_sector_exceptions_are_not_suppressed(self):
         root = Path(__file__).resolve().parent
         for filename in ("build_api_cache.py", "build_monthly_cache.py"):
@@ -516,6 +708,172 @@ class LocalityRateIntegrationTests(unittest.TestCase):
             self.assertIsInstance(read_only, ast.Constant)
             self.assertIs(read_only.value, True)
 
+    def test_reports_reject_writable_injected_resolver_sets(self):
+        import export_excel
+        import rate_calc_db
+        from locality_rate_resolver import LocalityRateConfig, build_locality_resolvers
+
+        procurement = sqlite3.connect(":memory:")
+        company = sqlite3.connect(":memory:")
+        self.addCleanup(procurement.close)
+        self.addCleanup(company.close)
+        config = LocalityRateConfig("legacy", CUTOVER, "generation-5a", None)
+        writable = build_locality_resolvers(
+            procurement,
+            company,
+            config,
+            eligible_agency_codes={"A1"},
+            read_only=False,
+        )
+
+        with patch.object(rate_calc_db, "_main") as calculate:
+            with self.assertRaisesRegex(ValueError, "read-only"):
+                rate_calc_db.main(locality_config=config, locality_resolvers=writable)
+            calculate.assert_not_called()
+        with patch.object(export_excel, "_generate_agency_excel") as generate:
+            with self.assertRaisesRegex(ValueError, "read-only"):
+                export_excel.generate_agency_excel(
+                    "agency",
+                    locality_config=config,
+                    locality_resolvers=writable,
+                )
+            generate.assert_not_called()
+
+    def test_reports_reject_read_only_sets_without_explicit_active_binding(self):
+        import export_excel
+        import rate_calc_db
+        from locality_rate_resolver import LocalityRateConfig, build_locality_resolvers
+
+        procurement = sqlite3.connect(":memory:")
+        company = sqlite3.connect(":memory:")
+        self.addCleanup(procurement.close)
+        self.addCleanup(company.close)
+        config = LocalityRateConfig("legacy", CUTOVER, "generation-5a", None)
+        unbound = build_locality_resolvers(
+            procurement,
+            company,
+            config,
+            eligible_agency_codes={"A1"},
+            read_only=True,
+        )
+
+        with patch.object(rate_calc_db, "_main") as calculate:
+            with self.assertRaisesRegex(ValueError, "active generation/baseline"):
+                rate_calc_db.main(locality_config=config, locality_resolvers=unbound)
+            calculate.assert_not_called()
+        with patch.object(export_excel, "_generate_agency_excel") as generate:
+            with self.assertRaisesRegex(ValueError, "active generation/baseline"):
+                export_excel.generate_agency_excel(
+                    "agency",
+                    locality_config=config,
+                    locality_resolvers=unbound,
+                )
+            generate.assert_not_called()
+
+    def test_reports_accept_matching_read_only_active_binding(self):
+        import export_excel
+        import rate_calc_db
+        from locality_rate_resolver import (
+            ActiveLocalityBinding,
+            LocalityRateConfig,
+            build_locality_resolvers,
+        )
+
+        procurement = sqlite3.connect(":memory:")
+        company = sqlite3.connect(":memory:")
+        self.addCleanup(procurement.close)
+        self.addCleanup(company.close)
+        config = LocalityRateConfig("legacy", CUTOVER, "generation-5a", None)
+        resolvers = build_locality_resolvers(
+            procurement,
+            company,
+            config,
+            eligible_agency_codes={"A1"},
+            read_only=True,
+            active_binding=ActiveLocalityBinding(config.generation_id, config.baseline_id),
+        )
+        sentinel = object()
+
+        with patch.object(rate_calc_db, "_main", return_value=sentinel):
+            self.assertIs(
+                rate_calc_db.main(
+                    locality_config=config,
+                    locality_resolvers=resolvers,
+                ),
+                sentinel,
+            )
+        with patch.object(export_excel, "_generate_agency_excel", return_value=sentinel):
+            self.assertIs(
+                export_excel.generate_agency_excel(
+                    "agency",
+                    locality_config=config,
+                    locality_resolvers=resolvers,
+                ),
+                sentinel,
+            )
+
+    def test_direct_cache_builder_clis_require_task5b_orchestrator(self):
+        root = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as temporary:
+            for filename, cache_name in (
+                ("build_api_cache.py", "api_cache.json"),
+                ("build_monthly_cache.py", "monthly_cache.json"),
+            ):
+                with self.subTest(filename=filename):
+                    completed = subprocess.run(
+                        [sys.executable, str(root / filename)],
+                        cwd=temporary,
+                        env=os.environ.copy(),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=30,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertRegex(completed.stderr.lower(), r"migration.*orchestrator|required.*orchestrator")
+                    self.assertNotIn("완료", completed.stdout)
+                    self.assertNotIn("미리보기", completed.stdout)
+                    self.assertFalse((Path(temporary) / cache_name).exists())
+
+    def test_all_rate_consumers_use_shared_canonical_selector(self):
+        root = Path(__file__).resolve().parent
+        for filename in (
+            "build_api_cache.py",
+            "build_monthly_cache.py",
+            "rate_calc_db.py",
+            "export_excel.py",
+        ):
+            with self.subTest(filename=filename):
+                source = (root / filename).read_text(encoding="utf-8")
+                tree = ast.parse(source)
+                calls = [
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "select_canonical_contract_rows"
+                ]
+                self.assertTrue(calls, f"{filename} does not use the shared selector")
+                self.assertNotIn("dedup_by_dcsn", source)
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    if not isinstance(node.func, ast.Attribute) or node.func.attr != "drop_duplicates":
+                        continue
+                    keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+                    subset = keywords.get("subset")
+                    if not isinstance(subset, (ast.List, ast.Tuple)):
+                        continue
+                    fields = {
+                        element.value
+                        for element in subset.elts
+                        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+                    }
+                    self.assertFalse(
+                        fields & {"untyCntrctNo", "dcsnCntrctNo", "dlvrReqNo", "prdctSno"},
+                        f"{filename} retains consumer-specific contract selection",
+                    )
+
     def test_rate_modules_have_no_ad_hoc_locality_membership(self):
         root = Path(__file__).resolve().parent
         for filename in (
@@ -528,6 +886,21 @@ class LocalityRateIntegrationTests(unittest.TestCase):
             self.assertNotIn("BUSAN_BIZNO_PREFIXES", source, filename)
             self.assertNotIn(" in biznos", source, filename)
             self.assertNotIn(" not in biznos", source, filename)
+
+    @classmethod
+    def contract_row(cls, unty, decision, amount, display_name, *, updated="2026-08-15 09:00:00"):
+        return {
+            "untyCntrctNo": unty,
+            "dcsnCntrctNo": decision,
+            "dminsttCd": "A1",
+            "cntrctInsttCd": "A1",
+            "thtmCntrctAmt": amount,
+            "totCntrctAmt": amount,
+            "corpList": cls.corp_entry("1234567890", 100),
+            "cntrctCnclsDate": "2026-08-15",
+            "lastUpdtDt": updated,
+            "display_name": display_name,
+        }
 
 
 if __name__ == "__main__":

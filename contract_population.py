@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from typing import Any, Collection, Iterator, Mapping
+from typing import Any, Collection, Iterable, Iterator, Mapping
 from zoneinfo import ZoneInfo
 
 
@@ -405,6 +405,75 @@ def _in_date_range(contract_date: str, date_range: tuple[Any, Any] | None) -> bo
     return True
 
 
+def _select_latest_canonical_contracts(
+    contracts: Iterable[CanonicalContract],
+) -> tuple[CanonicalContract, ...]:
+    by_identity: dict[tuple[str, str, str], list[CanonicalContract]] = {}
+    for contract in contracts:
+        by_identity.setdefault(contract.identity, []).append(contract)
+
+    canonical_revisions: list[CanonicalContract] = []
+    for identity, candidates in sorted(by_identity.items()):
+        by_fingerprint: dict[str, list[CanonicalContract]] = {}
+        for candidate in candidates:
+            by_fingerprint.setdefault(content_fingerprint(candidate), []).append(candidate)
+        if len(by_fingerprint) != 1:
+            raise CanonicalContractCollision(
+                identity[0], identity[1], identity[2], list(by_fingerprint)
+            )
+        canonical_revisions.append(
+            max(
+                candidates,
+                key=lambda row: (row.source_order, content_fingerprint(row)),
+            )
+        )
+
+    by_family: dict[tuple[str, str], list[CanonicalContract]] = {}
+    for contract in canonical_revisions:
+        by_family.setdefault((contract.sector, contract.contract_key), []).append(contract)
+    selected = [
+        max(
+            revisions,
+            key=lambda row: (
+                _revision_rank(row.contract_revision),
+                row.source_order,
+                content_fingerprint(row),
+            ),
+        )
+        for revisions in by_family.values()
+    ]
+    return tuple(
+        sorted(
+            selected,
+            key=lambda row: (
+                row.sector,
+                row.contract_key,
+                _revision_rank(row.contract_revision),
+            ),
+        )
+    )
+
+
+def select_canonical_contracts(
+    rows: Iterable[Mapping[str, Any]],
+    sector: str,
+    date_range: tuple[Any, Any] | None = None,
+    *,
+    eligible_agency_codes: Collection[str] | None = None,
+) -> tuple[CanonicalContract, ...]:
+    """Select Task 4 canonical rows while retaining each winning source row."""
+    contracts = []
+    for row in rows:
+        contract = canonical_contract_from_row(
+            row,
+            sector,
+            eligible_agency_codes=eligible_agency_codes,
+        )
+        if _in_date_range(contract.contract_date, date_range):
+            contracts.append(contract)
+    return _select_latest_canonical_contracts(contracts)
+
+
 def iter_canonical_contracts(
     conn: sqlite3.Connection,
     sector: str,
@@ -421,31 +490,9 @@ def iter_canonical_contracts(
         raise ValueError(f"unknown contract sector: {sector!r}") from error
     cursor = conn.execute(f"SELECT * FROM [{table}]")
     columns = [description[0] for description in cursor.description]
-    by_identity: dict[tuple[str, str, str], list[CanonicalContract]] = {}
-    for source in cursor:
-        contract = canonical_contract_from_row(
-            dict(zip(columns, source)),
-            canonical_sector,
-            eligible_agency_codes=eligible_agency_codes,
-        )
-        if not _in_date_range(contract.contract_date, date_range):
-            continue
-        by_identity.setdefault(contract.identity, []).append(contract)
-
-    canonical_revisions: list[CanonicalContract] = []
-    for identity, candidates in sorted(by_identity.items()):
-        by_fingerprint: dict[str, list[CanonicalContract]] = {}
-        for candidate in candidates:
-            by_fingerprint.setdefault(content_fingerprint(candidate), []).append(candidate)
-        if len(by_fingerprint) != 1:
-            raise CanonicalContractCollision(identity[0], identity[1], identity[2], list(by_fingerprint))
-        canonical_revisions.append(max(candidates, key=lambda row: (row.source_order, content_fingerprint(row))))
-
-    by_family: dict[tuple[str, str], list[CanonicalContract]] = {}
-    for contract in canonical_revisions:
-        by_family.setdefault((contract.sector, contract.contract_key), []).append(contract)
-    selected = [
-        max(revisions, key=lambda row: (_revision_rank(row.contract_revision), row.source_order, content_fingerprint(row)))
-        for revisions in by_family.values()
-    ]
-    yield from sorted(selected, key=lambda row: (row.sector, row.contract_key, _revision_rank(row.contract_revision)))
+    yield from select_canonical_contracts(
+        (dict(zip(columns, source)) for source in cursor),
+        canonical_sector,
+        date_range,
+        eligible_agency_codes=eligible_agency_codes,
+    )

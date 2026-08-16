@@ -12,7 +12,7 @@ import os
 import re
 from collections import defaultdict
 
-from contract_population import select_agency_code
+from contract_population import select_agency_code, select_canonical_contracts
 
 # ============================================================
 # 1. 상수
@@ -258,6 +258,29 @@ def dedup_by_dcsn(df):
         df = df[~dup_mask]
     
     return df
+
+
+def select_canonical_contract_rows(df, sector, *, eligible_agency_codes=None):
+    """Return source rows selected by the Task 4 canonical contract rules."""
+    if df.empty:
+        return df.copy()
+    source_position = "__canonical_source_position__"
+    if source_position in df.columns:
+        raise ValueError(f"reserved canonical selector column exists: {source_position}")
+    records = []
+    for position, row in enumerate(df.to_dict("records")):
+        record = dict(row)
+        record[source_position] = position
+        records.append(record)
+    selected = select_canonical_contracts(
+        records,
+        sector,
+        eligible_agency_codes=eligible_agency_codes,
+    )
+    positions = sorted(
+        int(contract.source_row[source_position]) for contract in selected
+    )
+    return df.iloc[positions].copy()
 # ============================================================
 # 3. 필터 함수
 # ============================================================

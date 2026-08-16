@@ -9,12 +9,13 @@ import sys
 import time
 
 from core_calc import (
-    parse_corp_shares, extract_dminstt_codes, dedup_by_dcsn,
+    parse_corp_shares, extract_dminstt_codes, select_canonical_contract_rows,
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
     load_bid_dict, load_award_sets,
 )
 from locality_rate_resolver import (
+    ActiveLocalityBinding,
     LocalityRateConfig,
     LocalityResolverSet,
     open_locality_resolvers,
@@ -117,8 +118,7 @@ def main(
 ):
     config = locality_config or read_locality_config()
     if locality_resolvers is not None:
-        if locality_resolvers.config != config:
-            raise ValueError("locality resolver context does not match command configuration")
+        locality_resolvers.require_active_read_only(config)
         return _main(locality_resolvers)
     with open_locality_resolvers(
         DB_PROCUREMENT,
@@ -126,6 +126,7 @@ def main(
         config,
         eligible_agency_codes=_eligible_agency_codes(),
         read_only=True,
+        active_binding=ActiveLocalityBinding(config.generation_id, config.baseline_id),
     ) as resolvers:
         return _main(resolvers)
 
@@ -164,8 +165,10 @@ def _main(locality_resolvers):
         corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo,
         dminsttCd, cntrctCnclsDate
         FROM cnstwk_cntrct""", conn_pr)
-    df_const.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-    n_b = len(df_const); df_const = dedup_by_dcsn(df_const)
+    n_b = len(df_const)
+    df_const = select_canonical_contract_rows(
+        df_const, '공사', eligible_agency_codes=busan_inst_dict.keys()
+    )
     print(f"  차수 중복제거: {n_b - len(df_const)}건")
     
     df_const_filtered, n_drop, amt_drop = filter_cnstwk_by_site(df_const, bid_df)
@@ -181,8 +184,9 @@ def _main(locality_resolvers):
         corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cnstrtsiteRgnNm, dminsttCd,
         cntrctCnclsDate
         FROM servc_cntrct""", conn_pr)
-    df_servc.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-    df_servc = dedup_by_dcsn(df_servc)
+    df_servc = select_canonical_contract_rows(
+        df_servc, '용역', eligible_agency_codes=busan_inst_dict.keys()
+    )
     df_servc, n_site, amt_site = filter_servc_by_site(df_servc, busan_inst_dict)
     if n_site > 0: print(f"  용역 현장 타지역 {n_site}건 배제 ({amt_site/1e8:.0f}억)")
     stats_servc = process_dataframe(df_servc, busan_inst_dict, busan_comp_biznos,
@@ -195,8 +199,9 @@ def _main(locality_resolvers):
         corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, dminsttCd,
         cntrctCnclsDate
         FROM thng_cntrct""", conn_pr)
-    df_thng.drop_duplicates(subset=['untyCntrctNo'], keep='last', inplace=True)
-    df_thng = dedup_by_dcsn(df_thng)
+    df_thng = select_canonical_contract_rows(
+        df_thng, '물품', eligible_agency_codes=busan_inst_dict.keys()
+    )
     stats_thng = process_dataframe(df_thng, busan_inst_dict, busan_comp_biznos,
                                     use_location_filter=True, bid_dict=bid_dict,
                                     award_ntce_set=award_sets['물품'], sector='물품',
@@ -206,9 +211,9 @@ def _main(locality_resolvers):
     df_shop = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt,
         cntrctCorpBizno, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
         FROM shopping_cntrct""", conn_pr)
-    df_shop['dlvrReqChgOrd'] = pd.to_numeric(df_shop['dlvrReqChgOrd'], errors='coerce').fillna(0)
-    df_shop.sort_values('dlvrReqChgOrd', ascending=False, inplace=True)
-    df_shop.drop_duplicates(subset=['dlvrReqNo', 'prdctSno'], keep='first', inplace=True)
+    df_shop = select_canonical_contract_rows(
+        df_shop, '쇼핑몰', eligible_agency_codes=busan_inst_dict.keys()
+    )
     
     # 공사자재 현장 필터
     df_shop, n_shop_drop, amt_shop_drop = filter_shopping_by_site(
