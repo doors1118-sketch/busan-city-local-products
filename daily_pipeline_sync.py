@@ -14,6 +14,13 @@ import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from company_sync import (
+    IncompleteCompanyBatch,
+    make_verified_company_page_reader,
+    pending_supplier_dates,
+    sync_company_change_date,
+)
+from maintenance_lock import LocalityPaths, configure_locality_paths
 from public_api_recovery import enqueue_prespec_issues
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -318,94 +325,41 @@ def update_agency_master_daily(target_date):
 
 COMPANY_DB_PATH = 'busan_companies_master.db'
 COMPANY_API_URL = 'https://apis.data.go.kr/1230000/ao/UsrInfoService02/getPrcrmntCorpBasicInfo02'
+SUPPLIER_CHANGE_OVERLAP_DAYS = 3
+
+
+def configure_company_locality_runtime_paths():
+    """Install the canonical paired paths required by guarded supplier writes."""
+    coordination_dir = os.path.abspath(os.environ.get('LOCALITY_COORDINATION_DIR', 'sync_log/locality'))
+    paths = LocalityPaths(
+        os.path.abspath(COMPANY_DB_PATH),
+        os.path.abspath(DB_PATH),
+        os.path.join(coordination_dir, 'maintenance.lock'),
+        os.path.join(coordination_dir, 'transition.json'),
+        os.path.join(coordination_dir, 'locality_writes_paused'),
+        os.path.join(coordination_dir, 'active_locality_generation.json'),
+    )
+    configure_locality_paths(paths)
+    return paths
 
 def update_company_master_daily(target_date):
-    """ D-1 전국 조달업체 변동분을 받아와서 부산+본사 업체만 로컬 SQLite에 Upsert """
+    """Fetch one complete supplier change date and apply it through locality guards."""
     print(f"[조달업체 동기화] {target_date} 전국 조달업체 변경/신설 내역 스캔 및 부산+본사 필터링 중...")
-    bgn_dt = f"{target_date}0000"
-    end_dt = f"{target_date}2359"
-
-    def fetch_company_page(page_no):
-        query = f"?serviceKey={SERVICE_KEY}&inqryDiv=1&inqryBgnDt={bgn_dt}&inqryEndDt={end_dt}&numOfRows=999&pageNo={page_no}&type=json"
-        retry = 0
-        while retry < 3:
-            try:
-                rq = urllib.request.Request(COMPANY_API_URL + query, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(rq, context=ctx, timeout=20) as res:
-                    d = json.loads(res.read().decode('utf-8'))
-                    h = d.get('response', {}).get('header', {})
-                    if h.get('resultCode') == '00':
-                        b = d.get('response', {}).get('body', {})
-                        return b.get('items', []), b.get('totalCount', 0)
-                    record_api_issue(target_date, 'company_master', page_no, 'result_code',
-                                     f"{h.get('resultCode')}: {h.get('resultMsg', '')}", 'WARNING')
-            except Exception as e:
-                record_api_issue(target_date, 'company_master', page_no, 'exception', repr(e), 'WARNING')
-            retry += 1
-            time.sleep(1)
-        record_api_issue(target_date, 'company_master', page_no, 'retry_exhausted',
-                         '조달업체 기본정보 API 3회 재시도 실패', 'WARNING')
-        return [], 0
-
-    items, total_count = fetch_company_page(1)
-    all_items = list(items) if items else []
-
-    if total_count and int(total_count) > 999:
-        total_pages = (int(total_count) // 999) + 1
-        for p in range(2, total_pages + 1):
-            p_items, _ = fetch_company_page(p)
-            if p_items:
-                all_items.extend(p_items)
-
-    # 부산 + 본사 필터링
-    busan_companies = []
-    for item in all_items:
-        rgn = str(item.get('rgnNm', ''))
-        hdoffce = str(item.get('hdoffceDivNm', ''))
-        if '부산' in rgn and hdoffce == '본사':
-            bizno = str(item.get('bizno', '')).replace('-', '').strip()
-            if not bizno:
-                continue
-            busan_companies.append((
-                bizno,
-                item.get('corpNm', ''),
-                item.get('ceoNm', ''),
-                item.get('rgnNm', ''),
-                item.get('adrs', ''),
-                item.get('dtlAdrs', ''),
-                item.get('hdoffceDivNm', ''),
-                item.get('corpBsnsDivNm', ''),
-                item.get('mnfctDivNm', ''),
-                item.get('opbizDt', ''),
-                item.get('rgstDt', ''),
-                item.get('chgDt', ''),
-                'api'
-            ))
-
-    if busan_companies:
-        conn = sqlite3.connect(COMPANY_DB_PATH)
-        cursor = conn.cursor()
-        cursor.executemany('''
-            INSERT INTO company_master
-            (bizno, corpNm, ceoNm, rgnNm, adrs, dtlAdrs, hdoffceDivNm, corpBsnsDivNm, mnfctDivNm, opbizDt, rgstDt, chgDt, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(bizno) DO UPDATE SET
-            corpNm=excluded.corpNm,
-            ceoNm=excluded.ceoNm,
-            rgnNm=excluded.rgnNm,
-            adrs=excluded.adrs,
-            dtlAdrs=excluded.dtlAdrs,
-            hdoffceDivNm=excluded.hdoffceDivNm,
-            corpBsnsDivNm=excluded.corpBsnsDivNm,
-            mnfctDivNm=excluded.mnfctDivNm,
-            opbizDt=excluded.opbizDt,
-            chgDt=excluded.chgDt
-        ''', busan_companies)
-        conn.commit()
-        conn.close()
-        print(f"   -> 완료: 전국 {len(all_items):,}건 중 부산+본사 {len(busan_companies)}건 DB Upsert 성공.")
-    else:
-        print(f"   -> 완료: 전국 {len(all_items):,}건 스캔, 부산+본사 변동 없음.")
+    reader = make_verified_company_page_reader(
+        target_date,
+        api_url=COMPANY_API_URL,
+        service_key=SERVICE_KEY,
+    )
+    try:
+        summary = sync_company_change_date(target_date, reader, COMPANY_DB_PATH)
+    except IncompleteCompanyBatch as error:
+        record_api_issue(target_date, 'company_master', 0, 'incomplete_batch', str(error), 'WARNING')
+        raise
+    print(
+        f"   -> 완료: 전국 {summary.received:,}건 검증, "
+        f"적용 {summary.applied:,}건, 중복 {summary.duplicates:,}건."
+    )
+    return summary
 
 INDSTRY_API_URL = 'https://apis.data.go.kr/1230000/ao/UsrInfoService02/getPrcrmntCorpIndstrytyInfo02'
 
@@ -1159,7 +1113,7 @@ def download_for_category(api_type, date_str):
                 
     return api_type, all_items
 
-def sync_one_day(target_date):
+def sync_one_day(target_date, *, sync_supplier=True):
     """하루치 데이터 수집 (Step 1~3.6). 성공 시 True 반환.
     API 점검 중이면 즉시 False → catch-up 메커니즘으로 추후 자동 보충."""
     print(f"\n{'='*50}")
@@ -1191,11 +1145,12 @@ def sync_one_day(target_date):
     print("\n--------------------------------------------------")
 
     # [Step 1.5] 조달업체 마스터 동기화
-    try:
-        update_company_master_daily(target_date)
-    except Exception as e:
-        print(f"   [오류] Step 1.5 조달업체 동기화 실패: {e}")
-        failed_steps.append('Step1.5_조달업체')
+    if sync_supplier:
+        try:
+            update_company_master_daily(target_date)
+        except Exception as e:
+            print(f"   [오류] Step 1.5 조달업체 동기화 실패: {e}")
+            failed_steps.append('Step1.5_조달업체')
     print("\n--------------------------------------------------")
 
     # [Step 1.6] 조달업체 업종정보 동기화
@@ -1507,8 +1462,24 @@ def record_sync_success(target_date):
     conn.commit()
     conn.close()
 
+
+def supplier_dates_for_run(contract_dates, through_date):
+    """Combine supplier backlog, contract dates, and a deliberate overlap window."""
+    conn = sqlite3.connect(COMPANY_DB_PATH)
+    try:
+        pending = pending_supplier_dates(conn, through_date)
+    finally:
+        conn.close()
+    end_date = datetime.datetime.strptime(through_date, '%Y%m%d').date()
+    overlap_dates = [
+        (end_date - datetime.timedelta(days=offset)).strftime('%Y%m%d')
+        for offset in range(SUPPLIER_CHANGE_OVERLAP_DAYS)
+    ]
+    return sorted(set(pending).union(contract_dates, overlap_dates))
+
 def main():
     yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y%m%d')
+    configure_company_locality_runtime_paths()
     
     # 수동 실행: python daily_pipeline_sync.py 20260315
     if len(sys.argv) > 1:
@@ -1527,25 +1498,35 @@ def main():
                 dt += datetime.timedelta(days=1)
             if not target_dates:
                 print(f"[동기화 완료] 마지막 성공: {last_sync}, 새로 수집할 날짜 없음")
-                return
             if len(target_dates) > 1:
                 print(f"[자동 보충] 마지막 성공: {last_sync} → {len(target_dates)}일치 보충 수집")
         else:
             target_dates = [yesterday]
     
     start_time = time.time()
-    date_range = target_dates[0] if len(target_dates) == 1 else f"{target_dates[0]} ~ {target_dates[-1]} ({len(target_dates)}일)"
+    date_range = (
+        '계약 신규 없음' if not target_dates else
+        target_dates[0] if len(target_dates) == 1 else f"{target_dates[0]} ~ {target_dates[-1]} ({len(target_dates)}일)"
+    )
     print(f"==================================================")
     print(f" 🔄 부산광역시 조달 데이터 자동화 엔진: Daily Sync")
     print(f"    - 수집 대상: {date_range}")
     print(f"==================================================\n")
     
-    # 날짜별 데이터 수집
+    # Supplier changes recover independently from the contract sync_log.
+    supplier_dates = supplier_dates_for_run(target_dates, yesterday)
+    for supplier_date in supplier_dates:
+        try:
+            update_company_master_daily(supplier_date)
+        except Exception as e:
+            print(f"   [오류] 조달업체 {supplier_date} 동기화 실패 (계약 수집 계속): {e}")
+
+    # 날짜별 계약 데이터 수집
     success_dates = []
     for target_date in target_dates:
         try:
             # sync_one_day 내부 코드를 여기서 인라인 실행
-            ok = sync_one_day(target_date)
+            ok = sync_one_day(target_date, sync_supplier=False)
             if ok:
                 record_sync_success(target_date)
                 success_dates.append(target_date)
