@@ -16,8 +16,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from company_sync import (
     IncompleteCompanyBatch,
+    finish_supplier_run,
     make_verified_company_page_reader,
     pending_supplier_dates,
+    start_supplier_run,
     sync_company_change_date,
 )
 from maintenance_lock import LocalityPaths, configure_locality_paths
@@ -342,7 +344,7 @@ def configure_company_locality_runtime_paths():
     configure_locality_paths(paths)
     return paths
 
-def update_company_master_daily(target_date):
+def update_company_master_daily(target_date, *, supplier_run=None):
     """Fetch one complete supplier change date and apply it through locality guards."""
     print(f"[조달업체 동기화] {target_date} 전국 조달업체 변경/신설 내역 스캔 및 부산+본사 필터링 중...")
     reader = make_verified_company_page_reader(
@@ -351,7 +353,7 @@ def update_company_master_daily(target_date):
         service_key=SERVICE_KEY,
     )
     try:
-        summary = sync_company_change_date(target_date, reader, COMPANY_DB_PATH)
+        summary = sync_company_change_date(target_date, reader, COMPANY_DB_PATH, run=supplier_run)
     except IncompleteCompanyBatch as error:
         record_api_issue(target_date, 'company_master', 0, 'incomplete_batch', str(error), 'WARNING')
         raise
@@ -1116,6 +1118,7 @@ def download_for_category(api_type, date_str):
 def sync_one_day(target_date, *, sync_supplier=True):
     """하루치 데이터 수집 (Step 1~3.6). 성공 시 True 반환.
     API 점검 중이면 즉시 False → catch-up 메커니즘으로 추후 자동 보충."""
+    configure_company_locality_runtime_paths()
     print(f"\n{'='*50}")
     print(f" 📅 {target_date} 데이터 수집 시작")
     print(f"{'='*50}\n")
@@ -1515,11 +1518,22 @@ def main():
     
     # Supplier changes recover independently from the contract sync_log.
     supplier_dates = supplier_dates_for_run(target_dates, yesterday)
-    for supplier_date in supplier_dates:
+    try:
+        supplier_run = start_supplier_run(yesterday, COMPANY_DB_PATH)
+    except Exception as e:
+        print(f"   [오류] 조달업체 요청 제어 초기화 실패 (계약 수집 계속): {e}")
+    else:
         try:
-            update_company_master_daily(supplier_date)
-        except Exception as e:
-            print(f"   [오류] 조달업체 {supplier_date} 동기화 실패 (계약 수집 계속): {e}")
+            for supplier_date in supplier_dates:
+                if supplier_run.controls.circuit_state != 'closed':
+                    print(f"   [중단] 조달업체 요청 제어 상태: {supplier_run.controls.circuit_state}")
+                    break
+                try:
+                    update_company_master_daily(supplier_date, supplier_run=supplier_run)
+                except Exception as e:
+                    print(f"   [오류] 조달업체 {supplier_date} 동기화 실패 (계약 수집 계속): {e}")
+        finally:
+            finish_supplier_run(supplier_run)
 
     # 날짜별 계약 데이터 수집
     success_dates = []
