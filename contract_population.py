@@ -14,7 +14,15 @@ from zoneinfo import ZoneInfo
 
 
 SEOUL = ZoneInfo("Asia/Seoul")
-ITERATOR_VERSION = "canonical_contract_v1"
+ITERATOR_VERSION = "canonical_contract_v2"
+
+CANONICAL_SOURCE_ORDER_FIELDS = (
+    "lastUpdtDt",
+    "updDt",
+    "chgDt",
+    "rgstDt",
+    "cntrctDate",
+)
 
 _SECTORS = {
     "공사": ("공사", "cnstwk_cntrct", False),
@@ -32,6 +40,35 @@ _SECTORS = {
     "쇼핑몰": ("쇼핑몰", "shopping_cntrct", True),
     "shopping": ("쇼핑몰", "shopping_cntrct", True),
     "shopping_cntrct": ("쇼핑몰", "shopping_cntrct", True),
+}
+
+_SECTOR_SOURCE_ORDER_EQUIVALENTS = {
+    "공사": ("dcsnCntrctDt", "cntrctCnclsDate"),
+    "용역": ("dcsnCntrctDt", "cntrctCnclsDate"),
+    "물품": ("dcsnCntrctDt", "cntrctCnclsDate"),
+    "쇼핑몰": ("dlvrReqDt", "dlvrReqChgDt", "dlvrReqRcptDate"),
+}
+
+_CANONICAL_SOURCE_FIELDS = {
+    "공사": (
+        "untyCntrctNo", "dcsnCntrctNo", "dminsttCd", "dminsttList",
+        "cntrctInsttCd", "thtmCntrctAmt", "totCntrctAmt", "corpList",
+        "cntrctCnclsDate",
+    ),
+    "용역": (
+        "untyCntrctNo", "dcsnCntrctNo", "dminsttCd", "dminsttList",
+        "cntrctInsttCd", "thtmCntrctAmt", "totCntrctAmt", "corpList",
+        "cntrctCnclsDate",
+    ),
+    "물품": (
+        "untyCntrctNo", "dcsnCntrctNo", "dminsttCd", "dminsttList",
+        "cntrctInsttCd", "thtmCntrctAmt", "totCntrctAmt", "corpList",
+        "cntrctCnclsDate",
+    ),
+    "쇼핑몰": (
+        "dlvrReqNo", "dlvrReqChgOrd", "prdctSno", "dminsttCd",
+        "cntrctInsttCd", "prdctAmt", "cntrctCorpBizno", "dlvrReqRcptDate",
+    ),
 }
 
 
@@ -88,6 +125,62 @@ class CanonicalContract:
     @property
     def identity(self) -> tuple[str, str, str]:
         return self.sector, self.contract_key, self.contract_revision
+
+
+def _sector_definition(sector: str) -> tuple[str, str, bool]:
+    key = _text(sector)
+    lookup = key.lower() if key.isascii() else key
+    try:
+        return _SECTORS[lookup]
+    except KeyError as error:
+        raise ValueError(f"unknown contract sector: {sector!r}") from error
+
+
+def canonical_source_order_fields(sector: str) -> tuple[str, ...]:
+    canonical_sector, _, _ = _sector_definition(sector)
+    return (
+        *CANONICAL_SOURCE_ORDER_FIELDS,
+        *_SECTOR_SOURCE_ORDER_EQUIVALENTS[canonical_sector],
+    )
+
+
+def canonical_source_projection(
+    conn: sqlite3.Connection,
+    sector: str,
+    requested_columns: Collection[str] | None = None,
+) -> tuple[str, ...]:
+    """Return available display fields plus all canonical/order fields."""
+    canonical_sector, table, _ = _sector_definition(sector)
+    available = tuple(
+        str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')
+    )
+    if not available:
+        raise CanonicalContractError(f"missing canonical contract source table: {table}")
+    available_set = set(available)
+    requested = available if requested_columns is None else tuple(requested_columns)
+    projection = []
+    for name in (
+        *requested,
+        *_CANONICAL_SOURCE_FIELDS[canonical_sector],
+        *canonical_source_order_fields(canonical_sector),
+    ):
+        if name in available_set and name not in projection:
+            projection.append(name)
+    return tuple(projection)
+
+
+def load_contract_source_rows(
+    conn: sqlite3.Connection,
+    sector: str,
+    requested_columns: Collection[str] | None = None,
+) -> tuple[tuple[str, ...], list[dict[str, Any]]]:
+    """Load one unfiltered sector using the shared Task 4 projection contract."""
+    _, table, _ = _sector_definition(sector)
+    columns = canonical_source_projection(conn, sector, requested_columns)
+    projection = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+    table_name = '"' + table.replace('"', '""') + '"'
+    cursor = conn.execute(f"SELECT {projection} FROM {table_name}")
+    return columns, [dict(zip(columns, source)) for source in cursor]
 
 
 def normalize_contract_key(value: Any) -> str:
@@ -293,10 +386,7 @@ def canonical_contract_from_row(
     *,
     eligible_agency_codes: Collection[str] | None = None,
 ) -> CanonicalContract:
-    try:
-        canonical_sector, _, shopping = _SECTORS[_text(sector).lower() if _text(sector).isascii() else _text(sector)]
-    except KeyError as error:
-        raise ValueError(f"unknown contract sector: {sector!r}") from error
+    canonical_sector, _, shopping = _sector_definition(sector)
     values = dict(row)
     if shopping:
         delivery = normalize_contract_key(values.get("dlvrReqNo"))
@@ -328,7 +418,7 @@ def canonical_contract_from_row(
     suppliers = _parse_suppliers(values, shopping, canonical_sector)
     source_order = tuple(
         _normalize_date(values.get(name))
-        for name in ("lastUpdtDt", "updDt", "chgDt", "rgstDt", "cntrctDate")
+        for name in canonical_source_order_fields(canonical_sector)
     ) + (contract_date, revision)
     return CanonicalContract(
         canonical_sector,
@@ -482,16 +572,10 @@ def iter_canonical_contracts(
     eligible_agency_codes: Collection[str] | None = None,
 ) -> Iterator[CanonicalContract]:
     """Yield the one latest, collision-free canonical revision per contract family."""
-    key = _text(sector)
-    lookup = key.lower() if key.isascii() else key
-    try:
-        canonical_sector, table, _ = _SECTORS[lookup]
-    except KeyError as error:
-        raise ValueError(f"unknown contract sector: {sector!r}") from error
-    cursor = conn.execute(f"SELECT * FROM [{table}]")
-    columns = [description[0] for description in cursor.description]
+    canonical_sector, _, _ = _sector_definition(sector)
+    _, sources = load_contract_source_rows(conn, canonical_sector)
     yield from select_canonical_contracts(
-        (dict(zip(columns, source)) for source in cursor),
+        sources,
         canonical_sector,
         date_range,
         eligible_agency_codes=eligible_agency_codes,

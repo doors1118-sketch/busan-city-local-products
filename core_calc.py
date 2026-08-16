@@ -12,7 +12,11 @@ import os
 import re
 from collections import defaultdict
 
-from contract_population import select_agency_code, select_canonical_contracts
+from contract_population import (
+    load_contract_source_rows,
+    select_agency_code,
+    select_canonical_contracts,
+)
 
 # ============================================================
 # 1. 상수
@@ -281,6 +285,63 @@ def select_canonical_contract_rows(df, sector, *, eligible_agency_codes=None):
         int(contract.source_row[source_position]) for contract in selected
     )
     return df.iloc[positions].copy()
+
+
+RATE_CONTRACT_COLUMNS = {
+    '공사': (
+        'untyCntrctNo', 'dcsnCntrctNo', 'cntrctInsttCd', 'dminsttCd',
+        'totCntrctAmt', 'thtmCntrctAmt', 'corpList', 'ntceNo',
+        'dminsttList', 'cnstwkNm', 'cntrctInsttOfclTelNo',
+        'cntrctCnclsDate', 'cntrctDate', 'cnstrtsiteRgnNm',
+        'cntrctCnclsMthdNm', 'cnstwkTypeLrg', 'cnstwkTypeDtl',
+    ),
+    '용역': (
+        'untyCntrctNo', 'dcsnCntrctNo', 'cntrctInsttCd', 'dminsttCd',
+        'totCntrctAmt', 'thtmCntrctAmt', 'corpList', 'ntceNo',
+        'dminsttList', 'cntrctNm', 'cntrctInsttOfclTelNo',
+        'cntrctCnclsDate', 'cntrctDate', 'cnstrtsiteRgnNm',
+        'cntrctCnclsMthdNm',
+    ),
+    '물품': (
+        'untyCntrctNo', 'dcsnCntrctNo', 'cntrctInsttCd', 'dminsttCd',
+        'totCntrctAmt', 'thtmCntrctAmt', 'corpList', 'ntceNo',
+        'dminsttList', 'cntrctNm', 'cntrctInsttOfclTelNo',
+        'cntrctCnclsDate', 'cntrctDate', 'cntrctCnclsMthdNm',
+    ),
+    '쇼핑몰': (
+        'dlvrReqNo', 'dlvrReqChgOrd', 'prdctSno', 'dminsttCd',
+        'cntrctInsttCd', 'prdctAmt', 'cntrctCorpBizno', 'corpNm',
+        'prdctClsfcNoNm', 'cnstwkMtrlDrctPurchsObjYn', 'dlvrReqNm',
+        'prdctIdntNoNm', 'dlvrReqRcptDate',
+    ),
+}
+
+
+def load_rate_contract_populations(conn, *, eligible_agency_codes):
+    """Load and select each complete sector once for all command views."""
+    agencies = frozenset(eligible_agency_codes)
+    populations = {}
+    source_position = "__canonical_source_position__"
+    for sector, requested_columns in RATE_CONTRACT_COLUMNS.items():
+        columns, source_rows = load_contract_source_rows(
+            conn,
+            sector,
+            requested_columns,
+        )
+        for position, row in enumerate(source_rows):
+            row[source_position] = position
+        selected = select_canonical_contracts(
+            source_rows,
+            sector,
+            eligible_agency_codes=agencies,
+        )
+        winners = sorted(
+            (contract.source_row for contract in selected),
+            key=lambda row: int(row[source_position]),
+        )
+        populations[sector] = pd.DataFrame(winners, columns=columns)
+        del source_rows, selected, winners
+    return populations
 # ============================================================
 # 3. 필터 함수
 # ============================================================

@@ -11,7 +11,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from core_calc import (
-    parse_corp_shares, select_canonical_contract_rows,
+    parse_corp_shares, load_rate_contract_populations,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site,
     process_contract_row,
     load_bid_dict, load_award_sets, load_expanded_biznos,
@@ -164,6 +164,10 @@ def _build_monthly(locality_resolvers):
     # ── 필터 로딩 ──
     bid_dict, bid_df = load_bid_dict(conn)
     award_sets = load_award_sets(conn)
+    canonical_populations = load_rate_contract_populations(
+        conn,
+        eligible_agency_codes=inst_dict.keys(),
+    )
 
     def get_unit(cd):
         unit = inst_unit.get(cd)
@@ -182,12 +186,7 @@ def _build_monthly(locality_resolvers):
 
     # ── 공사 ──
     print("  [공사] 로딩...")
-    df = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate, cnstrtsiteRgnNm
-        FROM cnstwk_cntrct""", conn)
-    df = select_canonical_contract_rows(
-        df, '공사', eligible_agency_codes=inst_dict.keys()
-    )
+    df = canonical_populations['공사'].copy()
     df_filtered, _, _ = filter_cnstwk_by_site(df, bid_df)
 
     for _, row in df_filtered.iterrows():
@@ -223,13 +222,7 @@ def _build_monthly(locality_resolvers):
     # ── 용역 / 물품 ──
     for tbl, name, award_key in [('servc_cntrct', '용역', '용역'), ('thng_cntrct', '물품', '물품')]:
         print(f"  [{name}] 로딩...")
-        extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
-        df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
-            corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate, cntrctDate{extra_col}
-            FROM [{tbl}]""", conn)
-        df = select_canonical_contract_rows(
-            df, name, eligible_agency_codes=inst_dict.keys()
-        )
+        df = canonical_populations[name].copy()
         if tbl == 'servc_cntrct':
             df, _, _ = filter_servc_by_site(df, inst_dict)
 
@@ -265,12 +258,7 @@ def _build_monthly(locality_resolvers):
 
     # ── 쇼핑몰 ──
     print("  [쇼핑몰] 로딩...")
-    df = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
-        prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
-        cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct""", conn)
-    df = select_canonical_contract_rows(
-        df, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
-    )
+    df = canonical_populations['쇼핑몰'].copy()
     df, _, _ = filter_shopping_by_site(df, conn, set(inst_dict.keys()), inst_dict=inst_dict)
 
     for _, row in df.iterrows():

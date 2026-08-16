@@ -835,7 +835,7 @@ class LocalityRateIntegrationTests(unittest.TestCase):
                     self.assertNotIn("미리보기", completed.stdout)
                     self.assertFalse((Path(temporary) / cache_name).exists())
 
-    def test_all_rate_consumers_use_shared_canonical_selector(self):
+    def test_all_rate_consumers_load_one_complete_canonical_population(self):
         root = Path(__file__).resolve().parent
         for filename in (
             "build_api_cache.py",
@@ -851,10 +851,21 @@ class LocalityRateIntegrationTests(unittest.TestCase):
                     for node in ast.walk(tree)
                     if isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Name)
-                    and node.func.id == "select_canonical_contract_rows"
+                    and node.func.id == "load_rate_contract_populations"
                 ]
-                self.assertTrue(calls, f"{filename} does not use the shared selector")
+                self.assertEqual(
+                    len(calls),
+                    1,
+                    f"{filename} must load one complete canonical population",
+                )
                 self.assertNotIn("dedup_by_dcsn", source)
+                self.assertNotIn("select_canonical_contract_rows", source)
+                if filename == "export_excel.py":
+                    self.assertLess(
+                        source.index("load_rate_contract_populations("),
+                        source.index("if not target_cds:"),
+                        "export target filtering must follow complete canonicalization",
+                    )
                 for node in ast.walk(tree):
                     if not isinstance(node, ast.Call):
                         continue
@@ -873,6 +884,168 @@ class LocalityRateIntegrationTests(unittest.TestCase):
                         fields & {"untyCntrctNo", "dcsnCntrctNo", "dlvrReqNo", "prdctSno"},
                         f"{filename} retains consumer-specific contract selection",
                     )
+
+    def test_complete_population_precedes_period_agency_revision_and_method_filters(self):
+        from core_calc import load_rate_contract_populations
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        self.create_rate_contract_tables(connection)
+        connection.executemany(
+            """
+            INSERT INTO cnstwk_cntrct (
+                untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd,
+                thtmCntrctAmt, totCntrctAmt, corpList, cntrctCnclsDate,
+                cntrctDate, cntrctCnclsMthdNm, cnstwkNm, updDt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "MOVE-1", "MOVE000100", "A1", "A1", 100, 100,
+                    self.corp_entry("1234567890", 100), "2026-08-01",
+                    "2026-08-01", "수의계약", "obsolete", "2026-08-01 09:00:00",
+                ),
+                (
+                    "MOVE-2", "MOVE000101", "A2", "A2", 120, 120,
+                    self.corp_entry("1234567890", 100), "2026-08-08",
+                    "2026-08-08", "일반경쟁", "current", "2026-08-08 09:00:00",
+                ),
+            ],
+        )
+
+        selected = load_rate_contract_populations(
+            connection,
+            eligible_agency_codes={"A1", "A2"},
+        )["공사"]
+
+        self.assertEqual(selected["dcsnCntrctNo"].tolist(), ["MOVE000101"])
+        self.assertTrue(selected[selected["cntrctCnclsDate"] == "2026-08-01"].empty)
+        self.assertTrue(selected[selected["dminsttCd"] == "A1"].empty)
+        self.assertTrue(selected[selected["dcsnCntrctNo"].str.endswith("00")].empty)
+        self.assertTrue(selected[selected["cntrctCnclsMthdNm"] == "수의계약"].empty)
+
+    def test_complete_population_exposes_collision_before_filters_can_hide_it(self):
+        from core_calc import load_rate_contract_populations
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        self.create_rate_contract_tables(connection)
+        connection.executemany(
+            """
+            INSERT INTO cnstwk_cntrct (
+                untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd,
+                thtmCntrctAmt, totCntrctAmt, corpList, cntrctCnclsDate,
+                cntrctDate, cntrctCnclsMthdNm, cnstwkNm, updDt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "C-1", "COLLIDE00100", "A1", "A1", 100, 100,
+                    self.corp_entry("1234567890", 100), "2026-08-01",
+                    "2026-08-01", "수의계약", "hidden", "2026-08-01 09:00:00",
+                ),
+                (
+                    "C-2", "COLLIDE00100", "A1", "A1", 101, 101,
+                    self.corp_entry("1234567890", 100), "2026-08-08",
+                    "2026-08-08", "일반경쟁", "visible", "2026-08-08 09:00:00",
+                ),
+            ],
+        )
+
+        with self.assertRaises(CanonicalContractCollision):
+            load_rate_contract_populations(
+                connection,
+                eligible_agency_codes={"A1"},
+            )
+
+    def test_rate_projection_selects_same_newest_metadata_rows_as_task4(self):
+        from contract_population import iter_canonical_contracts
+        from core_calc import load_rate_contract_populations
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        self.create_rate_contract_tables(connection)
+        for table, decision, display_column, source_order_column in (
+            ("cnstwk_cntrct", "CONST000100", "cnstwkNm", "dcsnCntrctDt"),
+            ("servc_cntrct", "SERVC000100", "cntrctNm", "updDt"),
+            ("thng_cntrct", "GOODS000100", "cntrctNm", "updDt"),
+        ):
+            connection.executemany(
+                f"""
+                INSERT INTO [{table}] (
+                    untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd,
+                    thtmCntrctAmt, totCntrctAmt, corpList, cntrctCnclsDate,
+                    cntrctDate, [{display_column}], cnstrtsiteRgnNm,
+                    [{source_order_column}]
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "U-1", decision, "A1", "A1", 100, 100,
+                        self.corp_entry("1234567890", 100), "2026-08-15",
+                        "2026-08-15", "stale", "서울", "2026-08-15 09:00:00",
+                    ),
+                    (
+                        "U-2", decision, "A1", "A1", 100, 100,
+                        self.corp_entry("1234567890", 100), "2026-08-15",
+                        "2026-08-15", "newest", "부산", "2026-08-15 10:00:00",
+                    ),
+                ],
+            )
+        connection.executemany(
+            """
+            INSERT INTO shopping_cntrct (
+                dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt,
+                cntrctCorpBizno, dlvrReqRcptDate, dlvrReqNm, dlvrReqChgDt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("SHOP-1", 0, "1", "A1", 100, "1234567890", "2026-08-15", "stale", "2026-08-15 09:00:00"),
+                ("SHOP-1", 0, "1", "A1", 100, "1234567890", "2026-08-15", "newest", "2026-08-15 10:00:00"),
+            ],
+        )
+
+        populations = load_rate_contract_populations(
+            connection,
+            eligible_agency_codes={"A1"},
+        )
+        display_columns = {
+            "공사": "cnstwkNm",
+            "용역": "cntrctNm",
+            "물품": "cntrctNm",
+            "쇼핑몰": "dlvrReqNm",
+        }
+        for sector, display_column in display_columns.items():
+            with self.subTest(sector=sector):
+                task4 = next(iter_canonical_contracts(connection, sector))
+                self.assertEqual(task4.source_row[display_column], "newest")
+                self.assertEqual(populations[sector].iloc[0][display_column], "newest")
+                source_order_column = {
+                    "공사": "dcsnCntrctDt",
+                    "쇼핑몰": "dlvrReqChgDt",
+                }.get(sector, "updDt")
+                self.assertEqual(
+                    populations[sector].iloc[0][source_order_column],
+                    "2026-08-15 10:00:00",
+                )
+
+    def test_schema_projection_includes_all_available_source_order_fields(self):
+        from contract_population import canonical_source_projection
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        self.create_rate_contract_tables(connection)
+
+        construction = canonical_source_projection(connection, "공사", ("cnstwkNm",))
+        shopping = canonical_source_projection(connection, "쇼핑몰", ("dlvrReqNm",))
+
+        for field in ("lastUpdtDt", "updDt", "chgDt", "rgstDt", "cntrctDate", "dcsnCntrctDt"):
+            self.assertIn(field, construction)
+        for field in (
+            "lastUpdtDt", "updDt", "chgDt", "rgstDt", "cntrctDate",
+            "dlvrReqDt", "dlvrReqChgDt", "dlvrReqRcptDate",
+        ):
+            self.assertIn(field, shopping)
 
     def test_rate_modules_have_no_ad_hoc_locality_membership(self):
         root = Path(__file__).resolve().parent
@@ -901,6 +1074,60 @@ class LocalityRateIntegrationTests(unittest.TestCase):
             "lastUpdtDt": updated,
             "display_name": display_name,
         }
+
+    @staticmethod
+    def create_rate_contract_tables(connection):
+        for table, display_column in (
+            ("cnstwk_cntrct", "cnstwkNm"),
+            ("servc_cntrct", "cntrctNm"),
+            ("thng_cntrct", "cntrctNm"),
+        ):
+            connection.execute(
+                f"""
+                CREATE TABLE [{table}] (
+                    untyCntrctNo TEXT,
+                    dcsnCntrctNo TEXT,
+                    cntrctInsttCd TEXT,
+                    dminsttCd TEXT,
+                    dminsttList TEXT,
+                    thtmCntrctAmt REAL,
+                    totCntrctAmt REAL,
+                    corpList TEXT,
+                    cntrctCnclsDate TEXT,
+                    cntrctDate TEXT,
+                    cntrctCnclsMthdNm TEXT,
+                    [{display_column}] TEXT,
+                    cnstrtsiteRgnNm TEXT,
+                    lastUpdtDt TEXT,
+                    updDt TEXT,
+                    chgDt TEXT,
+                    rgstDt TEXT,
+                    dcsnCntrctDt TEXT
+                )
+                """
+            )
+        connection.execute(
+            """
+            CREATE TABLE shopping_cntrct (
+                dlvrReqNo TEXT,
+                dlvrReqChgOrd TEXT,
+                prdctSno TEXT,
+                dminsttCd TEXT,
+                cntrctInsttCd TEXT,
+                prdctAmt REAL,
+                cntrctCorpBizno TEXT,
+                dlvrReqRcptDate TEXT,
+                dlvrReqNm TEXT,
+                lastUpdtDt TEXT,
+                updDt TEXT,
+                chgDt TEXT,
+                rgstDt TEXT,
+                cntrctDate TEXT,
+                dlvrReqDt TEXT,
+                dlvrReqChgDt TEXT
+            )
+            """
+        )
 
 
 if __name__ == "__main__":

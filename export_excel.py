@@ -12,7 +12,7 @@ from core_calc import (
     load_expanded_biznos, parse_corp_shares,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site,
     is_non_busan_contract, check_busan_restriction, process_contract_row,
-    load_bid_dict, load_award_sets, select_canonical_contract_rows,
+    load_bid_dict, load_award_sets, load_rate_contract_populations,
 )
 from locality_rate_resolver import (
     ActiveLocalityBinding,
@@ -74,12 +74,21 @@ def _generate_agency_excel(agency_name: str, locality_resolvers) -> io.BytesIO:
         if agency_name in unit:
             target_cds[cd] = info
             
+    conn_pr = sqlite3.connect(DB_PROCUREMENT)
+    try:
+        canonical_populations = load_rate_contract_populations(
+            conn_pr,
+            eligible_agency_codes=busan_inst_dict.keys(),
+        )
+    except Exception:
+        conn_pr.close()
+        raise
     if not target_cds:
+        conn_pr.close()
         return None
 
     # 2. 지역업체 마스터 로딩 (동적 지점 스캔 제외: conn_pr=None)
     conn_cp = sqlite3.connect(DB_COMPANIES)
-    conn_pr = sqlite3.connect(DB_PROCUREMENT)
     busan_comp_biznos = load_expanded_biznos(conn_cp)
     
     # 주소 딕셔너리 로딩
@@ -221,43 +230,27 @@ def _generate_agency_excel(agency_name: str, locality_resolvers) -> io.BytesIO:
     t0 = time.time()
     with open('log.txt', 'a') as f:
         f.write(f"공사 시작\n")
-    df_const = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM cnstwk_cntrct", conn_pr)
-    df_const = pre_filter(df_const)
-    df_const = select_canonical_contract_rows(
-        df_const, "공사", eligible_agency_codes=busan_inst_dict.keys()
-    )
+    df_const = pre_filter(canonical_populations["공사"].copy())
     df_const, _, _ = filter_cnstwk_by_site(df_const, bid_df)
     process_and_append(df_const, "공사", award_set=award_sets['공사'])
     with open('log.txt', 'a') as f: f.write(f"공사 완료: {time.time() - t0:.2f}초\n")
     
     # 용역
     t0 = time.time()
-    df_servc = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cnstrtsiteRgnNm, dminsttCd, cntrctCnclsMthdNm, cntrctCnclsDate FROM servc_cntrct", conn_pr)
-    df_servc = pre_filter(df_servc)
-    df_servc = select_canonical_contract_rows(
-        df_servc, "용역", eligible_agency_codes=busan_inst_dict.keys()
-    )
+    df_servc = pre_filter(canonical_populations["용역"].copy())
     df_servc, _, _ = filter_servc_by_site(df_servc, busan_inst_dict)
     process_and_append(df_servc, "용역", award_set=award_sets['용역'])
     with open('log.txt', 'a') as f: f.write(f"용역 완료: {time.time() - t0:.2f}초\n")
     
     # 물품
     t0 = time.time()
-    df_thng = pd.read_sql("SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cntrctCnclsMthdNm, cntrctCnclsDate FROM thng_cntrct", conn_pr)
-    df_thng = pre_filter(df_thng)
-    df_thng = select_canonical_contract_rows(
-        df_thng, "물품", eligible_agency_codes=busan_inst_dict.keys()
-    )
+    df_thng = pre_filter(canonical_populations["물품"].copy())
     process_and_append(df_thng, "물품", award_set=award_sets['물품'])
     with open('log.txt', 'a') as f: f.write(f"물품 완료: {time.time() - t0:.2f}초\n")
     
     # 쇼핑몰
     t0 = time.time()
-    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, prdctIdntNoNm, dlvrReqRcptDate FROM shopping_cntrct", conn_pr)
-    df_shop = pre_filter(df_shop)
-    df_shop = select_canonical_contract_rows(
-        df_shop, "쇼핑몰", eligible_agency_codes=busan_inst_dict.keys()
-    )
+    df_shop = pre_filter(canonical_populations["쇼핑몰"].copy())
     df_shop, _, _ = filter_shopping_by_site(df_shop, conn_pr, set(busan_inst_dict.keys()), inst_dict=busan_inst_dict)
     process_and_append(df_shop, "쇼핑몰", is_shopping=True)
     with open('log.txt', 'a') as f: f.write(f"쇼핑몰 완료: {time.time() - t0:.2f}초\n")

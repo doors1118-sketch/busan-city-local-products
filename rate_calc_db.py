@@ -9,7 +9,7 @@ import sys
 import time
 
 from core_calc import (
-    parse_corp_shares, extract_dminstt_codes, select_canonical_contract_rows,
+    parse_corp_shares, extract_dminstt_codes, load_rate_contract_populations,
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
     load_bid_dict, load_award_sets,
@@ -158,18 +158,15 @@ def _main(locality_resolvers):
     print("  입찰공고/낙찰정보 로딩 중...")
     bid_dict, bid_df = load_bid_dict(conn_pr)
     award_sets = load_award_sets(conn_pr)
+    canonical_populations = load_rate_contract_populations(
+        conn_pr,
+        eligible_agency_codes=busan_inst_dict.keys(),
+    )
     print(f"    용역: {len(award_sets['용역']):,} / 공사: {len(award_sets['공사']):,} / 물품: {len(award_sets['물품']):,} 공고번호")
     
     # --- [A. 공사] ---
-    df_const = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, ntceNo, dminsttList, cnstwkNm, cntrctInsttOfclTelNo,
-        dminsttCd, cntrctCnclsDate
-        FROM cnstwk_cntrct""", conn_pr)
-    n_b = len(df_const)
-    df_const = select_canonical_contract_rows(
-        df_const, '공사', eligible_agency_codes=busan_inst_dict.keys()
-    )
-    print(f"  차수 중복제거: {n_b - len(df_const)}건")
+    df_const = canonical_populations['공사'].copy()
+    print(f"  정규 계약: {len(df_const):,}건")
     
     df_const_filtered, n_drop, amt_drop = filter_cnstwk_by_site(df_const, bid_df)
     print(f"  🚨 [허수 배제] 현장위치 타지역 공사 {n_drop}건 배제 (규모: {amt_drop:,.0f}원)")
@@ -180,13 +177,7 @@ def _main(locality_resolvers):
                                      locality_resolver=locality_resolvers['공사'])
     
     # --- [B. 용역] ---
-    df_servc = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, cnstrtsiteRgnNm, dminsttCd,
-        cntrctCnclsDate
-        FROM servc_cntrct""", conn_pr)
-    df_servc = select_canonical_contract_rows(
-        df_servc, '용역', eligible_agency_codes=busan_inst_dict.keys()
-    )
+    df_servc = canonical_populations['용역'].copy()
     df_servc, n_site, amt_site = filter_servc_by_site(df_servc, busan_inst_dict)
     if n_site > 0: print(f"  용역 현장 타지역 {n_site}건 배제 ({amt_site/1e8:.0f}억)")
     stats_servc = process_dataframe(df_servc, busan_inst_dict, busan_comp_biznos,
@@ -195,25 +186,14 @@ def _main(locality_resolvers):
                                      locality_resolver=locality_resolvers['용역'])
     
     # --- [C. 물품] ---
-    df_thng = pd.read_sql("""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, totCntrctAmt, thtmCntrctAmt,
-        corpList, dminsttList, cntrctNm, cntrctInsttOfclTelNo, ntceNo, dminsttCd,
-        cntrctCnclsDate
-        FROM thng_cntrct""", conn_pr)
-    df_thng = select_canonical_contract_rows(
-        df_thng, '물품', eligible_agency_codes=busan_inst_dict.keys()
-    )
+    df_thng = canonical_populations['물품'].copy()
     stats_thng = process_dataframe(df_thng, busan_inst_dict, busan_comp_biznos,
                                     use_location_filter=True, bid_dict=bid_dict,
                                     award_ntce_set=award_sets['물품'], sector='물품',
                                     locality_resolver=locality_resolvers['물품'])
     
     # --- [D. 쇼핑몰] ---
-    df_shop = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt,
-        cntrctCorpBizno, cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
-        FROM shopping_cntrct""", conn_pr)
-    df_shop = select_canonical_contract_rows(
-        df_shop, '쇼핑몰', eligible_agency_codes=busan_inst_dict.keys()
-    )
+    df_shop = canonical_populations['쇼핑몰'].copy()
     
     # 공사자재 현장 필터
     df_shop, n_shop_drop, amt_shop_drop = filter_shopping_by_site(

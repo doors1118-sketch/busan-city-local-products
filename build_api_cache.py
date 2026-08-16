@@ -9,7 +9,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from core_calc import (
-    parse_corp_shares, extract_dminstt_codes, select_canonical_contract_rows,
+    parse_corp_shares, extract_dminstt_codes, load_rate_contract_populations,
     is_non_busan_contract, check_busan_restriction,
     filter_cnstwk_by_site, filter_servc_by_site, filter_shopping_by_site, process_contract_row,
     load_bid_dict, load_award_sets,
@@ -228,6 +228,10 @@ def _build_cache(locality_resolvers):
     print("  입찰공고/낙찰정보 로딩...")
     bid_dict, bid_df = load_bid_dict(conn)
     award_sets = load_award_sets(conn)
+    canonical_populations = load_rate_contract_populations(
+        conn,
+        eligible_agency_codes=inst_dict.keys(),
+    )
     award_all = set().union(*award_sets.values())  # 보호제도 분석용 전체 합집합
     print(f"    입찰공고: {len(bid_dict):,}건, 낙찰정보: 공사 {len(award_sets['공사']):,} / 용역 {len(award_sets['용역']):,} / 물품 {len(award_sets['물품']):,}")
     
@@ -274,17 +278,8 @@ def _build_cache(locality_resolvers):
     
     # --- 공사 (현장 필터 포함) ---
     print("  [공사] 계산 중...")
-    cnstwk_cols = [c[1] for c in conn.execute("PRAGMA table_info(cnstwk_cntrct)").fetchall()]
-    cnstwk_site_col = ', cnstrtsiteRgnNm' if 'cnstrtsiteRgnNm' in cnstwk_cols else ", '' as cnstrtsiteRgnNm"
-    df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd,
-        totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList, cnstwkNm,
-        cntrctInsttOfclTelNo, cntrctCnclsDate{cnstwk_site_col}
-        FROM cnstwk_cntrct""", conn)
-    n_before = len(df)
-    df = select_canonical_contract_rows(
-        df, '공사', eligible_agency_codes=inst_dict.keys()
-    )
-    print(f"    차수 중복제거: {n_before - len(df)}건")
+    df = canonical_populations['공사'].copy()
+    print(f"    정규 계약: {len(df):,}건")
     
     # 공사현장 필터링
     df_filtered, n_drop, amt_drop = filter_cnstwk_by_site(df, bid_df)
@@ -317,16 +312,8 @@ def _build_cache(locality_resolvers):
     # --- 용역/물품 (전화번호+키워드 필터 포함) ---
     for tbl, name, award_key in [('servc_cntrct','용역','용역'),('thng_cntrct','물품','물품')]:
         print(f"  [{name}] 계산 중...")
-        # 용역은 cnstrtsiteRgnNm 포함하여 로드
-        extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
-        df = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd, dminsttCd, totCntrctAmt, thtmCntrctAmt,
-            corpList, ntceNo, dminsttList, cntrctNm, cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
-            FROM [{tbl}]""", conn)
-        n_before = len(df)
-        df = select_canonical_contract_rows(
-            df, name, eligible_agency_codes=inst_dict.keys()
-        )
-        if n_before > len(df): print(f"    차수 중복제거: {n_before - len(df)}건")
+        df = canonical_populations[name].copy()
+        print(f"    정규 계약: {len(df):,}건")
         
         # 용역: 현장 타지역 사전 배제
         n_site_drop = 0
@@ -438,13 +425,7 @@ def _build_cache(locality_resolvers):
 
     # --- 쇼핑몰 (공사자재 현장 필터) + 유출품목 집계 ---
     print("  [쇼핑몰] 계산 중...")
-    df = pd.read_sql("""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
-        prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
-        cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate FROM shopping_cntrct
-        """, conn)
-    df = select_canonical_contract_rows(
-        df, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
-    )
+    df = canonical_populations['쇼핑몰'].copy()
     
     df, n_site_drop, amt_site_drop = filter_shopping_by_site(
         df, conn, set(inst_dict.keys()), inst_dict=inst_dict)
@@ -685,17 +666,7 @@ def _build_cache(locality_resolvers):
     # 용역/물품 유출계약
     conn2 = sqlite3.connect(DB_PROCUREMENT)
     for tbl, sector, awk in [('servc_cntrct','용역','용역'),('thng_cntrct','물품','물품')]:
-        cols_t = [r[1] for r in conn2.execute(f"PRAGMA table_info({tbl})").fetchall()]
-        nm_col = 'cntrctNm' if 'cntrctNm' in cols_t else "''"
-        extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
-        df_l = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
-            totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
-            {nm_col} as cntrctNm, cntrctInsttOfclTelNo, dminsttCd,
-            cntrctCnclsDate{extra_col}
-            FROM [{tbl}]""", conn2)
-        df_l = select_canonical_contract_rows(
-            df_l, sector, eligible_agency_codes=inst_dict.keys()
-        )
+        df_l = canonical_populations[sector].copy()
         if tbl == 'servc_cntrct':
             df_l, _, _ = filter_servc_by_site(df_l, inst_dict)
         for _, row in df_l.iterrows():
@@ -721,10 +692,7 @@ def _build_cache(locality_resolvers):
             })
 
     # 쇼핑몰 유출계약
-    df_shop = pd.read_sql("SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd, prdctAmt, cntrctCorpBizno, corpNm, dlvrReqNm, cnstwkMtrlDrctPurchsObjYn, dlvrReqRcptDate FROM shopping_cntrct ", conn2)
-    df_shop = select_canonical_contract_rows(
-        df_shop, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
-    )
+    df_shop = canonical_populations['쇼핑몰'].copy()
     df_shop, _, _ = filter_shopping_by_site(df_shop, conn2, set(inst_dict.keys()), inst_dict=inst_dict)
     
     # Canonical product rows are resolved before the legacy delivery-level display grouping.
@@ -837,29 +805,13 @@ def _build_cache(locality_resolvers):
     for _r in conn.execute("SELECT REPLACE(bidNtceNo,'-',''), cnstrtsiteRgnNm FROM bid_notices_price WHERE cnstrtsiteRgnNm IS NOT NULL").fetchall():
         if _r[0]: site_map[_r[0]] = str(_r[1] or '')
 
-    prot_contract_queries = {
-        'cnstwk_cntrct': ('공사', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
-            untyCntrctNo, cntrctInsttCd, dminsttCd, dminsttList,
-            cntrctCnclsMthdNm, dcsnCntrctNo,
-            cnstwkNm as cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
-            cnstwkTypeLrg, cnstwkTypeDtl, cntrctCnclsDate
-            FROM [cnstwk_cntrct]
-            WHERE cntrctCnclsMthdNm != '수의계약'"""),
-        'servc_cntrct': ('용역', """SELECT ntceNo, corpList, totCntrctAmt, thtmCntrctAmt,
-            untyCntrctNo, cntrctInsttCd, dminsttCd, dminsttList,
-            cntrctCnclsMthdNm, dcsnCntrctNo,
-            cntrctNm, cntrctInsttOfclTelNo, '' as mainCnsttyNm,
-            cntrctCnclsDate
-            FROM [servc_cntrct]
-            WHERE cntrctCnclsMthdNm != '수의계약'"""),
-    }
-
-    for tbl, (sector, query) in prot_contract_queries.items():
-        rows = pd.read_sql(query, conn)
+    for sector in ('공사', '용역'):
+        rows = canonical_populations[sector].copy()
+        rows = rows[rows['cntrctCnclsMthdNm'] != '수의계약'].copy()
+        if sector == '공사':
+            rows['cntrctNm'] = rows['cnstwkNm']
+        rows['mainCnsttyNm'] = ''
         # 장기계속 후속차수 제외 (최초계약만)
-        rows = select_canonical_contract_rows(
-            rows, sector, eligible_agency_codes=inst_dict.keys()
-        )
         dcsn = rows['dcsnCntrctNo'].fillna('').astype(str).str.strip()
         rows = rows[~((dcsn.str.len() >= 10) & (~dcsn.str.endswith('00')))]
 
@@ -1036,30 +988,17 @@ def _build_cache(locality_resolvers):
 
     # --- B) 수의계약 (장기계속 후속차수 제외: 최초계약만 포함) ---
     # dcsnCntrctNo 끝2자리 '00' = 최초계약, 그 외 = 후속차수(이미 업체 결정된 건)
-    suui_queries = {
-        'cnstwk_cntrct': ('공사', """SELECT untyCntrctNo, dcsnCntrctNo, dminsttCd, cntrctInsttCd, corpList,
-            totCntrctAmt, thtmCntrctAmt, dminsttList, cnstwkNm as cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo, cntrctCnclsDate FROM [cnstwk_cntrct]
-            WHERE cntrctCnclsMthdNm='수의계약'
-            AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
-        'servc_cntrct': ('용역', """SELECT untyCntrctNo, dcsnCntrctNo, dminsttCd, cntrctInsttCd, corpList,
-            totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo, cntrctCnclsDate FROM [servc_cntrct]
-            WHERE cntrctCnclsMthdNm='수의계약'
-            AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
-        'thng_cntrct': ('물품', """SELECT untyCntrctNo, dcsnCntrctNo, dminsttCd, cntrctInsttCd, corpList,
-            totCntrctAmt, thtmCntrctAmt, dminsttList, cntrctNm,
-            cntrctInsttOfclTelNo, ntceNo, cntrctCnclsDate FROM [thng_cntrct]
-            WHERE cntrctCnclsMthdNm='수의계약'
-            AND (dcsnCntrctNo LIKE '%00' OR dcsnCntrctNo IS NULL OR dcsnCntrctNo = '')"""),
-    }
     suui_stats = defaultdict(lambda: {'total': 0, 'busan': 0, 'non_busan': 0, 'non_busan_amt': 0})
     suui_leakages = []
-    for tbl, (sector, sql) in suui_queries.items():
-        suui_df = pd.read_sql(sql, conn)
-        suui_df = select_canonical_contract_rows(
-            suui_df, sector, eligible_agency_codes=inst_dict.keys()
-        )
+    for sector in ('공사', '용역', '물품'):
+        suui_df = canonical_populations[sector].copy()
+        dcsn = suui_df['dcsnCntrctNo'].fillna('').astype(str).str.strip()
+        initial_revision = dcsn.str.endswith('00') | dcsn.eq('')
+        suui_df = suui_df[
+            suui_df['cntrctCnclsMthdNm'].eq('수의계약') & initial_revision
+        ].copy()
+        if sector == '공사':
+            suui_df['cntrctNm'] = suui_df['cnstwkNm']
         for _, row in suui_df.iterrows():
             if is_site_excluded_contract(row):
                 continue
@@ -1593,20 +1532,15 @@ def _build_cache(locality_resolvers):
         end_s = end_dt.strftime('%Y-%m-%d')
         wk = defaultdict(lambda: {'total': 0, 'local': 0})
         contracts = []  # 개별 계약 추적 (수주율 변동 원인 분석용)
-        for tbl, nm, award_key in [('cnstwk_cntrct','공사','공사'),
-                                    ('servc_cntrct','용역','용역'),
-                                    ('thng_cntrct','물품','물품')]:
-            extra_col = ', cnstrtsiteRgnNm' if tbl == 'servc_cntrct' else ''
+        for nm, award_key in [('공사','공사'), ('용역','용역'), ('물품','물품')]:
             try:
-                wdf = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
-                    dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
-                    {'cnstwkNm' if tbl=='cnstwk_cntrct' else 'cntrctNm'} as cntrctNm,
-                    cntrctInsttOfclTelNo, cntrctCnclsDate{extra_col}
-                    FROM [{tbl}]
-                    WHERE cntrctCnclsDate >= '{start_s}' AND cntrctCnclsDate <= '{end_s}'""", conn)
-                wdf = select_canonical_contract_rows(
-                    wdf, nm, eligible_agency_codes=inst_dict.keys()
-                )
+                wdf = canonical_populations[nm].copy()
+                contract_dates = wdf['cntrctCnclsDate'].fillna('').astype(str)
+                wdf = wdf[
+                    contract_dates.ge(start_s) & contract_dates.le(end_s)
+                ].copy()
+                if nm == '공사':
+                    wdf['cntrctNm'] = wdf['cnstwkNm']
                 for _, row in wdf.iterrows():
                     result = process_contract_row(row, inst_dict, biznos,
                                                    use_location_filter=True,
@@ -1639,14 +1573,11 @@ def _build_cache(locality_resolvers):
             except Exception:
                 raise
         try:
-            sdf = pd.read_sql(f"""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
-                prdctAmt, cntrctCorpBizno, corpNm, prdctClsfcNoNm,
-                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
-                FROM shopping_cntrct
-                WHERE dlvrReqRcptDate >= '{start_s}' AND dlvrReqRcptDate <= '{end_s}'""", conn)
-            sdf = select_canonical_contract_rows(
-                sdf, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
-            )
+            sdf = canonical_populations['쇼핑몰'].copy()
+            receipt_dates = sdf['dlvrReqRcptDate'].fillna('').astype(str)
+            sdf = sdf[
+                receipt_dates.ge(start_s) & receipt_dates.le(end_s)
+            ].copy()
             for _, row in sdf.iterrows():
                 result = process_contract_row(
                     row,
@@ -1813,17 +1744,13 @@ def _build_cache(locality_resolvers):
         ds = target_date.strftime('%Y-%m-%d')
         day_by_dim = {d: {'total': 0, 'local': 0} for d in dims}
         
-        for tbl, sector_name, award_key in [('cnstwk_cntrct','공사','공사'),('servc_cntrct','용역','용역'),('thng_cntrct','물품','물품')]:
+        for sector_name, award_key in [('공사','공사'), ('용역','용역'), ('물품','물품')]:
             try:
-                ddf = pd.read_sql(f"""SELECT untyCntrctNo, dcsnCntrctNo, cntrctInsttCd,
-                    dminsttCd, totCntrctAmt, thtmCntrctAmt, corpList, ntceNo, dminsttList,
-                    {'cnstwkNm' if tbl=='cnstwk_cntrct' else 'cntrctNm'} as cntrctNm,
-                    cntrctInsttOfclTelNo, cntrctCnclsDate
-                    FROM [{tbl}]
-                    WHERE cntrctCnclsDate = '{ds}'""", conn)
-                ddf = select_canonical_contract_rows(
-                    ddf, sector_name, eligible_agency_codes=inst_dict.keys()
-                )
+                ddf = canonical_populations[sector_name].copy()
+                contract_dates = ddf['cntrctCnclsDate'].fillna('').astype(str)
+                ddf = ddf[contract_dates.eq(ds)].copy()
+                if sector_name == '공사':
+                    ddf['cntrctNm'] = ddf['cnstwkNm']
                 for _, row in ddf.iterrows():
                     result = process_contract_row(row, inst_dict, biznos,
                                                    use_location_filter=True,
@@ -1846,13 +1773,9 @@ def _build_cache(locality_resolvers):
                 raise
         # 쇼핑몰
         try:
-            sdf2 = pd.read_sql(f"""SELECT dlvrReqNo, dlvrReqChgOrd, prdctSno, dminsttCd,
-                prdctAmt, cntrctCorpBizno, prdctClsfcNoNm,
-                cnstwkMtrlDrctPurchsObjYn, dlvrReqNm, dlvrReqRcptDate
-                FROM shopping_cntrct WHERE dlvrReqRcptDate = '{ds}'""", conn)
-            sdf2 = select_canonical_contract_rows(
-                sdf2, '쇼핑몰', eligible_agency_codes=inst_dict.keys()
-            )
+            sdf2 = canonical_populations['쇼핑몰'].copy()
+            receipt_dates = sdf2['dlvrReqRcptDate'].fillna('').astype(str)
+            sdf2 = sdf2[receipt_dates.eq(ds)].copy()
             for _, row in sdf2.iterrows():
                 result = process_contract_row(
                     row,
