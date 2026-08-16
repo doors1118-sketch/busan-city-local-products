@@ -91,6 +91,7 @@ class SupplierRun:
     company_db_path: Path
     policy: CompanySyncPolicy
     controls: RequestControls
+    has_terminal_failure: bool = False
 
 
 FetchPage = Callable[[int], Any]
@@ -146,6 +147,8 @@ def make_verified_company_page_reader(source_date: str, *, api_url: str, service
 def _as_page(raw: Any, requested_page: int, requested_rows: int) -> CompanyPage:
     if not isinstance(raw, CompanyPage):
         raise IncompleteCompanyBatch(f"invalid page response for page {requested_page}")
+    if raw.explicit_not_found:
+        return CompanyPage((), 0, requested_page, requested_rows, raw.response_class, raw.retry_after, True)
     if raw.page_number is None:
         raise IncompleteCompanyBatch(f"missing pageNo metadata for page {requested_page}")
     if raw.num_of_rows is None:
@@ -309,7 +312,13 @@ def start_supplier_run(source_date: str, company_db_path: str | Path, *, policy:
         else:
             response_classes = Counter(dict(conn.execute("SELECT response_class, response_count FROM company_sync_response_metric WHERE job_name='company_changes_run' AND source_date=?", (source_date,)).fetchall()))
             controls = RequestControls(int(row[2]), int(row[0]), int(row[1]), str(row[3]), response_classes)
-        return SupplierRun(source_date, path, active_policy, controls)
+        return SupplierRun(
+            source_date,
+            path,
+            active_policy,
+            controls,
+            has_terminal_failure=bool(controls.response_classes["terminal_date_failure"]),
+        )
     finally:
         conn.close()
 
@@ -323,7 +332,10 @@ def _persist_run(run: SupplierRun, *, status: str | None = None) -> None:
 
 
 def finish_supplier_run(run: SupplierRun) -> None:
-    _persist_run(run, status="success" if run.controls.circuit_state == "closed" else "failed")
+    _persist_run(
+        run,
+        status="success" if run.controls.circuit_state == "closed" and not run.has_terminal_failure else "failed",
+    )
 
 
 def sync_company_change_date(source_date: str, fetch_page: FetchPage, company_db_path: str | Path, *, rows_per_page: int = 999, policy: CompanySyncPolicy | None = None, run: SupplierRun | None = None, clock: Clock = time.monotonic, sleep: Sleep = time.sleep, random_uniform: RandomUniform = random.uniform) -> ChangeSummary:
@@ -345,6 +357,8 @@ def sync_company_change_date(source_date: str, fetch_page: FetchPage, company_db
             _write_metrics(conn, "company_changes", source_date, metrics)
             fail_sync_job(conn, "company_changes", source_date, str(error))
             if run is not None:
+                run.has_terminal_failure = True
+                run.controls.response_classes["terminal_date_failure"] += 1
                 _persist_run(run)
             raise
         try:
@@ -353,6 +367,8 @@ def sync_company_change_date(source_date: str, fetch_page: FetchPage, company_db
             _write_metrics(conn, "company_changes", source_date, collected.metrics)
             fail_sync_job(conn, "company_changes", source_date, repr(error))
             if run is not None:
+                run.has_terminal_failure = True
+                run.controls.response_classes["terminal_date_failure"] += 1
                 _persist_run(run)
             raise
         _write_metrics(conn, "company_changes", source_date, collected.metrics)

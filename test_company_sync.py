@@ -23,6 +23,8 @@ from company_sync import (
     CompanySyncPolicy,
     IncompleteCompanyBatch,
     fetch_complete_change_batch,
+    finish_supplier_run,
+    make_verified_company_page_reader,
     pending_supplier_dates,
     start_supplier_run,
     sync_company_change_date,
@@ -280,6 +282,24 @@ class CompanySyncTests(unittest.TestCase):
             sync_company_change_date("20260816", FakePages({1: missing}), self.company_db_path, policy=self.fast_policy)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM company_master").fetchone()[0], 0)
 
+    def test_explicit_not_found_code_without_body_metadata_is_verified_empty_batch(self):
+        class Response:
+            def read(self):
+                return b'{"response":{"header":{"resultCode":"03","resultMsg":"NODATA"}}}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        reader = make_verified_company_page_reader(
+            "20260816", api_url="https://supplier.example/api", service_key="key"
+        )
+        with patch("company_sync.urllib.request.urlopen", return_value=Response()):
+            batch = fetch_complete_change_batch("20260816", reader, policy=self.fast_policy)
+        self.assertEqual((batch.items, batch.total_count, batch.page_count), ((), 0, 0))
+
     def test_every_retry_attempt_is_persisted_as_a_response_metric(self):
         with self.assertRaises(IncompleteCompanyBatch):
             sync_company_change_date(
@@ -383,6 +403,35 @@ class CompanySyncTests(unittest.TestCase):
             ).fetchone(),
             (1, "open"),
         )
+
+    def test_supplier_run_finishes_failed_after_non_circuit_failure_and_later_success(self):
+        run = start_supplier_run("20260816", self.company_db_path, policy=self.fast_policy)
+        with self.assertRaisesRegex(IncompleteCompanyBatch, "invalid page response"):
+            sync_company_change_date(
+                "20260814", lambda _page: object(), self.company_db_path, policy=self.fast_policy, run=run
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT response_count FROM company_sync_response_metric "
+                "WHERE job_name='company_changes_run' AND source_date='20260816' "
+                "AND response_class='terminal_date_failure'"
+            ).fetchone(),
+            (1,),
+        )
+        self.assertTrue(start_supplier_run("20260816", self.company_db_path, policy=self.fast_policy).has_terminal_failure)
+        sync_company_change_date(
+            "20260815", FakePages({1: page(1, [item("2")], 1)}), self.company_db_path,
+            policy=self.fast_policy, run=run,
+        )
+        finish_supplier_run(run)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status, circuit_state FROM company_sync_job_log "
+                "WHERE job_name='company_changes_run' AND source_date='20260816'"
+            ).fetchone(),
+            ("failed", "closed"),
+        )
+        self.assertEqual(pending_supplier_dates(self.conn, "20260815"), ["20260814"])
 
     def test_sync_one_day_configures_peer_fence_and_keeps_generation_clocks_separate(self):
         before = (read_data_generation(self.conn), read_control_revision(self.conn))
