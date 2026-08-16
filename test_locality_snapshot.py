@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import locality_snapshot as locality_snapshot_module
 from company_locality import apply_company_changes, ensure_locality_schema
 from contract_population import (
     CanonicalContract,
@@ -672,6 +673,118 @@ class SnapshotResolverTests(SnapshotTestCase):
 
         self.assertEqual(canonical_scan.call_count, 0)
 
+    def test_warm_resolver_rejects_caller_read_transaction_after_concurrent_refresh(self):
+        root = Path(self.tempdir.name)
+        procurement_path = root / "wal-procurement.sqlite3"
+        company_path = root / "wal-company.sqlite3"
+        wal_paths = LocalityPaths(
+            company_path,
+            procurement_path,
+            root / "wal-maintenance.lock",
+            root / "wal-transition.json",
+            root / "wal-marker",
+            root / "wal-pointer.json",
+        )
+        configure_locality_paths(wal_paths)
+        wal_paths.pointer_path.write_text(
+            '{"active_generation_id":null}', encoding="ascii"
+        )
+        company_connection = sqlite3.connect(company_path)
+        company_connection.execute(
+            "CREATE TABLE company_master "
+            "(bizno TEXT PRIMARY KEY, corpNm TEXT, rgnNm TEXT, "
+            "hdoffceDivNm TEXT, chgDt TEXT)"
+        )
+        company_connection.execute(
+            "INSERT INTO company_master VALUES "
+            "('1234567890', 'Supplier', '부산', '본사', '')"
+        )
+        company_connection.commit()
+        ensure_locality_schema(company_connection, paths=wal_paths)
+        connection_a = sqlite3.connect(procurement_path)
+        connection_b = sqlite3.connect(procurement_path)
+        try:
+            ensure_snapshot_schema(connection_a)
+            create_contract_source_tables(connection_a)
+            insert_required_sector_source(connection_a)
+            connection_a.commit()
+            refresh_source_schema(
+                connection_a,
+                operator="operator-wal-setup",
+                reason="protect WAL concurrency fixture",
+            )
+            rows = current_canonical_source(connection_a)
+            builder = SnapshotResolver(
+                connection_a,
+                company_connection,
+                mode="shadow",
+                now=NOW,
+                cutover_at=CUTOVER,
+                generation_id="generation-1",
+                selected_baseline_id=BASELINE_ID,
+                eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
+            )
+            for row in rows:
+                for supplier in row.suppliers:
+                    builder.seed(
+                        row,
+                        supplier.bizno,
+                        supplier.share_pct,
+                        True,
+                        "legacy_baseline_v1",
+                        BASELINE_ID,
+                    )
+            builder.flush()
+            manifest = create_baseline_manifest(
+                connection_a, rows, BASELINE_ID
+            )
+            self.assertEqual(manifest.status, "complete")
+            historical = next(row for row in rows if row.sector == "공사")
+            resolver = SnapshotResolver(
+                connection_a,
+                company_connection,
+                mode="snapshot",
+                now=NOW,
+                cutover_at=CUTOVER,
+                generation_id="generation-1",
+                selected_baseline_id=BASELINE_ID,
+                eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
+            )
+            self.assertTrue(
+                resolver.resolve(historical, "1234567890", 100.0, True)
+            )
+
+            connection_a.execute("BEGIN")
+            stale_generation = read_data_generation(connection_a)
+            refresh_source_schema(
+                connection_b,
+                operator="operator-wal-refresh",
+                reason="replace source while reader holds WAL snapshot",
+                replace=lambda plan: plan.execute(
+                    "UPDATE cnstwk_cntrct SET thtmCntrctAmt=707"
+                ),
+            )
+            self.assertEqual(
+                read_data_generation(connection_b), stale_generation + 1
+            )
+            with self.assertRaisesRegex(
+                MissingHistoricalSnapshot, "caller-owned procurement transaction"
+            ):
+                resolver.resolve(historical, "1234567890", 100.0, True)
+
+            connection_a.rollback()
+            with self.assertRaisesRegex(
+                MissingHistoricalSnapshot, "source schema|generation|drift"
+            ):
+                resolver.resolve(historical, "1234567890", 100.0, True)
+        finally:
+            if connection_a.in_transaction:
+                connection_a.rollback()
+            connection_b.close()
+            connection_a.close()
+            company_connection.close()
+            configure_locality_paths(self.paths)
+
     def test_warm_resolver_rejects_drop_recreated_source_table_before_rescan(self):
         historical = self.complete_source_baseline()
         resolver = self.resolver()
@@ -697,6 +810,7 @@ class SnapshotResolverTests(SnapshotTestCase):
                 "INSERT INTO cnstwk_cntrct VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 original_row,
             )
+            self.proc_conn.commit()
 
             self.assertEqual(read_data_generation(self.proc_conn), generation)
             with self.assertRaisesRegex(
@@ -832,6 +946,11 @@ class SnapshotResolverTests(SnapshotTestCase):
             "VACUUM",
             "UPDATE locality_generation_clock SET data_generation=999",
             "DELETE FROM locality_source_schema_audit",
+            "SELECT * FROM cnstwk_cntrct",
+            "WITH source AS (SELECT 1) UPDATE cnstwk_cntrct SET thtmCntrctAmt=999",
+            "CREATE TABLE attacker (id INTEGER)",
+            "CREATE TRIGGER attacker AFTER UPDATE ON cnstwk_cntrct BEGIN SELECT 1; END",
+            "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999; COMMIT",
         )
         for statement in forbidden:
             with self.subTest(statement=statement):
@@ -844,7 +963,8 @@ class SnapshotResolverTests(SnapshotTestCase):
                     editor.execute(statement)
 
                 with self.assertRaisesRegex(
-                    RuntimeError, "rejects transaction control|unsafe SQL"
+                    RuntimeError,
+                    "rejects transaction control|unsafe SQL|operation kind|target is not approved",
                 ):
                     refresh_source_schema(
                         self.proc_conn,
@@ -884,6 +1004,128 @@ class SnapshotResolverTests(SnapshotTestCase):
                     )
                 self.assertEqual(self.source_refresh_state(), before)
 
+    def test_source_schema_plan_exposes_no_live_connection_or_cursor_surface(self):
+        self.complete_source_baseline()
+        retained = []
+        mutable_row = [707]
+
+        def replacement(plan):
+            retained.append(plan)
+            self.assertIsNone(
+                plan.executemany(
+                    "UPDATE cnstwk_cntrct SET thtmCntrctAmt=?",
+                    (mutable_row,),
+                )
+            )
+            mutable_row[0] = 999
+
+        refresh_source_schema(
+            self.proc_conn,
+            operator="operator-plan-surface",
+            reason="prove declarative plan isolation",
+            replace=replacement,
+        )
+
+        plan = retained[0]
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT thtmCntrctAmt FROM cnstwk_cntrct"
+            ).fetchone()[0],
+            707,
+        )
+        self.assertFalse(hasattr(locality_snapshot_module, "_SOURCE_EDITOR_CONNECTIONS"))
+        self.assertFalse(hasattr(locality_snapshot_module, "_source_editor_connection"))
+        self.assertFalse(hasattr(plan, "__dict__"))
+        for forbidden_attribute in (
+            "connection",
+            "cursor",
+            "commit",
+            "rollback",
+            "executescript",
+            "__enter__",
+            "__exit__",
+        ):
+            self.assertFalse(hasattr(plan, forbidden_attribute))
+        with self.assertRaisesRegex(RuntimeError, "already sealed"):
+            plan.execute("UPDATE cnstwk_cntrct SET thtmCntrctAmt=808")
+
+    def test_source_schema_plan_rejects_mutable_parameter_values(self):
+        self.complete_source_baseline()
+
+        def replacement(plan):
+            plan.execute(
+                "UPDATE cnstwk_cntrct SET thtmCntrctAmt=?",
+                ([999],),
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "immutable SQLite values"):
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-plan-parameters",
+                reason="reject mutable replacement parameters",
+                replace=replacement,
+            )
+
+    def test_source_schema_refresh_preserves_existing_authorizer_after_success(self):
+        self.complete_source_baseline()
+        self.proc_conn.execute("CREATE TABLE authorizer_probe (id INTEGER)")
+        self.proc_conn.execute("INSERT INTO authorizer_probe VALUES (1)")
+        self.proc_conn.commit()
+        denials = []
+
+        def authorizer(action, argument_one, argument_two, database, trigger):
+            if action == sqlite3.SQLITE_DELETE and argument_one == "authorizer_probe":
+                denials.append((action, argument_one, argument_two, database, trigger))
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        self.proc_conn.set_authorizer(authorizer)
+        try:
+            refresh_source_schema(
+                self.proc_conn,
+                operator="operator-authorizer-success",
+                reason="preserve caller authorizer on success",
+                replace=lambda plan: plan.execute(
+                    "UPDATE cnstwk_cntrct SET thtmCntrctAmt=707"
+                ),
+            )
+            with self.assertRaises(sqlite3.DatabaseError):
+                self.proc_conn.execute("DELETE FROM authorizer_probe")
+            self.assertEqual(len(denials), 1)
+        finally:
+            self.proc_conn.set_authorizer(None)
+
+    def test_source_schema_refresh_preserves_existing_authorizer_after_failure(self):
+        self.complete_source_baseline()
+        before = self.source_refresh_state()
+        denials = []
+
+        def authorizer(action, argument_one, argument_two, database, trigger):
+            if action == sqlite3.SQLITE_UPDATE and argument_one == "cnstwk_cntrct":
+                denials.append((action, argument_one, argument_two, database, trigger))
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        self.proc_conn.set_authorizer(authorizer)
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                refresh_source_schema(
+                    self.proc_conn,
+                    operator="operator-authorizer-failure",
+                    reason="preserve caller authorizer on failure",
+                    replace=lambda plan: plan.execute(
+                        "UPDATE cnstwk_cntrct SET thtmCntrctAmt=707"
+                    ),
+                )
+            self.assertEqual(self.source_refresh_state(), before)
+            with self.assertRaises(sqlite3.DatabaseError):
+                self.proc_conn.execute(
+                    "UPDATE cnstwk_cntrct SET thtmCntrctAmt=808"
+                )
+            self.assertEqual(len(denials), 2)
+        finally:
+            self.proc_conn.set_authorizer(None)
+
     def test_source_schema_refresh_failure_boundaries_restore_exact_prior_state(self):
         self.complete_source_baseline()
         stages = (
@@ -902,17 +1144,15 @@ class SnapshotResolverTests(SnapshotTestCase):
                         "UPDATE cnstwk_cntrct SET thtmCntrctAmt=707"
                     )
 
-                def fail_at(current_stage):
-                    if current_stage == stage:
-                        raise RuntimeError(f"injected failure: {stage}")
-
-                with self.assertRaisesRegex(RuntimeError, "injected failure"):
+                with self.assertRaisesRegex(
+                    RuntimeError, "injected source schema refresh failure"
+                ):
                     refresh_source_schema(
                         self.proc_conn,
                         operator="operator-failure-injection",
                         reason=f"exercise {stage}",
                         replace=replacement,
-                        failure_injector=fail_at,
+                        fail_after=stage,
                     )
                 self.assertEqual(self.source_refresh_state(), before)
 
@@ -959,6 +1199,7 @@ class SnapshotResolverTests(SnapshotTestCase):
             self.proc_conn.execute(
                 "UPDATE cnstwk_cntrct SET thtmCntrctAmt=808"
             )
+        self.proc_conn.rollback()
         with self.assertRaisesRegex(
             MissingHistoricalSnapshot, "source schema|generation|drift"
         ):
@@ -1069,6 +1310,7 @@ class SnapshotResolverTests(SnapshotTestCase):
                 "UPDATE locality_baseline_manifest SET status='failed' WHERE baseline_id=?",
                 (BASELINE_ID,),
             )
+        self.proc_conn.commit()
 
         with self.assertRaisesRegex(MissingHistoricalSnapshot, "complete"):
             self.resolver().resolve(self.old_contract, "1234567890", 100.0, True)
@@ -1097,6 +1339,7 @@ class SnapshotResolverTests(SnapshotTestCase):
                 "UPDATE locality_baseline_manifest SET status='complete' WHERE baseline_id=?",
                 (BASELINE_ID,),
             )
+        self.proc_conn.commit()
 
         with self.assertRaisesRegex(
             MissingHistoricalSnapshot, "member|ownership|coverage|verification|evidence"

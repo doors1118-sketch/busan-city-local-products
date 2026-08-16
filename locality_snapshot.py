@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
+import re
 import sqlite3
 from typing import Any, Callable, Collection, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -130,83 +131,69 @@ class _SnapshotCandidate:
 
 
 @dataclass(frozen=True)
-class _SchemaResult:
-    rows: tuple[tuple[Any, ...], ...]
-    rowcount: int
-    lastrowid: int | None
-
-    def fetchone(self) -> tuple[Any, ...] | None:
-        return self.rows[0] if self.rows else None
-
-    def fetchall(self) -> list[tuple[Any, ...]]:
-        return list(self.rows)
+class _FrozenBindings:
+    named: bool
+    values: tuple[Any, ...]
 
 
-_SOURCE_EDITOR_CONNECTIONS: dict[object, sqlite3.Connection] = {}
-
-
-def _source_editor_connection(editor: Any) -> sqlite3.Connection:
-    token = object.__getattribute__(editor, "_SourceSchemaEditor__token")
-    conn = _SOURCE_EDITOR_CONNECTIONS.get(token)
-    if conn is None:
-        raise SnapshotError("source schema editor is no longer active")
-    return conn
-
-
-def _close_source_editor(editor: Any) -> None:
-    token = object.__getattribute__(editor, "_SourceSchemaEditor__token")
-    _SOURCE_EDITOR_CONNECTIONS.pop(token, None)
+@dataclass(frozen=True)
+class _SourceSchemaOperation:
+    kind: str
+    target: str
+    sql: str
+    rows: tuple[_FrozenBindings, ...]
+    many: bool
 
 
 class SourceSchemaEditor:
-    """Constrained DDL/DML surface for an atomic source-schema refresh."""
+    """Record an immutable source-only DDL/DML plan without touching SQLite."""
 
-    __slots__ = ("__token",)
+    __slots__ = ("__operations", "__sealed")
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.__token = object()
-        _SOURCE_EDITOR_CONNECTIONS[self.__token] = conn
+    def __init__(self) -> None:
+        self.__operations: list[_SourceSchemaOperation] = []
+        self.__sealed = False
 
     def execute(
         self,
         sql: str,
         parameters: Mapping[str, Any] | Iterable[Any] = (),
-    ) -> _SchemaResult:
-        _validate_source_editor_sql(sql)
-        bindings = parameters if isinstance(parameters, Mapping) else tuple(parameters)
-        try:
-            cursor = _source_editor_connection(self).execute(sql, bindings)
-            rows = tuple(cursor.fetchall()) if cursor.description else ()
-        except sqlite3.DatabaseError as error:
-            if "not authorized" in str(error).lower():
-                raise SnapshotError(
-                    "source schema editor rejected transaction control or unsafe SQL"
-                ) from error
-            raise
-        return _SchemaResult(rows, cursor.rowcount, cursor.lastrowid)
+    ) -> None:
+        self.__append(sql, (_freeze_bindings(parameters),), many=False)
 
     def executemany(
         self,
         sql: str,
         parameter_rows: Iterable[Mapping[str, Any] | Iterable[Any]],
-    ) -> _SchemaResult:
-        _validate_source_editor_sql(sql)
-        rows = (
-            parameters
-            if isinstance(parameters, Mapping)
-            else tuple(parameters)
-            for parameters in parameter_rows
+    ) -> None:
+        self.__append(
+            sql,
+            tuple(_freeze_bindings(parameters) for parameters in parameter_rows),
+            many=True,
         )
-        try:
-            cursor = _source_editor_connection(self).executemany(sql, rows)
-            result_rows = tuple(cursor.fetchall()) if cursor.description else ()
-        except sqlite3.DatabaseError as error:
-            if "not authorized" in str(error).lower():
-                raise SnapshotError(
-                    "source schema editor rejected transaction control or unsafe SQL"
-                ) from error
-            raise
-        return _SchemaResult(result_rows, cursor.rowcount, cursor.lastrowid)
+
+    def __append(
+        self,
+        sql: str,
+        rows: tuple[_FrozenBindings, ...],
+        *,
+        many: bool,
+    ) -> None:
+        if self.__sealed:
+            raise SnapshotError("source schema replacement plan is already sealed")
+        kind, target, normalized_sql = _validate_source_operation(sql)
+        self.__operations.append(
+            _SourceSchemaOperation(kind, target, normalized_sql, rows, many)
+        )
+
+
+def _seal_source_schema_plan(
+    editor: SourceSchemaEditor,
+) -> tuple[_SourceSchemaOperation, ...]:
+    editor._SourceSchemaEditor__sealed = True
+    operations = tuple(editor._SourceSchemaEditor__operations)
+    editor._SourceSchemaEditor__operations.clear()
+    return operations
 
 
 def _create_control_tables(conn: sqlite3.Connection) -> None:
@@ -663,90 +650,171 @@ def _assert_source_schema_protected(
     )
 
 
-_SOURCE_EDITOR_SQL = frozenset(
+_REFRESH_SAVEPOINT = "locality_source_schema_refresh_boundary"
+_REFRESH_FAILURE_STAGES = frozenset(
     {
-        "ALTER",
-        "CREATE",
-        "DELETE",
-        "DROP",
-        "INSERT",
-        "REPLACE",
-        "SELECT",
-        "UPDATE",
-        "WITH",
+        "after_replacement",
+        "after_trigger_reinstall",
+        "after_state_update",
+        "after_audit_insert",
+        "before_return",
     }
 )
-_REFRESH_SAVEPOINT = "locality_source_schema_refresh_boundary"
-
-
-def _leading_sql_keyword(sql: str) -> str:
-    text = str(sql)
-    offset = 0
-    while True:
-        while offset < len(text) and text[offset].isspace():
-            offset += 1
-        if text.startswith("--", offset):
-            newline = text.find("\n", offset + 2)
-            if newline < 0:
-                return ""
-            offset = newline + 1
-            continue
-        if text.startswith("/*", offset):
-            end = text.find("*/", offset + 2)
-            if end < 0:
-                return ""
-            offset = end + 2
-            continue
-        break
-    end = offset
-    while end < len(text) and (text[end].isalnum() or text[end] == "_"):
-        end += 1
-    return text[offset:end].upper()
-
-
-def _validate_source_editor_sql(sql: str) -> None:
-    if _leading_sql_keyword(sql) not in _SOURCE_EDITOR_SQL:
-        raise SnapshotError(
-            "source schema editor rejects transaction control, PRAGMA, and unsafe SQL"
-        )
-
-
-_SOURCE_EDITOR_DENIED_ACTIONS = frozenset(
-    getattr(sqlite3, name)
-    for name in (
-        "SQLITE_ATTACH",
-        "SQLITE_DETACH",
-        "SQLITE_PRAGMA",
-        "SQLITE_SAVEPOINT",
-        "SQLITE_TRANSACTION",
-    )
-    if hasattr(sqlite3, name)
+_SOURCE_SCHEMA_TARGETS = frozenset(
+    (*CANONICAL_SOURCE_TABLES, *CANONICAL_EVIDENCE_TABLES)
+)
+_SQL_IDENTIFIER = (
+    r'(?:"[A-Za-z_][A-Za-z0-9_]*"|`[A-Za-z_][A-Za-z0-9_]*`|'
+    r'\[[A-Za-z_][A-Za-z0-9_]*\]|[A-Za-z_][A-Za-z0-9_]*)'
+)
+_SOURCE_OPERATION_PATTERNS = (
+    (
+        "create_table",
+        re.compile(
+            rf"^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "drop_table",
+        re.compile(
+            rf"^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "alter_table",
+        re.compile(
+            rf"^ALTER\s+TABLE\s+({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "insert",
+        re.compile(
+            rf"^INSERT(?:\s+OR\s+(?:ABORT|FAIL|IGNORE|REPLACE))?\s+INTO\s+({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "replace",
+        re.compile(
+            rf"^REPLACE\s+INTO\s+({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "update",
+        re.compile(
+            rf"^UPDATE(?:\s+OR\s+(?:ABORT|FAIL|IGNORE|REPLACE))?\s+({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "delete",
+        re.compile(
+            rf"^DELETE\s+FROM\s+({_SQL_IDENTIFIER})(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_UNSAFE_SOURCE_SQL = re.compile(
+    r"\b(?:ATTACH|BEGIN|COMMIT|DETACH|PRAGMA|RELEASE|RETURNING|ROLLBACK|SAVEPOINT|VACUUM)\b",
+    re.IGNORECASE,
+)
+_CONTROL_SOURCE_SQL = re.compile(
+    r"\b(?:contract_supplier_locality|locality_[A-Za-z0-9_]*|sqlite_sequence)\b",
+    re.IGNORECASE,
 )
 
 
-def _is_locality_control_name(value: str | None) -> bool:
-    name = str(value or "").lower()
-    return (
-        name.startswith("locality_")
-        or name == "contract_supplier_locality"
-        or name == "sqlite_sequence"
+def _freeze_sql_value(value: Any) -> Any:
+    if isinstance(value, memoryview):
+        return bytes(value)
+    if value is None or isinstance(value, (bytes, float, int, str)):
+        return value
+    raise SnapshotError("source schema plan parameters must be immutable SQLite values")
+
+
+def _freeze_bindings(
+    parameters: Mapping[str, Any] | Iterable[Any],
+) -> _FrozenBindings:
+    if isinstance(parameters, Mapping):
+        items = []
+        if not all(isinstance(key, str) for key in parameters):
+            raise SnapshotError("source schema named parameter keys must be strings")
+        for key, value in sorted(parameters.items()):
+            items.append((key, _freeze_sql_value(value)))
+        return _FrozenBindings(True, tuple(items))
+    if isinstance(parameters, (bytes, str)):
+        raise SnapshotError("source schema positional parameters must be a sequence")
+    return _FrozenBindings(
+        False, tuple(_freeze_sql_value(value) for value in parameters)
     )
 
 
-def _source_editor_authorizer(
-    action: int,
-    argument_one: str | None,
-    argument_two: str | None,
-    _database_name: str | None,
-    _trigger_name: str | None,
-) -> int:
-    if action in _SOURCE_EDITOR_DENIED_ACTIONS:
-        return sqlite3.SQLITE_DENY
-    if _is_locality_control_name(argument_one) or _is_locality_control_name(
-        argument_two
+def _thaw_bindings(bindings: _FrozenBindings) -> Mapping[str, Any] | tuple[Any, ...]:
+    return dict(bindings.values) if bindings.named else bindings.values
+
+
+def _unquote_sql_identifier(value: str) -> str:
+    if value[:1] in ('"', "`", "["):
+        return value[1:-1]
+    return value
+
+
+def _validate_source_operation(sql: str) -> tuple[str, str, str]:
+    statement = str(sql).strip()
+    if statement.endswith(";"):
+        statement = statement[:-1].rstrip()
+    if (
+        not statement
+        or ";" in statement
+        or "--" in statement
+        or "/*" in statement
+        or "*/" in statement
+        or _UNSAFE_SOURCE_SQL.search(statement)
+        or _CONTROL_SOURCE_SQL.search(statement)
     ):
-        return sqlite3.SQLITE_DENY
-    return sqlite3.SQLITE_OK
+        raise SnapshotError(
+            "source schema plan rejects transaction control, control tables, or unsafe SQL"
+        )
+    for kind, pattern in _SOURCE_OPERATION_PATTERNS:
+        match = pattern.match(statement)
+        if match is None:
+            continue
+        target = _unquote_sql_identifier(match.group(1)).lower()
+        if target not in _SOURCE_SCHEMA_TARGETS:
+            raise SnapshotError(
+                f"source schema plan target is not approved: {target}"
+            )
+        return kind, target, statement
+    raise SnapshotError("source schema plan operation kind is not approved")
+
+
+def _execute_source_schema_plan(
+    conn: sqlite3.Connection,
+    operations: tuple[_SourceSchemaOperation, ...],
+) -> None:
+    for operation in operations:
+        if not isinstance(operation, _SourceSchemaOperation):
+            raise SnapshotError("source schema plan contains an invalid operation")
+        kind, target, statement = _validate_source_operation(operation.sql)
+        if (kind, target, statement) != (
+            operation.kind,
+            operation.target,
+            operation.sql,
+        ):
+            raise SnapshotError("source schema plan changed after validation")
+        if operation.many:
+            conn.executemany(
+                operation.sql,
+                tuple(_thaw_bindings(row) for row in operation.rows),
+            )
+        else:
+            if len(operation.rows) != 1:
+                raise SnapshotError("source schema execute operation has invalid bindings")
+            conn.execute(operation.sql, _thaw_bindings(operation.rows[0]))
 
 
 def _drop_source_triggers(conn: sqlite3.Connection, tables: Collection[str]) -> None:
@@ -765,7 +833,7 @@ def refresh_source_schema(
     operator: str,
     reason: str,
     replace: Callable[[SourceSchemaEditor], None] | None = None,
-    failure_injector: Callable[[str], None] | None = None,
+    fail_after: str | None = None,
 ) -> None:
     """Coordinate approved source DDL, reinstall guards, audit, and advance data."""
     from maintenance_lock import guarded_write_session
@@ -774,24 +842,25 @@ def refresh_source_schema(
         raise ValueError("source schema refresh requires operator and reason")
     if conn.in_transaction:
         raise SnapshotError("source schema refresh must own the guarded transaction")
+    if fail_after is not None and fail_after not in _REFRESH_FAILURE_STAGES:
+        raise ValueError("unknown source schema refresh failure stage")
+
+    plan: tuple[_SourceSchemaOperation, ...] = ()
+    if replace is not None:
+        editor = SourceSchemaEditor()
+        replace(editor)
+        plan = _seal_source_schema_plan(editor)
 
     def inject(stage: str) -> None:
-        if failure_injector is not None:
-            failure_injector(stage)
+        if fail_after == stage:
+            raise RuntimeError(f"injected source schema refresh failure: {stage}")
 
     with guarded_write_session(conn):
         _assert_refresh_transaction(conn)
         conn.execute(f"SAVEPOINT {_REFRESH_SAVEPOINT}")
         schema_version_before = conn.execute("PRAGMA schema_version").fetchone()[0]
         _drop_source_triggers(conn, _existing_protected_source_tables(conn))
-        if replace is not None:
-            editor = SourceSchemaEditor(conn)
-            conn.set_authorizer(_source_editor_authorizer)
-            try:
-                replace(editor)
-            finally:
-                conn.set_authorizer(None)
-                _close_source_editor(editor)
+        _execute_source_schema_plan(conn, plan)
         _assert_refresh_transaction(conn)
         inject("after_replacement")
         protected_tables = _existing_protected_source_tables(conn)
@@ -1842,6 +1911,10 @@ class SnapshotResolver:
         share_pct: float,
         legacy_is_local: bool,
     ) -> bool:
+        if self.procurement_conn.in_transaction:
+            raise MissingHistoricalSnapshot(
+                "snapshot resolution rejects a caller-owned procurement transaction"
+            )
         if self.mode == "legacy":
             return bool(legacy_is_local)
         self._check_source_schema(require=False)
