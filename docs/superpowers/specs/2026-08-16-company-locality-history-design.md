@@ -110,6 +110,7 @@ Status cleanup must not run before this baseline completes. This ordering preven
 3. Treat any page failure or `received_rows != totalCount` as a failed supplier job. Do not partially apply the batch.
 4. In one transaction, process every changed row before applying the Busan filter:
    - Busan head office: insert or update descriptive data and set `active_local`.
+   - A supplier moving from another region into Busan: insert it or reactivate it as `active_local` from the source effective time.
    - Existing local supplier now outside Busan: retain the row and set `moved_out`.
    - Existing local supplier now a branch: retain the row and set `branch_changed`.
    - New non-Busan supplier: ignore after staging.
@@ -134,6 +135,8 @@ For a new contract or a newly observed revision:
 4. Do not overwrite a frozen result during ordinary cache rebuilds.
 
 A corrected source record can create a new contract revision snapshot. Changing a published snapshot requires a separate command with operator identity, reason, before/after values, and an impact preview.
+
+An inbound supplier is local only for contracts first classified on or after the confirmed inbound effective time. Existing pre-inbound contract snapshots remain non-local and are not changed retroactively.
 
 ## Shadow Impact Analysis
 
@@ -248,7 +251,9 @@ After the first cycle, set the long-term threshold from the observed contract an
 - Busan head office remains active.
 - Existing supplier moving outside Busan becomes `moved_out` without deletion.
 - Existing supplier becoming a branch becomes `branch_changed`.
+- A new or returning supplier moving into Busan becomes `active_local` from the inbound effective time.
 - Historical contract snapshot remains local after either transition.
+- A pre-inbound historical contract remains non-local after the supplier moves into Busan.
 - A contract after the transition is classified from the new status.
 - Replayed change rows are idempotent.
 - Any failed page or total-count mismatch prevents a transaction commit.
