@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -181,10 +182,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL CHECK(status IN ('pending','deferred_budget','failed','complete')),
             attempt_count INTEGER NOT NULL DEFAULT 0,
             last_response_class TEXT,
+            retry_after_seconds REAL,
             next_attempt_at TEXT,
             last_attempt_at TEXT,
             last_success_at TEXT,
-            error_detail TEXT
+            error_detail TEXT,
+            lease_owner TEXT,
+            lease_expires_at TEXT
         );
         CREATE TABLE IF NOT EXISTS company_locality_resolution (
             id INTEGER PRIMARY KEY,
@@ -244,6 +248,14 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS company_locality_resolution_identity "
         "ON company_locality_resolution(resolution_key)"
     )
+    queue_columns = {row[1] for row in conn.execute("PRAGMA table_info(company_revalidation_queue)")}
+    for name, declaration in (
+        ("retry_after_seconds", "REAL"),
+        ("lease_owner", "TEXT"),
+        ("lease_expires_at", "TEXT"),
+    ):
+        if name not in queue_columns:
+            conn.execute(f"ALTER TABLE company_revalidation_queue ADD COLUMN {name} {declaration}")
     from maintenance_lock import install_write_guard, maintenance_write_permission
 
     with maintenance_write_permission(conn):
@@ -284,10 +296,11 @@ def _install_generation_triggers(conn: sqlite3.Connection) -> None:
     control = (
         "company_sync_job_log",
         "company_sync_response_metric",
-        "company_revalidation_queue",
         "locality_activation_state",
         "locality_fence_audit",
     )
+    for action in ("INSERT", "UPDATE", "DELETE"):
+        conn.execute(f"DROP TRIGGER IF EXISTS locality_company_revalidation_queue_{action.lower()}_control")
     for table in cache_input:
         for action in ("INSERT", "UPDATE", "DELETE"):
             conn.execute(
@@ -314,6 +327,7 @@ def _install_write_guards(conn: sqlite3.Connection) -> None:
         "company_locality_resolution_event",
         "company_sync_job_log",
         "company_sync_response_metric",
+        "company_revalidation_queue",
         "locality_activation_state",
         "locality_fence_audit",
     ]
@@ -517,7 +531,11 @@ def apply_company_changes(
         )
         staged.append(record + (locality_hash, descriptive_hash))
     counts = {"received": len(staged) + len(invalid), "applied": 0, "duplicates": 0, "ignored": 0, "retrograde": 0, "conflicts": 0, "invalid": 0}
-    with guarded_write_session(conn, paths=paths):
+    already_guarded = conn.in_transaction and conn.execute(
+        "SELECT locality_guarded_write()"
+    ).fetchone()[0] != 0
+    write_context = nullcontext(conn) if already_guarded else guarded_write_session(conn, paths=paths)
+    with write_context:
         for _, item, bizno, region, head_office, source_chg_dt, new_status, _, _ in invalid:
             if bizno:
                 _insert_event(

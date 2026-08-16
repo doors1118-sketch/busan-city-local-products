@@ -1,0 +1,33 @@
+{
+  "request": {
+    "serviceKey": "captured-service-key",
+    "inqryDiv": "2",
+    "bizno": "1234567890",
+    "numOfRows": "1",
+    "pageNo": "1",
+    "type": "json"
+  },
+  "success_result_code": "00",
+  "not_found_result_code": "03",
+  "success_response": {
+    "response": {
+      "header": {"resultCode": "00", "resultMsg": "NORMAL SERVICE."},
+      "body": {
+        "items": {
+          "item": {
+            "bizno": "1234567890",
+            "rgnNm": "\ubd80\uc0b0",
+            "hdoffceDivNm": "\ubcf8\uc0ac",
+            "chgDt": "202608160900"
+          }
+        },
+        "totalCount": 1,
+        "numOfRows": 1,
+        "pageNo": 1
+      }
+    }
+  },
+  "not_found_response": {
+    "response": {"header": {"resultCode": "03", "resultMsg": "NO DATA"}, "body": {}}
+  }
+}
