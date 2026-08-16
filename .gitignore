@@ -61,6 +61,7 @@ Thumbs.db
 # Temp files
 tmp_*.py
 tmp_skills/
+.worktrees/
 
 # Office temp files
 ~$*
