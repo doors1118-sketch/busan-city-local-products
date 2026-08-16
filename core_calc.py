@@ -585,7 +585,8 @@ def filter_shopping_by_site(df, conn, busan_agency_cds, inst_dict=None):
 # 4. 핵심: 계약 데이터 → (기관코드, 금액, 지역수주액) 산출
 # ============================================================
 def process_contract_row(row, inst_dict, biznos, is_shopping=False,
-                         use_location_filter=False, bid_dict=None, award_set=None):
+                         use_location_filter=False, bid_dict=None, award_set=None,
+                         locality_resolver=None, sector=None):
     """단일 계약 행 처리 → (matched_cd, amt, local_amt) 또는 None (배제)"""
     if not is_shopping and is_site_excluded_contract(row):
         return None
@@ -650,9 +651,25 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
 
     # 지역업체 수주액 (마스터 DB + 사업자번호 앞3자리 보조 판별)
     loc_amt = 0
-    for bno, share in biz_nos:
-        if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
-            loc_amt += amt * (share / 100.0)
+    if locality_resolver is None:
+        for bno, share in biz_nos:
+            if bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES):
+                loc_amt += amt * (share / 100.0)
+    else:
+        if not sector:
+            sector = '쇼핑몰' if is_shopping else None
+        if not sector:
+            raise ValueError('sector is required when locality_resolver is supplied')
+        resolver_row = dict(row)
+        resolver_row['sector'] = sector
+        aggregated = defaultdict(float)
+        for bno, share in biz_nos:
+            normalized = str(bno).replace('-', '').strip()
+            aggregated[normalized] += share
+        for bno, share in sorted(aggregated.items()):
+            legacy_is_local = bno in biznos or (len(bno) >= 3 and bno[:3] in BUSAN_BIZNO_PREFIXES)
+            if locality_resolver.resolve(resolver_row, bno, share, legacy_is_local):
+                loc_amt += amt * (share / 100.0)
 
     return (matched_cd, amt, loc_amt)
 
