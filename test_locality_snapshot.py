@@ -8,6 +8,7 @@ from company_locality import apply_company_changes, ensure_locality_schema
 from contract_population import (
     CanonicalContract,
     CanonicalSupplier,
+    canonical_contract_from_row,
     content_fingerprint,
     iter_canonical_contracts,
 )
@@ -24,6 +25,7 @@ from locality_snapshot import (
 from maintenance_lock import (
     LocalityPaths,
     configure_locality_paths,
+    guarded_write_session,
     maintenance_write_permission,
     read_control_revision,
     read_data_generation,
@@ -194,6 +196,9 @@ class SnapshotTestCase(unittest.TestCase):
         self.tempdir.cleanup()
 
     def resolver(self, mode="snapshot", **kwargs):
+        eligible_agency_codes = kwargs.pop(
+            "eligible_agency_codes", ELIGIBLE_AGENCY_CODES
+        )
         return SnapshotResolver(
             self.proc_conn,
             self.company_conn,
@@ -201,7 +206,7 @@ class SnapshotTestCase(unittest.TestCase):
             now=NOW,
             cutover_at=CUTOVER,
             generation_id=kwargs.pop("generation_id", "generation-1"),
-            eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
+            eligible_agency_codes=eligible_agency_codes,
             **kwargs,
         )
 
@@ -232,6 +237,22 @@ class SnapshotTestCase(unittest.TestCase):
 
 
 class SnapshotResolverTests(SnapshotTestCase):
+
+    def assert_warm_cache_mutation_is_rejected(self, mutation):
+        historical = self.complete_source_baseline()
+        resolver = self.resolver()
+        with patch(
+            "locality_snapshot.iter_canonical_contracts",
+            wraps=iter_canonical_contracts,
+        ) as canonical_scan:
+            resolver.resolve(historical, "1234567890", 100.0, True)
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "complete baseline"):
+                with guarded_write_session(self.proc_conn):
+                    mutation()
+            self.assertTrue(
+                resolver.resolve(historical, "1234567890", 100.0, True)
+            )
+        self.assertEqual(canonical_scan.call_count, 4)
 
     def test_snapshot_schema_uses_required_primary_key_and_without_rowid(self):
         sql = self.proc_conn.execute(
@@ -296,8 +317,103 @@ class SnapshotResolverTests(SnapshotTestCase):
 
         self.assertEqual(canonical_scan.call_count, 4)
 
+    def test_warm_cache_rejects_complete_manifest_header_mutation(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "UPDATE locality_baseline_manifest SET status='failed' WHERE baseline_id=?",
+                (BASELINE_ID,),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_manifest_header_delete(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "DELETE FROM locality_baseline_manifest WHERE baseline_id=?",
+                (BASELINE_ID,),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_baseline_child_insert(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "INSERT INTO locality_baseline_contract VALUES (?, ?, ?, ?, ?, ?)",
+                (BASELINE_ID, "공사", "FORGED", "00", 1, "forged"),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_baseline_child_update(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "UPDATE locality_baseline_contract SET amount_won=amount_won+1 "
+                "WHERE baseline_id=? AND sector='공사'",
+                (BASELINE_ID,),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_baseline_child_delete(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "DELETE FROM locality_baseline_supplier "
+                "WHERE baseline_id=? AND sector='공사'",
+                (BASELINE_ID,),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_snapshot_reownership(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "UPDATE contract_supplier_locality SET baseline_id=NULL "
+                "WHERE baseline_id=? AND sector='공사'",
+                (BASELINE_ID,),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_snapshot_insert(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                """
+                INSERT INTO contract_supplier_locality
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "공사",
+                    "FORGED",
+                    "00",
+                    "9999999999",
+                    100.0,
+                    1,
+                    "legacy_baseline_v1",
+                    "2026-08-15",
+                    NOW,
+                    "supplier_locality_snapshot_v1",
+                    "forged",
+                    BASELINE_ID,
+                    "generation-1",
+                ),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_snapshot_update(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "UPDATE contract_supplier_locality SET is_busan=0 "
+                "WHERE baseline_id=? AND sector='공사'",
+                (BASELINE_ID,),
+            )
+        )
+
+    def test_warm_cache_rejects_complete_snapshot_delete(self):
+        self.assert_warm_cache_mutation_is_rejected(
+            lambda: self.proc_conn.execute(
+                "DELETE FROM contract_supplier_locality "
+                "WHERE baseline_id=? AND sector='공사'",
+                (BASELINE_ID,),
+            )
+        )
+
     def test_source_generation_drift_invalidates_cached_validation_without_rescan(self):
         historical = self.complete_source_baseline()
+        ensure_snapshot_schema(self.proc_conn)
         resolver = self.resolver()
 
         with patch(
@@ -305,55 +421,63 @@ class SnapshotResolverTests(SnapshotTestCase):
             wraps=iter_canonical_contracts,
         ) as canonical_scan:
             resolver.resolve(historical, "1234567890", 100.0, True)
-            with maintenance_write_permission(self.proc_conn):
+            before = read_data_generation(self.proc_conn)
+            with guarded_write_session(self.proc_conn):
                 self.proc_conn.execute(
-                    "UPDATE locality_generation_clock "
-                    "SET data_generation=data_generation+1 WHERE singleton_id=1"
+                    "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
                 )
+            self.assertEqual(read_data_generation(self.proc_conn), before + 1)
             with self.assertRaisesRegex(MissingHistoricalSnapshot, "generation|drift"):
                 resolver.resolve(historical, "1234567890", 100.0, True)
 
         self.assertEqual(canonical_scan.call_count, 4)
 
-    def test_manifest_drift_invalidates_cached_validation_without_rescan(self):
-        historical = self.complete_source_baseline()
-        resolver = self.resolver()
+    def test_direct_canonical_source_write_is_fenced(self):
+        self.complete_source_baseline()
+        ensure_snapshot_schema(self.proc_conn)
 
-        with patch(
-            "locality_snapshot.iter_canonical_contracts",
-            wraps=iter_canonical_contracts,
-        ) as canonical_scan:
-            resolver.resolve(historical, "1234567890", 100.0, True)
-            with maintenance_write_permission(self.proc_conn):
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "guarded session"):
+            self.proc_conn.execute(
+                "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
+            )
+
+    def test_rolled_back_canonical_source_write_does_not_advance_generation(self):
+        self.complete_source_baseline()
+        ensure_snapshot_schema(self.proc_conn)
+        before = read_data_generation(self.proc_conn)
+
+        with self.assertRaisesRegex(RuntimeError, "rollback"):
+            with guarded_write_session(self.proc_conn):
                 self.proc_conn.execute(
-                    "UPDATE locality_baseline_manifest "
-                    "SET manifest_fingerprint='changed' WHERE baseline_id=?",
-                    (BASELINE_ID,),
+                    "UPDATE cnstwk_cntrct SET thtmCntrctAmt=999"
                 )
-            with self.assertRaisesRegex(MissingHistoricalSnapshot, "manifest|metadata|drift"):
-                resolver.resolve(historical, "1234567890", 100.0, True)
+                raise RuntimeError("rollback")
 
-        self.assertEqual(canonical_scan.call_count, 4)
-
-    def test_snapshot_rejects_invalid_complete_manifest_metadata(self):
-        historical = self.complete_source_baseline()
-        mutations = (
-            ("locality_baseline_manifest", "classifier_version", "wrong-classifier"),
-            ("locality_baseline_manifest", "iterator_version", "wrong-iterator"),
-            ("locality_baseline_manifest", "cutover_at", "not-a-time"),
-            ("contract_supplier_locality", "introduced_generation_id", "wrong-generation"),
+        self.assertEqual(read_data_generation(self.proc_conn), before)
+        self.assertEqual(
+            self.proc_conn.execute(
+                "SELECT thtmCntrctAmt FROM cnstwk_cntrct"
+            ).fetchone()[0],
+            101,
         )
-        for table, column, value in mutations:
-            with self.subTest(column=column):
-                with maintenance_write_permission(self.proc_conn):
-                    original = self.proc_conn.execute(
-                        f"SELECT {column} FROM {table} LIMIT 1"
-                    ).fetchone()[0]
-                    self.proc_conn.execute(f"UPDATE {table} SET {column}=?", (value,))
-                with self.assertRaisesRegex(MissingHistoricalSnapshot, "metadata"):
-                    self.resolver().resolve(historical, "1234567890", 100.0, True)
-                with maintenance_write_permission(self.proc_conn):
-                    self.proc_conn.execute(f"UPDATE {table} SET {column}=?", (original,))
+
+    def test_present_evidence_table_is_guarded_and_data_clocked(self):
+        self.proc_conn.execute(
+            "CREATE TABLE bid_notices_raw (bidNtceNo TEXT PRIMARY KEY, rgnLmtInfo TEXT)"
+        )
+        ensure_snapshot_schema(self.proc_conn)
+        before = read_data_generation(self.proc_conn)
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "guarded session"):
+            self.proc_conn.execute(
+                "INSERT INTO bid_notices_raw VALUES ('N-1', 'Busan')"
+            )
+        with guarded_write_session(self.proc_conn):
+            self.proc_conn.execute(
+                "INSERT INTO bid_notices_raw VALUES ('N-1', 'Busan')"
+            )
+
+        self.assertEqual(read_data_generation(self.proc_conn), before + 1)
 
     def test_compact_kst_cutover_is_equivalent_to_offset_timestamp(self):
         at_cutover = contract("CUTOVER1", "00", "2026-08-16T10:15:00+09:00")
@@ -364,6 +488,7 @@ class SnapshotResolverTests(SnapshotTestCase):
             now=NOW,
             cutover_at="202608161015",
             generation_id="generation-1",
+            eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
         )
 
         with self.assertRaisesRegex(MissingHistoricalSnapshot, "pre-cutover"):
@@ -582,6 +707,7 @@ class SnapshotResolverTests(SnapshotTestCase):
             now=NOW,
             cutover_at="2026-08-15 23:59:59+09:00",
             generation_id="generation-1",
+            eligible_agency_codes=ELIGIBLE_AGENCY_CODES,
         )
 
         with self.assertRaisesRegex(UnknownLocality, "same-day|unknown"):
@@ -666,6 +792,13 @@ class BaselineManifestTests(SnapshotTestCase):
         coverage = verify_baseline_manifest(self.proc_conn, BASELINE_ID)
 
         self.assertFalse(coverage.complete)
+
+    def test_complete_baseline_cannot_be_rebuilt_with_the_same_id(self):
+        rows, manifest = self.build_source_baseline()
+        self.assertEqual(manifest.status, "complete")
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "complete baseline"):
+            create_baseline_manifest(self.proc_conn, rows, BASELINE_ID)
 
     def test_historical_baseline_fingerprints_first_eligible_agency_candidate(self):
         create_contract_source_tables(self.proc_conn)
@@ -907,6 +1040,144 @@ class BaselineManifestTests(SnapshotTestCase):
 
 
 class CoreCalculationResolverTests(unittest.TestCase):
+    def test_shadow_and_snapshot_resolvers_require_eligible_agency_codes(self):
+        proc_conn = sqlite3.connect(":memory:")
+        company_conn = sqlite3.connect(":memory:")
+        try:
+            for mode in ("shadow", "snapshot"):
+                with self.subTest(mode=mode):
+                    with self.assertRaisesRegex(ValueError, "eligible agency"):
+                        SnapshotResolver(
+                            proc_conn,
+                            company_conn,
+                            mode=mode,
+                            cutover_at=CUTOVER,
+                        )
+            legacy = SnapshotResolver(
+                proc_conn,
+                company_conn,
+                mode="legacy",
+                cutover_at=CUTOVER,
+            )
+            self.assertFalse(legacy.resolve({}, "1234567890", 100.0, False))
+        finally:
+            proc_conn.close()
+            company_conn.close()
+
+    def test_integrated_resolver_persists_fingerprint_for_calculated_agency(self):
+        case = SnapshotTestCase(methodName="runTest")
+        case.setUp()
+        try:
+            source = {
+                "untyCntrctNo": "U-1",
+                "dcsnCntrctNo": "DEC-000100",
+                "dminsttCd": "UNKNOWN",
+                "dminsttList": "[1^VALID^Agency^x]",
+                "cntrctInsttCd": "FALLBACK",
+                "thtmCntrctAmt": 100,
+                "totCntrctAmt": 0,
+                "corpList": corp_entry("1234567890", "100"),
+                "cntrctCnclsDate": "2026-08-16T11:00:00+09:00",
+            }
+            agencies = {"VALID": {"cate_lrg": "group"}}
+            resolver = case.resolver(
+                mode="shadow", eligible_agency_codes=agencies
+            )
+
+            result = process_contract_row(
+                source,
+                agencies,
+                {"1234567890"},
+                locality_resolver=resolver,
+                sector="용역",
+            )
+            resolver.flush()
+            stored = case.proc_conn.execute(
+                "SELECT content_fingerprint FROM contract_supplier_locality"
+            ).fetchone()[0]
+            canonical = canonical_contract_from_row(
+                source,
+                "용역",
+                eligible_agency_codes=agencies,
+            )
+
+            self.assertEqual(result[0], "VALID")
+            self.assertEqual(canonical.agency, "VALID")
+            self.assertEqual(stored, content_fingerprint(canonical))
+        finally:
+            case.tearDown()
+
+    def test_integrated_resolver_rejects_mismatched_eligible_agency_set(self):
+        case = SnapshotTestCase(methodName="runTest")
+        case.setUp()
+        try:
+            source = {
+                "untyCntrctNo": "U-1",
+                "dcsnCntrctNo": "DEC-000100",
+                "dminsttCd": "UNKNOWN",
+                "dminsttList": "[1^VALID^Agency^x]",
+                "thtmCntrctAmt": 100,
+                "corpList": corp_entry("1234567890", "100"),
+                "cntrctCnclsDate": "2026-08-16T11:00:00+09:00",
+            }
+            agencies = {"VALID": {"cate_lrg": "group"}}
+            resolver = case.resolver(
+                mode="shadow", eligible_agency_codes={"UNKNOWN"}
+            )
+
+            with self.assertRaisesRegex(SnapshotContentMismatch, "eligible agency"):
+                process_contract_row(
+                    source,
+                    agencies,
+                    {"1234567890"},
+                    locality_resolver=resolver,
+                    sector="용역",
+                )
+
+            self.assertEqual(resolver.flush(), 0)
+        finally:
+            case.tearDown()
+
+    def test_resolver_freezes_the_exact_eligible_agency_set(self):
+        case = SnapshotTestCase(methodName="runTest")
+        case.setUp()
+        try:
+            eligible = {"A1"}
+            resolver = case.resolver(
+                mode="shadow", eligible_agency_codes=eligible
+            )
+            eligible.add("A2")
+
+            resolver.require_eligible_agency_codes({"A1"})
+            with self.assertRaisesRegex(SnapshotContentMismatch, "eligible agency"):
+                resolver.require_eligible_agency_codes(eligible)
+        finally:
+            case.tearDown()
+
+    def test_resolver_rejects_prebuilt_contract_with_ineligible_agency(self):
+        case = SnapshotTestCase(methodName="runTest")
+        case.setUp()
+        try:
+            resolver = case.resolver(
+                mode="shadow", eligible_agency_codes={"VALID"}
+            )
+            ineligible = CanonicalContract(
+                "용역",
+                "DEC0001",
+                "00",
+                "UNKNOWN",
+                100,
+                "2026-08-16T11:00:00+09:00",
+                (CanonicalSupplier("1234567890", 100.0),),
+            )
+
+            with self.assertRaisesRegex(SnapshotContentMismatch, "eligible agency"):
+                resolver.resolve(ineligible, "1234567890", 100.0, True)
+
+            self.assertEqual(resolver.flush(), 0)
+        finally:
+            case.tearDown()
+
     def test_no_resolver_and_legacy_resolver_preserve_exact_local_amount(self):
         row = {
             "untyCntrctNo": "U-1",

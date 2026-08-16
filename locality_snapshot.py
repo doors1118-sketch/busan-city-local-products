@@ -18,6 +18,7 @@ from contract_population import (
     canonical_contract_from_row,
     content_fingerprint,
     iter_canonical_contracts,
+    normalize_contract_key,
 )
 
 
@@ -25,6 +26,18 @@ SEOUL = ZoneInfo("Asia/Seoul")
 CLASSIFIER_VERSION = "supplier_locality_snapshot_v1"
 VALID_MODES = {"legacy", "shadow", "snapshot"}
 REQUIRED_SECTORS = ("공사", "용역", "물품", "쇼핑몰")
+CANONICAL_SOURCE_TABLES = (
+    "cnstwk_cntrct",
+    "servc_cntrct",
+    "thng_cntrct",
+    "shopping_cntrct",
+)
+CANONICAL_EVIDENCE_TABLES = (
+    "bid_notices_raw",
+    "busan_award_cnstwk",
+    "busan_award_servc",
+    "busan_award_thng",
+)
 
 
 class SnapshotError(RuntimeError):
@@ -197,7 +210,17 @@ def _create_snapshot_tables(conn: sqlite3.Connection) -> None:
 
 
 def _install_snapshot_triggers(conn: sqlite3.Connection) -> None:
-    data_tables: tuple[str, ...] = ()
+    existing_tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    data_tables = tuple(
+        table
+        for table in (*CANONICAL_SOURCE_TABLES, *CANONICAL_EVIDENCE_TABLES)
+        if table in existing_tables
+    )
     control_tables = (
         "contract_supplier_locality",
         "locality_baseline_manifest",
@@ -226,6 +249,57 @@ def _install_snapshot_triggers(conn: sqlite3.Connection) -> None:
             )
 
 
+def _install_complete_baseline_immutability(conn: sqlite3.Connection) -> None:
+    triggers = {
+        "locality_complete_manifest_insert_immutable": """
+            BEFORE INSERT ON locality_baseline_manifest
+            WHEN NEW.status = 'complete'
+        """,
+        "locality_complete_manifest_update_immutable": """
+            BEFORE UPDATE ON locality_baseline_manifest
+            WHEN OLD.status = 'complete'
+        """,
+        "locality_complete_manifest_delete_immutable": """
+            BEFORE DELETE ON locality_baseline_manifest
+            WHEN OLD.status = 'complete'
+        """,
+    }
+    child_tables = (
+        "locality_baseline_contract",
+        "locality_baseline_supplier",
+        "contract_supplier_locality",
+    )
+    for table in child_tables:
+        triggers[f"locality_{table}_complete_insert_immutable"] = f"""
+            BEFORE INSERT ON {table}
+            WHEN EXISTS (
+                SELECT 1 FROM locality_baseline_manifest
+                WHERE baseline_id = NEW.baseline_id AND status = 'complete'
+            )
+        """
+        triggers[f"locality_{table}_complete_update_immutable"] = f"""
+            BEFORE UPDATE ON {table}
+            WHEN EXISTS (
+                SELECT 1 FROM locality_baseline_manifest
+                WHERE baseline_id IN (OLD.baseline_id, NEW.baseline_id)
+                  AND status = 'complete'
+            )
+        """
+        triggers[f"locality_{table}_complete_delete_immutable"] = f"""
+            BEFORE DELETE ON {table}
+            WHEN EXISTS (
+                SELECT 1 FROM locality_baseline_manifest
+                WHERE baseline_id = OLD.baseline_id AND status = 'complete'
+            )
+        """
+    for name, clause in triggers.items():
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        conn.execute(
+            f"CREATE TRIGGER {name} {clause} BEGIN "
+            "SELECT RAISE(ABORT, 'complete baseline is immutable'); END"
+        )
+
+
 def ensure_snapshot_schema(conn: sqlite3.Connection) -> None:
     """Install snapshot tables under the canonical maintenance lock and clocks."""
     from maintenance_lock import (
@@ -246,6 +320,7 @@ def ensure_snapshot_schema(conn: sqlite3.Connection) -> None:
             _create_control_tables(conn)
             _create_snapshot_tables(conn)
             _install_snapshot_triggers(conn)
+            _install_complete_baseline_immutability(conn)
         if owns_transaction:
             conn.commit()
 
@@ -619,6 +694,10 @@ class SnapshotResolver:
     ) -> None:
         if mode not in VALID_MODES:
             raise ValueError("locality mode must be legacy, shadow, or snapshot")
+        if mode != "legacy" and not eligible_agency_codes:
+            raise ValueError(
+                "eligible agency codes are required for shadow and snapshot modes"
+            )
         cutover, cutover_date_only = _parse_at(cutover_at)
         if cutover is None or cutover_date_only:
             raise ValueError("cutover_at must include an Asia/Seoul effective time")
@@ -629,21 +708,53 @@ class SnapshotResolver:
         self.cutover_at = cutover_at
         self._cutover = cutover
         self.generation_id = generation_id
-        self.eligible_agency_codes = eligible_agency_codes
+        self.eligible_agency_codes = (
+            None
+            if eligible_agency_codes is None
+            else frozenset(eligible_agency_codes)
+        )
+        self._normalized_eligible_agencies = frozenset(
+            normalize_contract_key(code)
+            for code in (self.eligible_agency_codes or ())
+        )
         self._pending: dict[tuple[str, str, str, str], _SnapshotCandidate] = {}
         self._validated_baselines: dict[str, tuple[int, BaselineManifest]] = {}
 
     def _contract(self, row: CanonicalContract | Mapping[str, Any]) -> CanonicalContract:
         if isinstance(row, CanonicalContract):
+            if (
+                self.mode != "legacy"
+                and row.agency not in self._normalized_eligible_agencies
+            ):
+                raise SnapshotContentMismatch(
+                    "canonical contract has an ineligible agency"
+                )
             return row
         sector = row.get("sector") or row.get("_locality_sector")
         if not sector:
             raise ValueError("sector is required for locality snapshot resolution")
-        return canonical_contract_from_row(
+        contract = canonical_contract_from_row(
             row,
             str(sector),
             eligible_agency_codes=self.eligible_agency_codes,
         )
+        selected_agency = row.get("_locality_selected_agency")
+        if (
+            selected_agency is not None
+            and normalize_contract_key(selected_agency) != contract.agency
+        ):
+            raise SnapshotContentMismatch(
+                "resolver canonical agency differs from calculated agency"
+            )
+        return contract
+
+    def require_eligible_agency_codes(self, codes: Collection[str]) -> None:
+        if self.mode == "legacy":
+            return
+        if frozenset(codes) != self.eligible_agency_codes:
+            raise SnapshotContentMismatch(
+                "resolver eligible agency codes differ from calculation"
+            )
 
     @staticmethod
     def _key(contract: CanonicalContract, bizno: str) -> tuple[str, str, str, str]:

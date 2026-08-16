@@ -645,6 +645,12 @@ def process_contract_row(row, inst_dict, biznos, is_shopping=False,
             raise ValueError('sector is required when locality_resolver is supplied')
         resolver_row = dict(row)
         resolver_row['sector'] = sector
+        resolver_row['_locality_selected_agency'] = matched_cd
+        eligibility_check = getattr(
+            locality_resolver, 'require_eligible_agency_codes', None
+        )
+        if eligibility_check is not None:
+            eligibility_check(inst_dict.keys())
         aggregated = defaultdict(float)
         for bno, share in biz_nos:
             normalized = str(bno).replace('-', '').strip()
