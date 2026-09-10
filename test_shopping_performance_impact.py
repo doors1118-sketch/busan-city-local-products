@@ -84,3 +84,32 @@ def test_validate_scope_requires_every_missing_date_complete(tmp_path):
         impact.validate_backfill_scope(
             production.resolve(), shadow.resolve(), "20260908", "20260910"
         )
+
+
+def test_cache_build_uses_production_working_directory(monkeypatch, tmp_path):
+    production_dir = tmp_path / "production"
+    production_dir.mkdir()
+    production = production_dir / "procurement.db"
+    agency = tmp_path / "agency.db"
+    company = tmp_path / "company.db"
+    output = tmp_path / "output" / "cache.json"
+    for path in (production, agency, company):
+        path.write_bytes(b"")
+    caller_cwd = impact.Path.cwd()
+
+    def fake_build_cache():
+        assert impact.Path.cwd() == production_dir.resolve()
+        impact.Path(impact.build_api_cache.CACHE_FILE).write_text(
+            "{}", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(impact.build_api_cache, "build_cache", fake_build_cache)
+    impact._build_cache(
+        production_db=production.resolve(),
+        agency_db=agency.resolve(),
+        company_db=company.resolve(),
+        output_path=output.resolve(),
+        shadow_db=None,
+    )
+
+    assert impact.Path.cwd() == caller_cwd

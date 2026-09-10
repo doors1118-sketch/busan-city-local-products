@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 
@@ -170,6 +171,7 @@ def _build_cache(
     original_agencies = build_api_cache.DB_AGENCIES
     original_companies = build_api_cache.DB_COMPANIES
     original_cache = build_api_cache.CACHE_FILE
+    original_cwd = Path.cwd()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     captured = io.StringIO()
     try:
@@ -180,6 +182,10 @@ def _build_cache(
         build_api_cache.DB_AGENCIES = str(agency_db)
         build_api_cache.DB_COMPANIES = str(company_db)
         build_api_cache.CACHE_FILE = str(output_path)
+        # core_calc.py intentionally loads operational override files by
+        # relative path. Always reproduce the production cache working
+        # directory so an SSH caller's home directory cannot change results.
+        os.chdir(production_db.parent)
         with contextlib.redirect_stdout(captured):
             build_api_cache.build_cache()
     finally:
@@ -188,6 +194,13 @@ def _build_cache(
         build_api_cache.DB_AGENCIES = original_agencies
         build_api_cache.DB_COMPANIES = original_companies
         build_api_cache.CACHE_FILE = original_cache
+        try:
+            os.chdir(original_cwd)
+        except OSError:
+            # sudo may inherit a caller directory that the target service
+            # account cannot traverse. Results remain valid in the production
+            # working directory; global module state has already been restored.
+            pass
     if not output_path.exists():
         raise ImpactError(f"cache was not created: {output_path}")
     return captured.getvalue()
