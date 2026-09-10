@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Busan G2B shopping performance synchronization daily
+
+[Timer]
+OnCalendar=*-*-* 01:30:00 Asia/Seoul
+Persistent=true
+AccuracySec=1min
+Unit=busan-shopping-performance.service
+
+[Install]
+WantedBy=timers.target

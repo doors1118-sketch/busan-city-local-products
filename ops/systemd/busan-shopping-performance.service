@@ -1,0 +1,23 @@
+[Unit]
+Description=Busan G2B shopping performance rolling synchronization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=busan-monitor
+Group=busan-monitor
+WorkingDirectory=/opt/busan
+ExecStart=/opt/busan/run_shopping_performance_sync.sh
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+TimeoutStartSec=45min
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
