@@ -203,6 +203,14 @@ APIS = {
     '쇼핑몰': 'https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList'
 }
 
+# 종합쇼핑몰 배송요청 실적은 D-1 03:00에는 공공데이터 API에서
+# 0건으로 응답했다가 당일 늦게 확정 데이터가 나오는 경우가 확인됐다.
+# 따라서 일일 파이프라인은 6개 일반 계약 API만 처리하고, 쇼핑몰은
+# shopping_performance_sync.py의 D-2 롤링 동기화와 독립 완료 기록으로 관리한다.
+DAILY_CONTRACT_CATEGORIES = tuple(
+    category for category in APIS if category != '쇼핑몰'
+)
+
 TABLE_MAP = {
     '공사_중앙': 'cnstwk_cntrct',
     '공사_자체': 'cnstwk_cntrct',
@@ -1314,12 +1322,16 @@ def sync_one_day(target_date):
         failed_steps.append('Step2.3_MAS상품')
     print("\n--------------------------------------------------")
 
-    # [Step 2] 전국 4개 조달계약 다운로드 (★ 핵심 — 실패 시 전체 실패)
-    print(f"[전국 계약 동기화] {target_date} 계약 정보 수집 중...")
-    all_data = {k: [] for k in APIS.keys()}
+    # [Step 2] 전국 6개 일반 조달계약 다운로드 (★ 핵심 — 실패 시 전체 실패)
+    # 종합쇼핑몰 실적은 별도 D-2 롤링 파이프라인이 처리한다.
+    print(f"[전국 계약 동기화] {target_date} 일반 계약 정보 수집 중...")
+    all_data = {k: [] for k in DAILY_CONTRACT_CATEGORIES}
     try:
         with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(download_for_category, cat, target_date) for cat in APIS.keys()]
+            futures = [
+                executor.submit(download_for_category, cat, target_date)
+                for cat in DAILY_CONTRACT_CATEGORIES
+            ]
             for future in as_completed(futures):
                 cat, items = future.result()
                 all_data[cat] = items

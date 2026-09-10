@@ -653,6 +653,90 @@ def check_pipeline_sync():
     return alerts
 
 
+def check_shopping_pipeline_sync(now=None, lag_days=2):
+    """종합쇼핑몰 D-2 롤링 동기화의 독립 완료 상태를 확인한다.
+
+    일반 계약 sync_log와 분리해 쇼핑몰 0건/부분 응답이 다른 분야의
+    성공에 가려지지 않도록 한다.
+    """
+    alerts = []
+    if not os.path.exists(DB_PATH):
+        return alerts
+
+    current = now or datetime.datetime.now()
+    target_dt = current.date() - datetime.timedelta(days=lag_days)
+    target_date = target_dt.strftime('%Y%m%d')
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        table_exists = conn.execute("""
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='shopping_sync_log'
+            LIMIT 1
+        """).fetchone()
+        if not table_exists:
+            msg = (
+                f"🚨 [경보] 종합쇼핑몰 실적 동기화 기록 없음: "
+                f"{target_date} 완료 여부 확인 불가"
+            )
+            alerts.append(('CRITICAL', msg))
+            print(f"  {msg}")
+            return alerts
+
+        row = conn.execute("""
+            SELECT status, source_total, source_received, busan_rows,
+                   stored_rows, completed_at
+            FROM shopping_sync_log
+            WHERE target_date = ?
+        """, (target_date,)).fetchone()
+        if not row:
+            msg = f"🚨 [경보] 종합쇼핑몰 실적 미수집: {target_date} D-{lag_days} 기록 없음"
+            alerts.append(('CRITICAL', msg))
+            print(f"  {msg}")
+            return alerts
+
+        status, source_total, source_received, busan_rows, stored_rows, completed_at = row
+        source_total = int(source_total or 0)
+        source_received = int(source_received or 0)
+        busan_rows = int(busan_rows or 0)
+        stored_rows = int(stored_rows or 0)
+        if status not in ('complete', 'complete_zero'):
+            msg = (
+                f"🚨 [경보] 종합쇼핑몰 실적 동기화 미완료: "
+                f"{target_date} status={status}"
+            )
+            alerts.append(('CRITICAL', msg))
+            print(f"  {msg}")
+        elif source_received != source_total:
+            msg = (
+                f"🚨 [경보] 종합쇼핑몰 API 부분 수집: {target_date} "
+                f"응답 {source_received:,}/{source_total:,}건"
+            )
+            alerts.append(('CRITICAL', msg))
+            print(f"  {msg}")
+        elif source_total == 0:
+            msg = (
+                f"⚠️ [주의] 종합쇼핑몰 실적 0건: {target_date} "
+                f"(API 2회 확인, 7일 롤링 재수집 대상)"
+            )
+            alerts.append(('WARNING', msg))
+            print(f"  {msg}")
+        else:
+            print(
+                f"  ✅ 정상: 종합쇼핑몰 실적 {target_date} 완료 "
+                f"(전국 {source_total:,}건 / 수신 {source_received:,}건 / "
+                f"부산 {busan_rows:,}건 / 저장 {stored_rows:,}건, {completed_at})"
+            )
+    except Exception as e:
+        msg = f"⚠️ [주의] 종합쇼핑몰 수집 상태 확인 오류: {e}"
+        alerts.append(('WARNING', msg))
+        print(f"  {msg}")
+    finally:
+        if conn is not None:
+            conn.close()
+    return alerts
+
+
 def _previous_collection_date(now=None):
     """Return yesterday because the collection pipeline runs seven days a week."""
     current = now or datetime.datetime.now()
@@ -944,6 +1028,9 @@ def run_alert_check():
     print(f"  {'─'*46}")
     sync_alerts = check_pipeline_sync()
     alerts.extend(sync_alerts)
+
+    shopping_sync_alerts = check_shopping_pipeline_sync()
+    alerts.extend(shopping_sync_alerts)
 
     api_issue_alerts = check_public_api_issues()
     alerts.extend(api_issue_alerts)
