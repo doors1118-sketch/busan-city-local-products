@@ -1,0 +1,10 @@
+[Unit]
+Description=Check shopping completeness every day including weekends
+
+[Timer]
+OnCalendar=*-*-* 07:45:00 Asia/Seoul
+Persistent=true
+Unit=busan-shopping-watchdog.service
+
+[Install]
+WantedBy=timers.target

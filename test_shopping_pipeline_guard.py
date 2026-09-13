@@ -67,7 +67,7 @@ def test_shopping_alert_rejects_partial_api_result(monkeypatch, tmp_path):
     )
 
     assert alerts and alerts[0][0] == "CRITICAL"
-    assert "999/10,352" in alerts[0][1]
+    assert any("999/10,352" in msg for _, msg in alerts)
 
 
 def test_shopping_alert_rejects_missing_day(monkeypatch, tmp_path):
@@ -102,3 +102,32 @@ def test_shopping_alert_treats_confirmed_zero_as_warning(monkeypatch, tmp_path):
 
     assert alerts and alerts[0][0] == "WARNING"
     assert "API 2회 확인" in alerts[0][1]
+
+
+def test_shopping_alert_does_not_hide_old_failed_day(monkeypatch, tmp_path):
+    db_path = tmp_path / 'procurement.db'
+    conn = _create_shopping_log(db_path)
+    conn.executemany('INSERT INTO shopping_sync_log VALUES (?,?,?,?,?,?,?,?,?,?)', [
+        ('20260908', 'complete', 10, 10, 1, 1, 1, 500, None, '2026-09-10 02:30:00'),
+        ('20260103', 'failed', 100, 0, 0, 0, 1, 500, 'upstream failure', '2026-09-01 02:00:00'),
+    ])
+    conn.commit(); conn.close()
+    monkeypatch.setattr(alert_check, 'DB_PATH', str(db_path))
+    alerts = alert_check.check_shopping_pipeline_sync(now=datetime.datetime(2026, 9, 10, 9))
+    assert any(level == 'CRITICAL' and '20260103' in msg for level, msg in alerts)
+
+
+def test_shopping_alert_detects_stored_row_mismatch(monkeypatch, tmp_path):
+    db_path = tmp_path / 'procurement.db'
+    conn = _create_shopping_log(db_path)
+    conn.execute('INSERT INTO shopping_sync_log VALUES (?,?,?,?,?,?,?,?,?,?)',
+        ('20260908', 'complete', 10, 10, 5, 4, 1, 500, None, '2026-09-10 02:30:00'))
+    conn.commit(); conn.close()
+    monkeypatch.setattr(alert_check, 'DB_PATH', str(db_path))
+    alerts = alert_check.check_shopping_pipeline_sync(now=datetime.datetime(2026, 9, 10, 9))
+    assert any(level == 'CRITICAL' for level, _ in alerts)
+
+
+def test_shopping_alert_missing_database_is_not_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(alert_check, 'DB_PATH', str(tmp_path / 'missing.db'))
+    assert alert_check.check_shopping_pipeline_sync()[0][0] == 'CRITICAL'

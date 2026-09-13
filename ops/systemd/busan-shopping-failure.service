@@ -1,0 +1,17 @@
+[Unit]
+Description=Notify existing recipients of failed shopping synchronization
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=busan-monitor
+Group=busan-monitor
+WorkingDirectory=/opt/busan
+EnvironmentFile=/opt/busan/.env
+ExecStart=/opt/busan/venv/bin/python3 /opt/busan/shopping_pipeline_watchdog.py --failed
+UMask=0077
+MemoryMax=256M
+TimeoutStartSec=3min
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true

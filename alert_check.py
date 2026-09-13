@@ -296,14 +296,16 @@ def send_ncp_sms(message, config):
             result = json.loads(res.read().decode('utf-8'))
             status = result.get('statusCode', '')
             if status == '202':
-                print(f"  📱 SMS 발송 완료 → {', '.join(recipients)} ({msg_type})")
+                print(f"  📱 SMS 접수 완료: 수신자 {len(recipients)}명 ({msg_type})")
+                return True
             else:
-                print(f"  ⚠️ SMS 발송 실패: {result}")
+                print(f"  ⚠️ SMS 접수 실패: statusCode={status}")
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8', errors='replace')
         print(f"  ⚠️ SMS 발송 오류: HTTP {e.code} {e.reason}; body={_redact_sms_error_body(error_body)}")
     except Exception as e:
         print(f"  ⚠️ SMS 발송 오류: {e}")
+    return False
 
 
 def _format_prespec_sms_line(item, max_name_len=24):
@@ -661,14 +663,14 @@ def check_shopping_pipeline_sync(now=None, lag_days=2):
     """
     alerts = []
     if not os.path.exists(DB_PATH):
-        return alerts
+        return [('CRITICAL', '🚨 [경보] 종합쇼핑몰 운영 DB 없음: 수집 상태 확인 불가')]
 
     current = now or datetime.datetime.now()
     target_dt = current.date() - datetime.timedelta(days=lag_days)
     target_date = target_dt.strftime('%Y%m%d')
     conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(f'file:{os.path.abspath(DB_PATH)}?mode=ro', uri=True)
         table_exists = conn.execute("""
             SELECT 1 FROM sqlite_master
             WHERE type='table' AND name='shopping_sync_log'
@@ -683,6 +685,32 @@ def check_shopping_pipeline_sync(now=None, lag_days=2):
             print(f"  {msg}")
             return alerts
 
+        failed = conn.execute("""
+            SELECT target_date FROM shopping_sync_log
+            WHERE target_date <= ? AND (status NOT IN ('complete','complete_zero')
+                OR source_total != source_received OR busan_rows != stored_rows
+                OR COALESCE(error,'') != '') ORDER BY target_date
+        """, (target_date,)).fetchall()
+        if failed:
+            days = ', '.join(r[0] for r in failed[:5])
+            alerts.append(('CRITICAL',
+                f'🚨 [경보] 종합쇼핑몰 과거 미완료 {len(failed)}일: {days}'))
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='shopping_cntrct'").fetchone():
+            existing = {str(r[0]).replace('-', '')[:8] for r in conn.execute(
+                'SELECT DISTINCT dlvrReqRcptDate FROM shopping_cntrct')}
+            completed = {r[0] for r in conn.execute("""SELECT target_date FROM shopping_sync_log
+                WHERE status IN ('complete','complete_zero') AND source_total=source_received
+                  AND busan_rows=stored_rows AND COALESCE(error,'')=''""")}
+            start = datetime.datetime.strptime(os.getenv('SHOPPING_COVERAGE_START', '20260101'), '%Y%m%d').date()
+            missing = []
+            while start <= target_dt:
+                day = start.strftime('%Y%m%d')
+                if day not in existing and day not in completed:
+                    missing.append(day)
+                start += datetime.timedelta(days=1)
+            if missing:
+                alerts.append(('CRITICAL', f'🚨 [경보] 종합쇼핑몰 미수집 {len(missing)}일: '
+                    + ', '.join(missing[:5])))
         row = conn.execute("""
             SELECT status, source_total, source_received, busan_rows,
                    stored_rows, completed_at
@@ -714,6 +742,9 @@ def check_shopping_pipeline_sync(now=None, lag_days=2):
             )
             alerts.append(('CRITICAL', msg))
             print(f"  {msg}")
+        elif busan_rows != stored_rows:
+            alerts.append(('CRITICAL', f'🚨 [경보] 종합쇼핑몰 저장 불일치: {target_date} '
+                f'부산 {busan_rows:,} / 저장 {stored_rows:,}건'))
         elif source_total == 0:
             msg = (
                 f"⚠️ [주의] 종합쇼핑몰 실적 0건: {target_date} "
@@ -727,9 +758,15 @@ def check_shopping_pipeline_sync(now=None, lag_days=2):
                 f"(전국 {source_total:,}건 / 수신 {source_received:,}건 / "
                 f"부산 {busan_rows:,}건 / 저장 {stored_rows:,}건, {completed_at})"
             )
+        latest = conn.execute("SELECT MAX(completed_at) FROM shopping_sync_log WHERE status IN ('complete','complete_zero')").fetchone()[0]
+        if latest and os.path.exists(CACHE_FILE):
+            completed_dt = datetime.datetime.fromisoformat(latest).replace(tzinfo=None)
+            cache_dt = datetime.datetime.fromtimestamp(os.path.getmtime(CACHE_FILE))
+            if cache_dt < completed_dt and current - completed_dt > datetime.timedelta(hours=1):
+                alerts.append(('CRITICAL', '🚨 [경보] 종합쇼핑몰 적재 후 화면 집계 갱신 지연: 1시간 초과'))
     except Exception as e:
-        msg = f"⚠️ [주의] 종합쇼핑몰 수집 상태 확인 오류: {e}"
-        alerts.append(('WARNING', msg))
+        msg = f"🚨 [경보] 종합쇼핑몰 수집 상태 확인 오류: {type(e).__name__}"
+        alerts.append(('CRITICAL', msg))
         print(f"  {msg}")
     finally:
         if conn is not None:

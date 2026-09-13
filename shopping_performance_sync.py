@@ -36,6 +36,7 @@ DEFAULT_SHADOW_DB = "scratch/shopping_performance_backfill/shopping_backfill.db"
 SHOPPING_TABLE = "shopping_cntrct"
 SYNC_TABLE = "shopping_sync_log"
 KEY_COLUMNS = ("dlvrReqNo", "prdctSno", "dlvrReqChgOrd")
+PARTITION_DATE_SQL = 'SUBSTR(REPLACE("dlvrReqRcptDate", \'-\', \'\'), 1, 8)'
 
 
 class SyncError(RuntimeError):
@@ -218,12 +219,17 @@ def record_status(
             stored_rows,
             request_count,
             rate_remaining,
-            (error or "")[:500] or None,
+            safe_error_text(error) or None,
             dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         ),
     )
     if commit:
         conn.commit()
+
+
+def source_key(item: dict) -> tuple[str, str, str]:
+    # API change order may be the number 0, which is not a missing identity.
+    return tuple("" if item.get(name) is None else str(item[name]) for name in KEY_COLUMNS)
 
 
 def store_rows(
@@ -239,7 +245,7 @@ def store_rows(
             raise SyncError("target_date is required when replacing a partition")
         conn.execute(
             f'DELETE FROM "{SHOPPING_TABLE}" '
-            'WHERE REPLACE(SUBSTR("dlvrReqRcptDate", 1, 10), \'-\', \'\') = ?',
+            f'WHERE {PARTITION_DATE_SQL} = ?',
             (target_date,),
         )
 
@@ -247,7 +253,7 @@ def store_rows(
     # making retries idempotent in a table that has no unique constraint.
     unique_rows: dict[tuple[str, str, str], dict] = {}
     for item in rows:
-        key = tuple(str(item.get(name) or "") for name in KEY_COLUMNS)
+        key = source_key(item)
         unique_rows[key] = item
     rows = list(unique_rows.values())
     if not rows:
@@ -269,7 +275,7 @@ def store_rows(
                 for name in production_columns
             )
         )
-    keys = [tuple(str(item.get(name) or "") for name in KEY_COLUMNS) for item in rows]
+    keys = [source_key(item) for item in rows]
     conn.executemany(
         f'DELETE FROM "{SHOPPING_TABLE}" '
         'WHERE "dlvrReqNo"=? AND "prdctSno"=? AND "dlvrReqChgOrd"=?',
@@ -413,6 +419,16 @@ class ApiClient:
             raise SyncError(
                 f"incomplete source rows: received={len(rows)}, totalCount={total}"
             )
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            key = source_key(row)
+            if not all(part.strip() for part in key):
+                raise SyncError("missing source key; refusing an incomplete date")
+            if key in seen:
+                raise SyncError("duplicate source key across API rows; date completeness is unproven")
+            seen.add(key)
+            if date_key(row.get("dlvrReqRcptDate")) != target_date:
+                raise SyncError("source receipt date differs from requested date")
         return rows, total, self.request_count - before
 
 
@@ -484,6 +500,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end")
     parser.add_argument("--lag-days", type=int, default=2)
     parser.add_argument("--lookback-days", type=int, default=7)
+    parser.add_argument(
+        "--coverage-start", default="20260101",
+        help="Earliest date to check for live collection gaps, in YYYYMMDD format",
+    )
     parser.add_argument("--max-requests", type=int, default=100)
     parser.add_argument("--reserve-requests", type=int, default=150)
     parser.add_argument("--min-free-gb", type=float, default=8.0)
@@ -503,6 +523,36 @@ def target_dates(args, production_conn: sqlite3.Connection) -> list[str]:
         end = dt.date.today() - dt.timedelta(days=args.lag_days)
         start = end - dt.timedelta(days=max(0, args.lookback_days - 1))
         dates = inclusive_dates(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+        if args.live:
+            coverage = inclusive_dates(args.coverage_start, end.strftime("%Y%m%d"))
+            existing = existing_source_dates(production_conn)
+            log_exists = production_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (SYNC_TABLE,),
+            ).fetchone()
+            complete: set[str] = set()
+            incomplete: set[str] = set()
+            if log_exists:
+                for day, status, total, received, selected, stored, error in production_conn.execute(
+                    f"SELECT target_date, status, source_total, source_received, busan_rows, stored_rows, error FROM {SYNC_TABLE}"
+                ):
+                    if (status in ("complete", "complete_zero") and int(total or 0) == int(received or 0)
+                            and int(selected or 0) == int(stored or 0) and not error):
+                        complete.add(str(day))
+                    else:
+                        incomplete.add(str(day))
+            # Legacy production days predate the independent log. Their data
+            # presence is a migration baseline, not a claim of API completeness;
+            # do not re-download that whole history just because logs are absent.
+            backlog = [
+                day for day in coverage
+                if day in incomplete or (day not in existing and day not in complete)
+            ]
+            latest = end.strftime("%Y%m%d")
+            # Keep the newest day current, then drain oldest unresolved dates
+            # before spending the remaining quota on rolling corrections.
+            ordered = [latest] + backlog + sorted(dates, reverse=True)
+            return list(dict.fromkeys(ordered))
     if not args.live and not args.include_existing:
         existing = existing_source_dates(production_conn)
         dates = [value for value in dates if value not in existing]
@@ -537,6 +587,8 @@ def main(argv: list[str] | None = None) -> int:
             if not columns or not all(name in columns for name in KEY_COLUMNS):
                 raise SyncError("production shopping table schema is incompatible")
             busan_codes = busan_agency_codes(agency_conn)
+            if not busan_codes:
+                raise SyncError("agency master is empty; refusing shopping partition replacement")
             dates = target_dates(args, prod_conn)
         finally:
             agency_conn.close()
@@ -584,6 +636,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
+            attempted_days = 0
+            completed_this_run = 0
+            failed_this_run = 0
+            deferred_this_run = 0
             for index, target_date in enumerate(dates, start=1):
                 checked_storage(
                     destination_db.parent,
@@ -592,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_shadow_bytes,
                 )
                 before_requests = client.request_count
+                attempted_days += 1
                 try:
                     rows, source_total, requests_used = fetch_day_with_zero_confirmation(
                         client, target_date
@@ -602,6 +659,16 @@ def main(argv: list[str] | None = None) -> int:
                         if str(row.get("dminsttCd", "")).strip() in busan_codes
                     ]
                     destination_conn.execute("BEGIN IMMEDIATE")
+                    if args.live and source_total == 0:
+                        previous_count = destination_conn.execute(
+                            f'SELECT COUNT(*) FROM "{SHOPPING_TABLE}" WHERE {PARTITION_DATE_SQL} = ?',
+                            (target_date,),
+                        ).fetchone()[0]
+                        if previous_count:
+                            raise SyncError(
+                                f"zero API response conflicts with {previous_count} existing rows; "
+                                "production date partition preserved"
+                            )
                     stored = store_rows(
                         destination_conn,
                         filtered,
@@ -623,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
                         commit=False,
                     )
                     destination_conn.commit()
+                    completed_this_run += 1
                     print(
                         f"[{index}/{len(dates)}] {target_date} {status}: "
                         f"source={source_total}, busan={len(filtered)}, "
@@ -630,6 +698,9 @@ def main(argv: list[str] | None = None) -> int:
                         f"remaining={client.rate_limit_remaining}"
                     )
                 except QuotaReserveReached as exc:
+                    if destination_conn.in_transaction:
+                        destination_conn.rollback()
+                    deferred_this_run += 1
                     record_status(
                         destination_conn,
                         target_date,
@@ -645,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:
                     if destination_conn.in_transaction:
                         destination_conn.rollback()
+                    failed_this_run += 1
                     record_status(
                         destination_conn,
                         target_date,
@@ -653,7 +725,7 @@ def main(argv: list[str] | None = None) -> int:
                         rate_remaining=client.rate_limit_remaining,
                         error=str(exc),
                     )
-                    print(f"ERROR {target_date}: {exc}", file=sys.stderr)
+                    print(f"ERROR {target_date}: {safe_error_text(exc)}", file=sys.stderr)
 
             storage = checked_storage(
                 destination_db.parent,
@@ -667,10 +739,16 @@ def main(argv: list[str] | None = None) -> int:
                     "run_requests": client.request_count,
                     "rate_limit_remaining": client.rate_limit_remaining,
                     "filesystem_free": storage["filesystem_free"],
+                    "planned_days": len(dates),
+                    "completed_this_run": completed_this_run,
+                    "failed_this_run": failed_this_run,
+                    "deferred_this_run": deferred_this_run,
+                    "unprocessed_days": len(dates) - attempted_days,
+                    "remaining_days": len(dates) - completed_this_run,
                 }
             )
             print("SUMMARY " + json.dumps(summary, ensure_ascii=False))
-            return 0
+            return 2 if completed_this_run != len(dates) else 0
         finally:
             destination_conn.close()
             prod_conn.close()

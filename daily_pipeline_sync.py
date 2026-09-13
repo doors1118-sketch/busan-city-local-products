@@ -1592,17 +1592,13 @@ def main():
     # [Step 4] API 캐시 재생성 (build_api_cache.py → api_cache.json)
     print("\n--------------------------------------------------")
     
-    # 캐시 백업 (경보 비교용)
-    if os.path.exists('api_cache.json'):
-        shutil.copy2('api_cache.json', 'api_cache_prev.json')
-        print(f"[캐시 백업] api_cache.json → api_cache_prev.json 백업 완료")
-    
-    print(f"[캐시 재생성] build_api_cache.py 실행 중...")
+    # Both caches are built and validated before publishing atomically.
+    print(f"[캐시 재생성] refresh_procurement_caches.py 실행 중...")
     try:
         import subprocess
         result = subprocess.run(
-            [sys.executable, 'build_api_cache.py'],
-            capture_output=True, text=True, encoding='utf-8', timeout=300
+            [sys.executable, 'refresh_procurement_caches.py'],
+            capture_output=True, text=True, encoding='utf-8', timeout=900
         )
         if result.returncode == 0:
             # 마지막 몇 줄만 출력
@@ -1611,16 +1607,10 @@ def main():
                 print(f"   {line}")
             print(f"   -> 캐시 재생성 완료 ✅")
         else:
-            print(f"   [오류] build_api_cache.py 실패: {result.stderr[-200:]}")
-            # 이전 캐시로 자동 롤백
-            if os.path.exists('api_cache_prev.json'):
-                shutil.copy2('api_cache_prev.json', 'api_cache.json')
-                print(f"   [롤백] api_cache_prev.json → api_cache.json 복원 완료")
+            print(f"   [오류] 캐시 갱신 실패: exit={result.returncode}; 기존 화면 보존")
     except Exception as e:
         print(f"   [오류] 캐시 재생성 실패: {e}")
-        if os.path.exists('api_cache_prev.json'):
-            shutil.copy2('api_cache_prev.json', 'api_cache.json')
-            print(f"   [롤백] api_cache_prev.json → api_cache.json 복원 완료")
+        print('   기존 화면 캐시는 보존됩니다.')
 
     # [Step 5] 경보 체크 → 크론 (평일 09:00)에서 별도 실행
     # alert_check.py는 crontab `0 9 * * 1-5`로 독립 실행됨

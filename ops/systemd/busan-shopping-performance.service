@@ -2,6 +2,7 @@
 Description=Busan G2B shopping performance rolling synchronization
 After=network-online.target
 Wants=network-online.target
+OnFailure=busan-shopping-failure.service
 
 [Service]
 Type=oneshot
