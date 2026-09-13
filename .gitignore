@@ -71,3 +71,5 @@ _test_sms.py
 # SQLite runtime sidecar files
 *.db-wal
 *.db-shm
+.procurement_pipeline.lock
+procurement_contracts.db.lock

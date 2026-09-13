@@ -340,8 +340,6 @@ class ApiClient:
         self.request_count = 0
         self.rate_limit_remaining: int | None = None
         self.context = ssl.create_default_context()
-        self.context.check_hostname = False
-        self.context.verify_mode = ssl.CERT_NONE
 
     def _ensure_budget(self, requests_needed: int = 1) -> None:
         if self.request_count + requests_needed > self.max_requests:
@@ -659,14 +657,14 @@ def main(argv: list[str] | None = None) -> int:
                         if str(row.get("dminsttCd", "")).strip() in busan_codes
                     ]
                     destination_conn.execute("BEGIN IMMEDIATE")
-                    if args.live and source_total == 0:
+                    if args.live and not filtered:
                         previous_count = destination_conn.execute(
                             f'SELECT COUNT(*) FROM "{SHOPPING_TABLE}" WHERE {PARTITION_DATE_SQL} = ?',
                             (target_date,),
                         ).fetchone()[0]
                         if previous_count:
                             raise SyncError(
-                                f"zero API response conflicts with {previous_count} existing rows; "
+                                f"zero selected API rows conflict with {previous_count} existing rows; "
                                 "production date partition preserved"
                             )
                     stored = store_rows(

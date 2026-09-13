@@ -9,6 +9,16 @@ Expected approved snapshot: total KRW 9,295,833,432,256; local KRW 5,587,644,601
 60.109129992747%, displayed 60.1%. Shopping total KRW 783,433,852,853 and local
 KRW 415,689,171,660. New daily data may subsequently change these figures.
 
+Final catch-up through D-2 (2026-09-11): the watchdog found two more missing dates,
+2026-09-10 and 2026-09-11. Actual collection: 19,154 / 19,154 nationwide records,
+725 Busan rows, 21 requests, 0 failed/deferred/unprocessed days. Their exact impact
+was calculated before reflection: total KRW 9,301,694,325,878, local
+KRW 5,589,455,403,136, rate 60.090723338281743%, displayed 60.1%.
+Shopping becomes KRW 789,294,746,475 / KRW 417,499,973,092 (52.9%).
+Total restored across both batches: 137 dates, 44,873 rows; shopping raw rows
+46,117 → 90,990. Keep the initial approved-batch figure separate from this latest
+two-day update. Both complete-date logs and raw source evidence are retained.
+
 ## Scheduling and safety
 
 - Shopping-only collector: 01:30 Asia/Seoul, every day; D-2, latest day first,
@@ -17,6 +27,8 @@ KRW 415,689,171,660. New daily data may subsequently change these figures.
   stop writing below 8 GiB available. No cross-service storage migration.
 - All-page count, unique source identity and requested-date checks before each
   date's transactional replacement. Zero API results cannot erase existing rows.
+- The same protection applies if the nationwide response is positive but no
+  Busan rows survive selection. TLS certificate/hostname verification is enabled.
 - Failed, deferred and unattempted dates yield nonzero status and remain eligible.
 - General daily contracts exclude shopping; 03:00 daily and 04:00 cache jobs use
   the same lock as shopping. Cache files are generated/validated before atomic
@@ -38,6 +50,11 @@ Existing unrelated weekly site-filter differences are not changed by this releas
 Before deployment create a SQLite online backup, validate quick_check, and keep
 old API/monthly caches, overrides, cron and exact prior Git commit. Use the
 timestamped server backup directory recorded in the deployment receipt.
+For this release the backup is `/opt/busan/backups/shopping-release-20260913-9c961c0/`.
+The verified online SQLite snapshot is `procurement-before.db.gz` (330,383,514
+bytes, expands to 1,555,689,472 bytes); SHA256 of decompressed bytes is
+`174288473af978be59da3b2e8356bbcb7932d0170911bed7d2184f8ba8de5fc6`.
+The initial raw duplicate was removed only after gzip round-trip hash equality.
 Hold `.procurement_pipeline.lock`, stop the two newly introduced timers, and
 restore only changed scripts/configuration and the pre-release cache files.
 Do not reset/checkout a dirty checkout, recursively chown services, or overwrite

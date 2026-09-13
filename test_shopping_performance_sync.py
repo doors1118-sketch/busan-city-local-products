@@ -266,6 +266,31 @@ def test_all_day_failures_return_nonzero(monkeypatch, tmp_path):
     conn.close()
 
 
+def test_zero_busan_rows_cannot_erase_existing_partition(monkeypatch, tmp_path):
+    production, agency, conn = _live_fixture(tmp_path)
+    sync.store_rows(conn, [_row('20260909')], LIVE_COLUMNS)
+    conn.commit()
+    class OutsideOnlyClient:
+        request_count = 0
+        rate_limit_remaining = 800
+        def fetch_day(self, day):
+            self.request_count += 1
+            return [{**_row(day, 'OUTSIDE'), 'dminsttCd': 'NOT_BUSAN'}], 1, 1
+    _stub_main_boundaries(monkeypatch, OutsideOnlyClient())
+    result = sync.main(['--live', '--production-db', str(production), '--agency-db', str(agency),
+        '--start', '20260909', '--end', '20260909'])
+    assert result != 0
+    assert conn.execute('SELECT dlvrReqNo FROM shopping_cntrct').fetchall() == [('OLD',)]
+    conn.close()
+
+
+def test_api_tls_verification_is_enabled():
+    import ssl
+    client = sync.ApiClient('fixture-not-a-real-key', max_requests=1, reserve_requests=0)
+    assert client.context.verify_mode == ssl.CERT_REQUIRED
+    assert client.context.check_hostname is True
+
+
 def test_quota_deferral_and_unattempted_dates_return_nonzero(monkeypatch, tmp_path, capsys):
     production, agency, conn = _live_fixture(tmp_path)
 
