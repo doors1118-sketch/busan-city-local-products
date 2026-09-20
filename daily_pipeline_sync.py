@@ -1619,10 +1619,14 @@ def main():
     print("\n--------------------------------------------------")
     try:
         from backup_db import backup_and_upload
-        backup_and_upload()
+        backup_ok = backup_and_upload()
+        if not backup_ok:
+            print("   [오류] 핵심 DB 백업 또는 원격 검증 실패")
+            send_sms('[조달알림] 핵심 DB 백업 실패: 운영 로그와 백업 상태 확인 필요')
     except Exception as e:
         print(f"   [오류] DB 백업 실패: {e}")
         print(f"   → 파이프라인 자체는 정상 완료됩니다.")
+        send_sms('[조달알림] 핵심 DB 백업 실행 오류: 운영 로그 확인 필요')
 
     end_time = time.time()
     print("\n==================================================")

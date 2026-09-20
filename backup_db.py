@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -44,6 +45,9 @@ OBJECT_STORAGE_RETENTION_DAYS = int(os.environ.get("BACKUP_OBJECT_RETENTION_DAYS
 MAX_PROJECTED_DISK_PERCENT = float(os.environ.get("BACKUP_MAX_PROJECTED_DISK_PERCENT", "88"))
 SAFETY_MARGIN_BYTES = int(os.environ.get("BACKUP_SAFETY_MARGIN_BYTES", str(256 * 1024**2)))
 CAPACITY_LOCK = Path(os.environ.get("BACKUP_CAPACITY_LOCK", str(BACKUP_DIR / ".backup.lock")))
+STATUS_FILE = Path(
+    os.environ.get("BACKUP_STATUS_FILE", str(DB_DIR / "sync_log" / "backup_status.json"))
+)
 
 NCP_ENDPOINT = "https://kr.object.ncloudstorage.com"
 NCP_ACCESS_KEY = os.environ.get("NCP_ACCESS_KEY", "")
@@ -182,19 +186,42 @@ def selected_database_files() -> tuple[str, ...]:
     return DB_FILES + (OPTIONAL_LARGE_DB_FILES if INCLUDE_LARGE_DB else ())
 
 
+def _write_status(status: dict) -> None:
+    """Publish a machine-readable backup result without exposing credentials."""
+    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STATUS_FILE.with_name(f".{STATUS_FILE.name}.tmp-{os.getpid()}")
+    try:
+        temporary.write_text(
+            json.dumps(status, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, STATUS_FILE)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def backup_and_upload() -> bool:
     print(f"DB backup started at {datetime.now():%Y-%m-%d %H:%M}")
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y%m%d")
-    backup_files: list[Path] = []
-    failures: list[str] = []
+    backup_files: dict[str, Path] = {}
+    core_failures: list[str] = []
+    optional_failures: list[str] = []
+    maintenance_failures: list[str] = []
+
+    def failures_for(database_name: str) -> list[str]:
+        if database_name in OPTIONAL_LARGE_DB_FILES:
+            return optional_failures
+        return core_failures
 
     lock_handle = acquire_capacity_lock()
     try:
         for database_name in selected_database_files():
             source = DB_DIR / database_name
             if not source.exists():
-                print(f"SKIP missing database: {database_name}")
+                failure = f"{database_name}: source database missing"
+                failures_for(database_name).append(failure)
+                print(f"FAIL local backup: {failure}")
                 continue
             destination = BACKUP_DIR / f"{database_name}.{today}.gz"
             try:
@@ -203,30 +230,42 @@ def backup_and_upload() -> bool:
                     f"OK local backup: {database_name} "
                     f"source={source.stat().st_size} compressed={destination.stat().st_size}"
                 )
-                backup_files.append(destination)
+                backup_files[database_name] = destination
             except Exception as exc:
-                failures.append(f"{database_name}: {type(exc).__name__}: {exc}")
-                print(f"FAIL local backup: {failures[-1]}")
+                failure = f"{database_name}: {type(exc).__name__}: {exc}"
+                failures_for(database_name).append(failure)
+                print(f"FAIL local backup: {failure}")
     finally:
         lock_handle.close()
 
     if not backup_files:
         print("FAIL no database backup was created")
-        return False
 
     client = None
     if has_object_storage_config():
         try:
             client = ensure_bucket()
-            for backup_path in backup_files:
-                key = f"daily/{backup_path.name}"
-                upload_and_verify(client, key, backup_path)
-                print(f"OK remote backup: {key}")
         except Exception as exc:
-            failures.append(f"Object Storage: {type(exc).__name__}: {exc}")
-            print(f"FAIL remote backup: {failures[-1]}")
+            failure = f"Object Storage: {type(exc).__name__}: {exc}"
+            core_failures.append(failure)
+            if INCLUDE_LARGE_DB:
+                optional_failures.append(failure)
+            print(f"FAIL remote backup: {failure}")
+        if client is not None:
+            for database_name, backup_path in backup_files.items():
+                key = f"daily/{backup_path.name}"
+                try:
+                    upload_and_verify(client, key, backup_path)
+                    print(f"OK remote backup: {key}")
+                except Exception as exc:
+                    failure = f"{database_name}: remote {type(exc).__name__}: {exc}"
+                    failures_for(database_name).append(failure)
+                    print(f"FAIL remote backup: {failure}")
     else:
-        failures.append("Object Storage: credentials not configured")
+        failure = "Object Storage: credentials not configured"
+        core_failures.append(failure)
+        if INCLUDE_LARGE_DB:
+            optional_failures.append(failure)
         print("FAIL remote backup: credentials not configured")
 
     local_cutoff = datetime.now() - timedelta(days=LOCAL_RETENTION_DAYS)
@@ -250,11 +289,43 @@ def backup_and_upload() -> bool:
                         client.delete_object(Bucket=BUCKET_NAME, Key=item["Key"])
                         print(f"OK remote retention delete: {item['Key']}")
         except Exception as exc:
-            failures.append(f"remote retention: {type(exc).__name__}: {exc}")
-            print(f"FAIL remote retention: {failures[-1]}")
+            failure = f"remote retention: {type(exc).__name__}: {exc}"
+            maintenance_failures.append(failure)
+            print(f"FAIL remote retention: {failure}")
 
-    print(f"DB backup finished: created={len(backup_files)} failures={len(failures)}")
-    return not failures
+    status = {
+        "schema_version": 1,
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "core": {
+            "required": list(DB_FILES),
+            "created": [name for name in DB_FILES if name in backup_files],
+            "failures": core_failures,
+            "ok": not core_failures and all(name in backup_files for name in DB_FILES),
+        },
+        "optional": {
+            "enabled": INCLUDE_LARGE_DB,
+            "required": list(OPTIONAL_LARGE_DB_FILES) if INCLUDE_LARGE_DB else [],
+            "created": [name for name in OPTIONAL_LARGE_DB_FILES if name in backup_files],
+            "failures": optional_failures,
+            "ok": not optional_failures,
+        },
+        "maintenance_failures": maintenance_failures,
+    }
+    try:
+        _write_status(status)
+    except Exception as exc:
+        core_failures.append(f"status file: {type(exc).__name__}: {exc}")
+        status["core"]["failures"] = core_failures
+        status["core"]["ok"] = False
+        print(f"FAIL backup status publish: {core_failures[-1]}")
+
+    print(
+        "DB backup finished: "
+        f"created={len(backup_files)} core_failures={len(core_failures)} "
+        f"optional_failures={len(optional_failures)} "
+        f"maintenance_failures={len(maintenance_failures)}"
+    )
+    return bool(status["core"]["ok"])
 
 
 if __name__ == "__main__":

@@ -4197,4 +4197,9 @@ if __name__ == '__main__':
     import uvicorn
     print("[API] 부산 조달 모니터링 API 서버 시작")
     print("   http://localhost:8000/docs")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Nginx is the public TLS boundary. Keep the application port private by default.
+    uvicorn.run(
+        app,
+        host=os.environ.get("BUSAN_API_BIND_HOST", "127.0.0.1"),
+        port=int(os.environ.get("BUSAN_API_PORT", "8000")),
+    )

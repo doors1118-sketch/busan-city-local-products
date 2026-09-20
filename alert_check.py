@@ -1044,6 +1044,72 @@ def check_disk_usage():
     return alerts
 
 
+BACKUP_STATUS_FILE = os.getenv(
+    'BACKUP_STATUS_FILE',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sync_log', 'backup_status.json'),
+)
+BACKUP_STATUS_MAX_AGE_HOURS = float(os.getenv('BACKUP_STATUS_MAX_AGE_HOURS', '30'))
+
+
+def check_backup_status(now=None):
+    """핵심 DB 백업 실패와 선택 대형 DB 실패를 구분해 감지한다."""
+    alerts = []
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    try:
+        with open(BACKUP_STATUS_FILE, 'r', encoding='utf-8') as handle:
+            status = json.load(handle)
+    except FileNotFoundError:
+        return [('CRITICAL', '🚨 [경보] DB 백업 상태 파일 없음: 최근 백업 성공 여부 확인 필요')]
+    except Exception as exc:
+        return [('CRITICAL', f'🚨 [경보] DB 백업 상태 확인 실패: {type(exc).__name__}')]
+
+    try:
+        generated_at = datetime.datetime.fromisoformat(status['generated_at'])
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
+        age_hours = (
+            now.astimezone(datetime.timezone.utc)
+            - generated_at.astimezone(datetime.timezone.utc)
+        ).total_seconds() / 3600
+    except Exception:
+        return [('CRITICAL', '🚨 [경보] DB 백업 상태 시각 오류: 상태 파일 형식 확인 필요')]
+
+    if age_hours > BACKUP_STATUS_MAX_AGE_HOURS:
+        alerts.append((
+            'CRITICAL',
+            f'🚨 [경보] 핵심 DB 백업 지연: 최근 상태 {age_hours:.1f}시간 전 '
+            f'(기준 {BACKUP_STATUS_MAX_AGE_HOURS:.0f}시간)',
+        ))
+
+    core = status.get('core') or {}
+    core_failures = core.get('failures') or []
+    if not core.get('ok', False) or core_failures:
+        alerts.append((
+            'CRITICAL',
+            f'🚨 [경보] 핵심 DB 백업 실패: {len(core_failures)}건 '
+            f'(운영 로그 및 Object Storage 검증 필요)',
+        ))
+    else:
+        print(f"  ✅ 핵심 DB 백업 정상: {len(core.get('created') or [])}개")
+
+    optional = status.get('optional') or {}
+    optional_failures = optional.get('failures') or []
+    if optional.get('enabled') and (not optional.get('ok', False) or optional_failures):
+        alerts.append((
+            'WARNING',
+            f'⚠️ [주의] 선택 대형 DB 백업 실패: {len(optional_failures)}건 '
+            f'(핵심 조달 DB 백업과 별도)',
+        ))
+
+    maintenance_failures = status.get('maintenance_failures') or []
+    if maintenance_failures:
+        alerts.append((
+            'WARNING',
+            f'⚠️ [주의] 백업 보존정책 처리 실패: {len(maintenance_failures)}건',
+        ))
+    return alerts
+
+
 def run_alert_check():
     """경보 체크 메인 함수"""
     print("\n==================================================")
@@ -1077,6 +1143,9 @@ def run_alert_check():
 
     disk_alerts = check_disk_usage()
     alerts.extend(disk_alerts)
+
+    backup_alerts = check_backup_status()
+    alerts.extend(backup_alerts)
 
     # ══════════════════════════════════════════════════════
     # Part A: 캐시 비교 (사후 분석)
