@@ -1048,7 +1048,7 @@ BACKUP_STATUS_FILE = os.getenv(
     'BACKUP_STATUS_FILE',
     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sync_log', 'backup_status.json'),
 )
-BACKUP_STATUS_MAX_AGE_HOURS = float(os.getenv('BACKUP_STATUS_MAX_AGE_HOURS', '30'))
+BACKUP_STATUS_MAX_AGE_HOURS = float(os.getenv('BACKUP_STATUS_MAX_AGE_HOURS', '28'))
 
 
 def check_backup_status(now=None):

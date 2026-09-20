@@ -55,9 +55,9 @@ def test_backup_alert_marks_core_failure_critical(tmp_path, monkeypatch):
 def test_backup_alert_marks_stale_status_critical(tmp_path, monkeypatch):
     status_path = tmp_path / "backup_status.json"
     now = datetime.datetime(2026, 9, 20, 9, 0, tzinfo=datetime.timezone.utc)
-    _write_status(status_path, generated_at=now - datetime.timedelta(hours=31))
+    _write_status(status_path, generated_at=now - datetime.timedelta(hours=29))
     monkeypatch.setattr(alert_check, "BACKUP_STATUS_FILE", str(status_path))
-    monkeypatch.setattr(alert_check, "BACKUP_STATUS_MAX_AGE_HOURS", 30)
+    monkeypatch.setattr(alert_check, "BACKUP_STATUS_MAX_AGE_HOURS", 28)
 
     alerts = alert_check.check_backup_status(now=now)
 
