@@ -1094,10 +1094,32 @@ def check_backup_status(now=None):
 
     optional = status.get('optional') or {}
     optional_failures = optional.get('failures') or []
-    if optional.get('enabled') and (not optional.get('ok', False) or optional_failures):
+    expected_capacity_blocks = [
+        failure for failure in optional_failures
+        if 'chatbot_company.db' in str(failure)
+        and 'capacity guard blocked' in str(failure).lower()
+    ]
+    actionable_optional_failures = [
+        failure for failure in optional_failures
+        if failure not in expected_capacity_blocks
+    ]
+    if optional.get('enabled') and expected_capacity_blocks:
+        print(
+            f"  ℹ️ 선택 대형 DB 용량 보호 차단: "
+            f"{len(expected_capacity_blocks)}건 (SMS 제외, 상태파일 유지)"
+        )
+    optional_status_without_reason = (
+        optional.get('enabled')
+        and not optional.get('ok', False)
+        and not optional_failures
+    )
+    if optional.get('enabled') and (
+        actionable_optional_failures or optional_status_without_reason
+    ):
         alerts.append((
             'WARNING',
-            f'⚠️ [주의] 선택 대형 DB 백업 실패: {len(optional_failures)}건 '
+            f'⚠️ [주의] 선택 대형 DB 백업 실패: '
+            f'{len(actionable_optional_failures)}건 '
             f'(핵심 조달 DB 백업과 별도)',
         ))
 

@@ -4,8 +4,17 @@ import json
 import alert_check
 
 
-def _write_status(path, *, core_ok=True, optional_ok=True, generated_at=None):
+def _write_status(
+    path,
+    *,
+    core_ok=True,
+    optional_ok=True,
+    optional_failures=None,
+    generated_at=None,
+):
     generated_at = generated_at or datetime.datetime.now(datetime.timezone.utc)
+    if optional_failures is None:
+        optional_failures = [] if optional_ok else ["simulated optional failure"]
     path.write_text(
         json.dumps(
             {
@@ -20,7 +29,7 @@ def _write_status(path, *, core_ok=True, optional_ok=True, generated_at=None):
                     "enabled": True,
                     "ok": optional_ok,
                     "created": ["chatbot_company.db"] if optional_ok else [],
-                    "failures": [] if optional_ok else ["simulated capacity guard"],
+                    "failures": optional_failures,
                 },
                 "maintenance_failures": [],
             }
@@ -29,9 +38,35 @@ def _write_status(path, *, core_ok=True, optional_ok=True, generated_at=None):
     )
 
 
-def test_backup_alert_separates_optional_failure(tmp_path, monkeypatch):
+def test_backup_alert_suppresses_expected_optional_capacity_guard(
+    tmp_path, monkeypatch, capsys
+):
     status_path = tmp_path / "backup_status.json"
-    _write_status(status_path, core_ok=True, optional_ok=False)
+    _write_status(
+        status_path,
+        core_ok=True,
+        optional_ok=False,
+        optional_failures=[
+            "chatbot_company.db: RuntimeError: capacity guard blocked "
+            "chatbot_company.db: projected peak 89.7% >= limit 88.0%"
+        ],
+    )
+    monkeypatch.setattr(alert_check, "BACKUP_STATUS_FILE", str(status_path))
+
+    alerts = alert_check.check_backup_status()
+
+    assert alerts == []
+    assert "SMS 제외, 상태파일 유지" in capsys.readouterr().out
+
+
+def test_backup_alert_keeps_unexpected_optional_failure(tmp_path, monkeypatch):
+    status_path = tmp_path / "backup_status.json"
+    _write_status(
+        status_path,
+        core_ok=True,
+        optional_ok=False,
+        optional_failures=["chatbot_company.db: SQLite quick_check failed"],
+    )
     monkeypatch.setattr(alert_check, "BACKUP_STATUS_FILE", str(status_path))
 
     alerts = alert_check.check_backup_status()
